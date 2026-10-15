@@ -10,7 +10,7 @@ import {
 } from "../../../modules/document/controllers/document.controller.js";
 
 class DocumentRoutes implements Routes {
-  public path = "/documents";
+  public path = "/api";
   public router = Router();
 
   constructor() {
@@ -19,14 +19,14 @@ class DocumentRoutes implements Routes {
 
   private initializeRoutes() {
     this.router.get(
-      `/projects/:id/documents`,
+      "/projects/:id/documents",
       authMiddleware,
       getProjectDocuments,
     );
-    this.router.post(`/projects/:id/documents`, authMiddleware, createDocument);
-    this.router.get(`${this.path}/:docId`, authMiddleware, getDocumentById);
-    this.router.patch(`${this.path}/:docId`, authMiddleware, updateDocument);
-    this.router.delete(`${this.path}/:docId`, authMiddleware, deleteDocument);
+    this.router.post("/projects/:id/documents", authMiddleware, createDocument);
+    this.router.get("/documents/:docId", authMiddleware, getDocumentById);
+    this.router.patch("/documents/:docId", authMiddleware, updateDocument);
+    this.router.delete("/documents/:docId", authMiddleware, deleteDocument);
   }
 }
 

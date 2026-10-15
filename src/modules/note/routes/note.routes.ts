@@ -14,30 +14,36 @@ class NoteRoutes implements Routes {
   }
 
   private initializeRoutes(): void {
-    this.router.use(authMiddleware);
+    // Auth is applied per route: this router is mounted at "/api", so a
+    // router-level middleware would also run for every later "/api/*" route
+    // (e.g. the public invitation endpoints).
     this.router.post(
       "/projects/:projectId/notes",
+      authMiddleware,
       isProjectMember,
       noteController.createNote,
     );
     this.router.get(
       "/projects/:projectId/notes",
+      authMiddleware,
       isProjectMember,
       noteController.getProjectNotes,
     );
     this.router.post(
       "/projects/:projectId/epics/:epicId/notes",
+      authMiddleware,
       isProjectMember,
       noteController.createEpicNote,
     );
     this.router.get(
       "/projects/:projectId/epics/:epicId/notes",
+      authMiddleware,
       isProjectMember,
       noteController.getEpicNotes,
     );
-    this.router.get("/notes/:id", noteController.getNote);
-    this.router.put("/notes/:id", noteController.updateNote);
-    this.router.delete("/notes/:id", noteController.deleteNote);
+    this.router.get("/notes/:id", authMiddleware, noteController.getNote);
+    this.router.put("/notes/:id", authMiddleware, noteController.updateNote);
+    this.router.delete("/notes/:id", authMiddleware, noteController.deleteNote);
   }
 }
 

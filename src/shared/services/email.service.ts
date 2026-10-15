@@ -82,7 +82,7 @@ export class EmailServiceImpl {
     invitationToken: string,
   ): Promise<boolean> {
     const clientUrl = env.FRONTEND_BASE_URL || "http://localhost:5173";
-    const inviteUrl = `${clientUrl}/invite/accept?token=${invitationToken}`;
+    const inviteUrl = `${clientUrl}/accept-invitation?token=${invitationToken}`;
     const subject = `${inviterName} invited you to join ${workspaceName} on Sync Todo`;
     const html = `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
