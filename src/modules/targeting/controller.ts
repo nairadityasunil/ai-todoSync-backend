@@ -87,6 +87,21 @@ class TargetingController {
       return;
     }
 
+    if ((error as { code?: number })?.code === 11000) {
+      res.status(409).json({
+        error: "A segment with this name already exists",
+        code: "DUPLICATE_SEGMENT",
+      });
+      return;
+    }
+
+    if ((error as { name?: string })?.name === "CastError") {
+      res
+        .status(404)
+        .json({ error: "Targeting segment not found", code: "NOT_FOUND" });
+      return;
+    }
+
     res.status(500).json({ error: "Targeting request failed" });
   }
 }

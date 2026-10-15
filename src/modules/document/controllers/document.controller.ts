@@ -19,7 +19,9 @@ export const getProjectDocuments = async (
 
     res.status(200).json({ documents });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -49,7 +51,9 @@ export const createDocument = async (
 
     res.status(201).json({ document: doc });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -72,7 +76,9 @@ export const getDocumentById = async (
     );
     res.status(200).json({ document: doc });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -104,7 +110,9 @@ export const updateDocument = async (
     await doc.save();
     res.status(200).json({ document: doc });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -129,6 +137,8 @@ export const deleteDocument = async (
 
     res.status(200).json({ message: "Document deleted successfully" });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };

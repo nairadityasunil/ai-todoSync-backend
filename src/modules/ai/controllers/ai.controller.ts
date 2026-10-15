@@ -89,7 +89,9 @@ export const listWorkspacePlans = async (
       .lean();
     res.status(200).json({ plans });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -343,7 +345,9 @@ export const modifyProjectPlan = async (
 
     res.status(200).json(result);
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -571,7 +575,9 @@ ${(plan.risks || []).map((r: any) => `- [${r.severity}] **${r.title}**: ${r.miti
       canonicalPlanId: canonicalPlanDoc._id,
     });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -603,7 +609,9 @@ export const decomposeTask = async (
     );
     res.status(200).json({ breakdown });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -634,7 +642,9 @@ export const planDailyWork = async (
     );
     res.status(200).json({ schedule });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -661,7 +671,9 @@ export const generateDocument = async (
 
     res.status(200).json({ draft });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -690,7 +702,9 @@ export const generateNotes = async (
     );
     res.status(200).json({ notesDraft });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
 
@@ -717,6 +731,8 @@ export const chatWithProjectAssistant = async (
 
     res.status(200).json({ reply });
   } catch (error: any) {
-    res.status(error.statusCode || 500).json({ error: error.message });
+    res
+      .status(error.status || error.statusCode || 500)
+      .json({ error: error.message });
   }
 };
