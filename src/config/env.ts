@@ -32,6 +32,9 @@ export interface EnvConfig {
   REDIS_URL: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL: string;
+  CLOUDINARY_CLOUD_NAME?: string;
+  CLOUDINARY_API_KEY?: string;
+  CLOUDINARY_API_SECRET?: string;
 }
 
 const {
@@ -64,6 +67,9 @@ const {
   REDIS_URL = "redis://127.0.0.1:6379",
   GEMINI_API_KEY,
   GEMINI_MODEL = "gemini-2.0-flash",
+  CLOUDINARY_CLOUD_NAME,
+  CLOUDINARY_API_KEY,
+  CLOUDINARY_API_SECRET,
 } = process.env;
 
 if (!MONGODB_URI || !JWT_SECRET || !JWT_EXPIRES_IN) {
@@ -116,6 +122,9 @@ const env: EnvConfig = {
   REDIS_URL: REDIS_URL.trim(),
   GEMINI_API_KEY: GEMINI_API_KEY?.trim() || undefined,
   GEMINI_MODEL: GEMINI_MODEL.trim(),
+  CLOUDINARY_CLOUD_NAME: CLOUDINARY_CLOUD_NAME?.trim() || undefined,
+  CLOUDINARY_API_KEY: CLOUDINARY_API_KEY?.trim() || undefined,
+  CLOUDINARY_API_SECRET: CLOUDINARY_API_SECRET?.trim() || undefined,
 };
 
 export default env;

@@ -187,11 +187,14 @@ export const deleteProjectWithRelations = async (
   projectId: string,
 ): Promise<IProjectDocument | null> =>
   runInTransaction(async (session) => {
-    const deletedProject = await ProjectModel.findByIdAndDelete(projectId, {
+    const query = mongoose.Types.ObjectId.isValid(projectId)
+      ? { $or: [{ _id: projectId }, { uuid: projectId }] }
+      : { uuid: projectId };
+    const deletedProject = await ProjectModel.findOneAndDelete(query, {
       session: session as any,
     }).exec();
     if (deletedProject == null) return null;
-    await deleteRelations([projectId], session ?? null);
+    await deleteRelations([deletedProject._id.toString()], session ?? null);
     return deletedProject;
   });
 
@@ -199,10 +202,22 @@ export const deleteProjectsWithRelations = async (
   projectIds: string[],
 ): Promise<number> =>
   runInTransaction(async (session) => {
-    const { deletedCount } = await ProjectModel.deleteMany(
-      { _id: { $in: projectIds } },
+    const validObjectIds = projectIds.filter((id) =>
+      mongoose.Types.ObjectId.isValid(id),
+    );
+    const query = {
+      $or: [{ _id: { $in: validObjectIds } }, { uuid: { $in: projectIds } }],
+    };
+    const projects = await ProjectModel.find(
+      query,
+      { _id: 1 },
       { session: session as any },
     ).exec();
-    if (deletedCount > 0) await deleteRelations(projectIds, session ?? null);
+    const ids = projects.map((p) => p._id.toString());
+    const { deletedCount } = await ProjectModel.deleteMany(
+      { _id: { $in: ids } },
+      { session: session as any },
+    ).exec();
+    if (deletedCount > 0) await deleteRelations(ids, session ?? null);
     return deletedCount;
   });

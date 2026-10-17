@@ -6,6 +6,7 @@ import UserModel from "../auth/models/user.model.js";
 import projectService from "../project/services/project.service.js";
 import accessService from "../access/access.service.js";
 import { AppError } from "../../utils/app-error.js";
+import { buildProjectUuidMap } from "../../utils/project-id.js";
 
 const { ObjectId } = mongoose.Types;
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -78,24 +79,28 @@ class TimeTrackingService {
     projectId: string,
     input: TimeEntryInput,
   ) {
-    const { workspaceAccess } = await projectService.getProjectAccess(
+    const { workspaceAccess, project } = await projectService.getProjectAccess(
       userId,
       projectId,
     );
+    const resolvedProjectId = project._id.toString();
     const ownerId = await this.resolveOwner(
       userId,
-      projectId,
+      resolvedProjectId,
       workspaceAccess.isAdmin,
       input.userId,
     );
-    const taskId = await this.assertTaskInProject(input.taskId, projectId);
+    const taskId = await this.assertTaskInProject(
+      input.taskId,
+      resolvedProjectId,
+    );
     const entryDate = this.assertNotFuture(parseDay(input.date, "date"));
     const hours = parseHours(input.hours);
     await this.assertDailyLimit(ownerId, entryDate, hours);
 
     const entry = await TimeEntryModel.create({
       workspaceId: workspaceAccess.workspaceId,
-      projectId,
+      projectId: resolvedProjectId,
       taskId,
       userId: ownerId,
       hours,
@@ -112,8 +117,12 @@ class TimeTrackingService {
     page = 1,
     limit = 50,
   ) {
-    await projectService.getProjectAccess(userId, projectId);
-    const match = this.matchFor(projectId, filters);
+    const { project } = await projectService.getProjectAccess(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
+    const match = this.matchFor(resolvedProjectId, filters);
     const safeLimit = Math.min(200, Math.max(1, limit));
     const [entries, total] = await Promise.all([
       TimeEntryModel.find(match)
@@ -141,8 +150,12 @@ class TimeTrackingService {
     projectId: string,
     filters: TimeFilters,
   ) {
-    await projectService.getProjectAccess(userId, projectId);
-    const match = this.matchFor(projectId, filters);
+    const { project } = await projectService.getProjectAccess(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
+    const match = this.matchFor(resolvedProjectId, filters);
     const [facets] = await TimeEntryModel.aggregate<{
       total: Array<{ hours: number; entries: number }>;
       byTask: Array<{ _id: unknown; hours: number; entries: number }>;
@@ -343,7 +356,9 @@ class TimeTrackingService {
     filters: TimeFilters,
   ): Record<string, unknown> {
     const match: Record<string, unknown> = {
-      projectId: new ObjectId(projectId),
+      projectId: ObjectId.isValid(projectId)
+        ? new ObjectId(projectId)
+        : projectId,
     };
     if (filters.userId) {
       if (!isId(filters.userId)) throw bad("userId must be a member id");
@@ -452,13 +467,14 @@ class TimeTrackingService {
   }
 
   private async toDtos(entries: Array<Record<string, any>>) {
-    const [tasks, users] = await Promise.all([
+    const [tasks, users, uuidMap] = await Promise.all([
       this.taskTitles(entries.map((e) => String(e.taskId))),
       this.userNames(entries.map((e) => String(e.userId))),
+      buildProjectUuidMap(entries.map((e) => String(e.projectId))),
     ]);
     return entries.map((e) => ({
       id: String(e._id),
-      projectId: String(e.projectId),
+      projectId: uuidMap.get(String(e.projectId)) || String(e.projectId),
       taskId: String(e.taskId),
       taskTitle: tasks.get(String(e.taskId)) ?? "Deleted task",
       userId: String(e.userId),

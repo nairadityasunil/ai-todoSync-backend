@@ -2,7 +2,7 @@ import type { ClientSession } from "mongoose";
 import InvitationModel, {
   type IInvitationDocument,
 } from "../../../modules/workspace/models/invitation.model.js";
-import { buildSafeRefMatch } from "../../../utils/mongo-ref.js";
+import { resolveProjectObjectId } from "../../../utils/project-id.js";
 
 export interface CreateInvitationPayload {
   projectId: string;
@@ -15,10 +15,14 @@ export interface CreateInvitationPayload {
 export const createInvitation = async (
   payload: CreateInvitationPayload,
   session?: ClientSession | null,
-): Promise<IInvitationDocument> =>
-  InvitationModel.create([{ ...payload, status: "PENDING" }], { session }).then(
-    ([invitation]) => invitation,
-  );
+): Promise<IInvitationDocument> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(payload.projectId)) || payload.projectId;
+  return InvitationModel.create(
+    [{ ...payload, projectId: resolvedProjectId, status: "PENDING" }],
+    { session },
+  ).then(([invitation]) => invitation);
+};
 
 export const getInvitationByToken = async (
   token: string,
@@ -28,11 +32,14 @@ export const getInvitationByToken = async (
 export const getInvitationByProjectAndEmail = async (
   projectId: string,
   email: string,
-): Promise<IInvitationDocument | null> =>
-  InvitationModel.findOne({
+): Promise<IInvitationDocument | null> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
+  return InvitationModel.findOne({
     email: email.toLowerCase().trim(),
-    ...buildSafeRefMatch("projectId", projectId),
+    projectId: resolvedProjectId,
   }).exec();
+};
 
 export const getPendingInvitationsByEmail = async (
   email: string,
@@ -55,13 +62,16 @@ export const updateInvitationStatus = async (
 
 export const getPendingInvitationsByProject = async (
   projectId: string,
-): Promise<IInvitationDocument[]> =>
-  InvitationModel.find({
-    ...buildSafeRefMatch("projectId", projectId),
+): Promise<IInvitationDocument[]> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
+  return InvitationModel.find({
+    projectId: resolvedProjectId,
     status: "PENDING",
   })
     .sort({ createdAt: -1 })
     .exec();
+};
 
 export const deleteInvitationById = async (
   invitationId: string,

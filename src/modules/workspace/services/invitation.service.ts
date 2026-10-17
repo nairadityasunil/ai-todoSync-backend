@@ -492,7 +492,7 @@ class InvitationService {
       result.push({
         id: inv._id.toString(),
         token: inv.token,
-        projectId: inv.projectId.toString(),
+        projectId: project.uuid || inv.projectId.toString(),
         projectName: project.name,
         inviterName: inviter?.name || inviter?.email || "Someone",
         role: inv.role,

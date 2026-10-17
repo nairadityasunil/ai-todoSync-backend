@@ -4,20 +4,33 @@ import DocumentModel from "../models/document.model.js";
 import projectService from "../../project/services/project.service.js";
 import { AppError } from "../../../utils/app-error.js";
 
+const getParam = (value: string | string[] | undefined): string =>
+  Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
+
 export const getProjectDocuments = async (
   req: AuthenticatedRequest,
   res: Response,
 ): Promise<void> => {
   try {
     const userId = req.user!._id.toString();
-    const { id: projectId } = req.params as Record<string, string>;
-    await projectService.assertProjectMembership(userId, projectId);
+    const projectId = getParam(req.params.projectId || req.params.id);
+    const access = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const publicProjectUuid = access.project.uuid || resolvedProjectId;
 
-    const documents = await DocumentModel.find({ projectId })
+    const documents = await DocumentModel.find({ projectId: resolvedProjectId })
       .sort({ updatedAt: -1 })
       .lean();
 
-    res.status(200).json({ documents });
+    res.status(200).json({
+      documents: documents.map((doc) => ({
+        ...doc,
+        projectId: publicProjectUuid,
+      })),
+    });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -29,8 +42,13 @@ export const createDocument = async (
 ): Promise<void> => {
   try {
     const userId = req.user!._id.toString();
-    const { id: projectId } = req.params as Record<string, string>;
-    await projectService.assertProjectMembership(userId, projectId);
+    const projectId = getParam(req.params.projectId || req.params.id);
+    const access = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const publicProjectUuid = access.project.uuid || resolvedProjectId;
 
     const { title, type, content, tags, aiGenerated } = req.body;
     if (!title?.trim()) {
@@ -38,7 +56,7 @@ export const createDocument = async (
     }
 
     const doc = await DocumentModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       title: title.trim(),
       type: type || "GENERAL",
       content: content || "",
@@ -47,7 +65,10 @@ export const createDocument = async (
       aiGenerated: !!aiGenerated,
     });
 
-    res.status(201).json({ document: doc });
+    const docObj = doc.toObject();
+    (docObj as any).projectId = publicProjectUuid;
+
+    res.status(201).json({ document: docObj });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -66,11 +87,19 @@ export const getDocumentById = async (
       throw new AppError(404, "Document not found", "NOT_FOUND");
     }
 
-    await projectService.assertProjectMembership(
+    const access = await projectService.assertProjectMembership(
       userId,
       doc.projectId.toString(),
     );
-    res.status(200).json({ document: doc });
+    const publicProjectUuid =
+      access.project.uuid || access.project._id.toString();
+
+    res.status(200).json({
+      document: {
+        ...doc,
+        projectId: publicProjectUuid,
+      },
+    });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }
@@ -89,10 +118,12 @@ export const updateDocument = async (
       throw new AppError(404, "Document not found", "NOT_FOUND");
     }
 
-    await projectService.assertProjectMembership(
+    const access = await projectService.assertProjectMembership(
       userId,
       doc.projectId.toString(),
     );
+    const publicProjectUuid =
+      access.project.uuid || access.project._id.toString();
 
     const { title, type, content, tags } = req.body;
     if (title !== undefined) doc.title = title.trim();
@@ -102,7 +133,10 @@ export const updateDocument = async (
     doc.version = (doc.version || 1) + 1;
 
     await doc.save();
-    res.status(200).json({ document: doc });
+    const docObj = doc.toObject();
+    (docObj as any).projectId = publicProjectUuid;
+
+    res.status(200).json({ document: docObj });
   } catch (error: any) {
     res.status(error.statusCode || 500).json({ error: error.message });
   }

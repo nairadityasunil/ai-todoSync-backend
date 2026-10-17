@@ -78,11 +78,11 @@ class ActivityLogService {
   }
 
   async getRetentionPolicy(projectId: string) {
-    const project = await ProjectModel.findById(projectId).lean();
+    const project = await projectService.getProjectById(projectId);
     const audit = project?.audit;
 
     return {
-      projectId,
+      projectId: project?.uuid || projectId,
       retentionDays: audit?.retentionDays ?? 2555,
       legalHold: audit?.legalHold ?? false,
       updatedBy: audit?.updatedBy?.toString() ?? null,
@@ -95,7 +95,12 @@ class ActivityLogService {
     updatedBy: string,
     payload: { retentionDays?: unknown; legalHold?: unknown },
   ) {
-    await projectService.assertProjectRole(updatedBy, projectId, "ADMIN");
+    const { project } = await projectService.assertProjectRole(
+      updatedBy,
+      projectId,
+      "ADMIN",
+    );
+    const resolvedProjectId = project._id.toString();
 
     const retentionDays = Number(payload.retentionDays ?? 2555);
     if (
@@ -114,8 +119,8 @@ class ActivityLogService {
     const legalHold =
       typeof payload.legalHold === "boolean" ? payload.legalHold : false;
 
-    const project = await ProjectModel.findByIdAndUpdate(
-      projectId,
+    const updatedProject = await ProjectModel.findByIdAndUpdate(
+      resolvedProjectId,
       {
         $set: {
           "audit.retentionDays": retentionDays,
@@ -127,16 +132,20 @@ class ActivityLogService {
     ).lean();
 
     return {
-      projectId,
-      retentionDays: project?.audit?.retentionDays ?? retentionDays,
-      legalHold: project?.audit?.legalHold ?? legalHold,
+      projectId: project.uuid || projectId,
+      retentionDays: updatedProject?.audit?.retentionDays ?? retentionDays,
+      legalHold: updatedProject?.audit?.legalHold ?? legalHold,
       updatedBy,
       updatedAt: new Date().toISOString(),
     };
   }
 
   async verifyAuditChain(projectId: string) {
-    const logs = await ActivityLogModel.find({ projectId })
+    const project = await projectService.getProjectById(projectId);
+    const projectIds = project
+      ? [project._id.toString(), ...(project.uuid ? [project.uuid] : [])]
+      : [projectId];
+    const logs = await ActivityLogModel.find({ projectId: { $in: projectIds } })
       .sort({ sequence: 1 })
       .lean();
 
@@ -190,7 +199,14 @@ class ActivityLogService {
     const { limit = 50, page = 1, entityType } = options;
     const skip = (page - 1) * limit;
 
-    const filter: Record<string, unknown> = { projectId };
+    const project = await projectService.getProjectById(projectId);
+    const projectIds = project
+      ? [project._id.toString(), ...(project.uuid ? [project.uuid] : [])]
+      : [projectId];
+
+    const filter: Record<string, unknown> = {
+      projectId: { $in: projectIds },
+    };
     if (entityType) {
       filter.entityType = entityType;
     }
@@ -204,10 +220,12 @@ class ActivityLogService {
       ActivityLogModel.countDocuments(filter),
     ]);
 
+    const publicUuid = project?.uuid || projectId;
+
     return {
       activities: activities.map((a) => ({
         id: a._id.toString(),
-        projectId: a.projectId,
+        projectId: publicUuid,
         entityType: a.entityType,
         entityId: a.entityId,
         entityName: a.entityName,

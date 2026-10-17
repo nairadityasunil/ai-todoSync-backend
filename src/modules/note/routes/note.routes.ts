@@ -40,6 +40,7 @@ class NoteRoutes implements Routes {
     );
     this.router.get("/notes/:id", authMiddleware, noteController.getNote);
     this.router.put("/notes/:id", authMiddleware, noteController.updateNote);
+    this.router.patch("/notes/:id", authMiddleware, noteController.updateNote);
     this.router.delete("/notes/:id", authMiddleware, noteController.deleteNote);
   }
 }

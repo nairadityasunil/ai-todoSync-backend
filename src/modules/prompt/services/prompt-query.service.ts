@@ -6,6 +6,10 @@ import accessService from "../../access/access.service.js";
 import { escapeRegex } from "../../../shared/environment.js";
 
 import { HttpError } from "../../../shared/errors/http-error.js";
+import {
+  buildProjectUuidMap,
+  resolveProjectUuid,
+} from "../../../utils/project-id.js";
 
 export class PromptQueryService {
   public async listPrompts(
@@ -22,8 +26,13 @@ export class PromptQueryService {
     } = {},
   ) {
     const access = await accessService.resolve(userId, workspaceId);
+    let resolvedProjectOid: any = undefined;
     if (options.projectId) {
-      await accessService.assertProject(access, options.projectId);
+      const project = await accessService.assertProject(
+        access,
+        options.projectId,
+      );
+      resolvedProjectOid = project._id;
     }
     // Visibility is decided in the query, so no per-prompt checks are needed.
     const filter: Record<string, any> = {
@@ -31,7 +40,7 @@ export class PromptQueryService {
       isLatest: true,
       isArchived: false,
     };
-    if (options.projectId) filter.projectId = options.projectId;
+    if (resolvedProjectOid) filter.projectId = resolvedProjectOid;
 
     if (options.category) filter.category = options.category;
 
@@ -84,10 +93,18 @@ export class PromptQueryService {
       accessiblePrompts.map((p) => p.parentId || p._id),
     );
 
+    const rawProjectIds = accessiblePrompts
+      .map((p) => (p.projectId ? p.projectId.toString() : null))
+      .filter(Boolean) as string[];
+    const uuidMap = await buildProjectUuidMap(rawProjectIds);
+
     return accessiblePrompts.map((p) => {
       const rootId = p.parentId ? p.parentId.toString() : p._id.toString();
+      const rawPid = p.projectId ? p.projectId.toString() : null;
+      const projectUuid = rawPid ? uuidMap.get(rawPid) || rawPid : null;
       return {
         ...p,
+        projectId: projectUuid,
         isFavorite: userFavs.has(p._id.toString()) || userFavs.has(rootId),
         deployment: deployments.get(rootId) ?? null,
       };
@@ -130,8 +147,14 @@ export class PromptQueryService {
       [rootId],
     );
 
+    const rawPid = prompt.projectId ? prompt.projectId.toString() : null;
+    const projectUuid = rawPid
+      ? (await resolveProjectUuid(rawPid)) || rawPid
+      : null;
+
     return {
       ...prompt,
+      projectId: projectUuid,
       isFavorite: favCount > 0,
       deployment: deployments.get(rootId) ?? null,
     };

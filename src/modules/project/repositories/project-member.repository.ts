@@ -5,6 +5,8 @@ import ProjectMemberModel, {
   type ProjectRole,
 } from "../../../modules/project/models/project-member.model.js";
 import { andRefMatches, buildSafeRefMatch } from "../../../utils/mongo-ref.js";
+import { resolveProjectObjectId } from "../../../utils/project-id.js";
+
 interface ProjectMemberUserShape {
   _id: { toString(): string };
   email: string;
@@ -32,10 +34,14 @@ const memberUserProjection = "email name";
 export const createProjectMember = async (
   payload: CreateProjectMemberPayload,
   session?: ClientSession | null,
-): Promise<IProjectMemberDocument> =>
-  ProjectMemberModel.create([{ ...payload }], { session }).then(
-    ([member]) => member,
-  );
+): Promise<IProjectMemberDocument> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(payload.projectId)) || payload.projectId;
+  return ProjectMemberModel.create(
+    [{ ...payload, projectId: resolvedProjectId }],
+    { session },
+  ).then(([member]) => member);
+};
 
 export const createProjectMembers = async (
   payloads: CreateProjectMemberPayload[],
@@ -45,19 +51,29 @@ export const createProjectMembers = async (
     return [];
   }
 
-  return ProjectMemberModel.insertMany(payloads, { session, ordered: true });
+  const resolved = await Promise.all(
+    payloads.map(async (p) => ({
+      ...p,
+      projectId: (await resolveProjectObjectId(p.projectId)) || p.projectId,
+    })),
+  );
+
+  return ProjectMemberModel.insertMany(resolved, { session, ordered: true });
 };
 
 export const getProjectMembership = async (
   projectId: string,
   userId: string,
-): Promise<IProjectMemberDocument | null> =>
-  ProjectMemberModel.findOne(
+): Promise<IProjectMemberDocument | null> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
+  return ProjectMemberModel.findOne(
     andRefMatches(
-      buildSafeRefMatch("projectId", projectId),
+      buildSafeRefMatch("projectId", resolvedProjectId),
       buildSafeRefMatch("userId", userId),
     ),
   ).exec();
+};
 
 export const getProjectMembershipsByUser = async (
   userId: string,
@@ -69,8 +85,10 @@ export const getProjectMembershipsByUser = async (
 export const getProjectMembers = async (
   projectId: string,
 ): Promise<ProjectMemberWithUser[]> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   const members = await ProjectMemberModel.find(
-    buildSafeRefMatch("projectId", projectId),
+    buildSafeRefMatch("projectId", resolvedProjectId),
   )
     .populate("userId", memberUserProjection)
     .sort({ role: 1, createdAt: 1, _id: 1 })
@@ -103,31 +121,41 @@ export const getProjectMembers = async (
   return mappedMembers;
 };
 
-export const countProjectAdmins = async (projectId: string): Promise<number> =>
-  ProjectMemberModel.countDocuments({
+export const countProjectAdmins = async (
+  projectId: string,
+): Promise<number> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
+  return ProjectMemberModel.countDocuments({
     role: "ADMIN",
-    ...buildSafeRefMatch("projectId", projectId),
+    ...buildSafeRefMatch("projectId", resolvedProjectId),
   }).exec();
+};
 
 export const deleteProjectMembership = async (
   projectId: string,
   userId: string,
   session?: ClientSession | null,
-): Promise<IProjectMemberDocument | null> =>
-  ProjectMemberModel.findOneAndDelete(
+): Promise<IProjectMemberDocument | null> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
+  return ProjectMemberModel.findOneAndDelete(
     andRefMatches(
-      buildSafeRefMatch("projectId", projectId),
+      buildSafeRefMatch("projectId", resolvedProjectId),
       buildSafeRefMatch("userId", userId),
     ),
     { session: session as any },
   ).exec();
+};
 
 export const deleteProjectMembershipsByProject = async (
   projectId: string,
   session?: ClientSession | null,
 ): Promise<void> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   await ProjectMemberModel.deleteMany(
-    buildSafeRefMatch("projectId", projectId),
+    buildSafeRefMatch("projectId", resolvedProjectId),
     {
       session: session as any,
     },
@@ -139,9 +167,11 @@ export const ensureProjectAdminMembership = async (
   userId: string,
   session?: ClientSession | null,
 ): Promise<void> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   await ProjectMemberModel.updateOne(
     andRefMatches(
-      buildSafeRefMatch("projectId", projectId),
+      buildSafeRefMatch("projectId", resolvedProjectId),
       buildSafeRefMatch("userId", userId),
     ),
     { $setOnInsert: { role: "ADMIN" } },

@@ -120,8 +120,8 @@ const resolveAiConfigForUserOrProject = async (
   let apiKey = overrides?.apiKey?.trim() || "";
 
   // 1. Check Project AI Config if projectId provided
-  if (!apiKey && projectId && mongoose.Types.ObjectId.isValid(projectId)) {
-    const projectDoc = await ProjectModel.findById(projectId).lean();
+  if (!apiKey && projectId) {
+    const projectDoc = await projectService.getProjectById(projectId);
     const config = projectDoc?.ai;
     if (config) {
       if (!overrides?.provider && config.provider)
@@ -188,15 +188,10 @@ const toAiOptions = (config: ResolvedAiConfig) => ({
 const getProjectWorkspaceId = async (
   projectId?: unknown,
 ): Promise<string | null> => {
-  if (
-    typeof projectId !== "string" ||
-    !mongoose.Types.ObjectId.isValid(projectId)
-  ) {
+  if (typeof projectId !== "string" || !projectId.trim()) {
     return null;
   }
-  const project = await ProjectModel.findById(projectId)
-    .select("workspaceId")
-    .lean();
+  const project = await projectService.getProjectById(projectId);
   return project?.workspaceId ? String(project.workspaceId) : null;
 };
 
@@ -406,6 +401,10 @@ export const confirmProjectPlan = async (
     });
 
     const projectId = project.id;
+    const projectDoc = await projectService.getProjectById(projectId);
+    const resolvedProjectId = projectDoc
+      ? projectDoc._id.toString()
+      : projectId;
 
     // Persist Canonical Approved Plan
     const totalEstHours =
@@ -416,7 +415,7 @@ export const confirmProjectPlan = async (
       );
 
     const canonicalPlanDoc = await ProjectPlanModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       workspaceId: targetWorkspaceId,
       version: 1,
       status: "APPROVED",
@@ -474,7 +473,7 @@ export const confirmProjectPlan = async (
     }
     if (statesToEmbed.length > 0) {
       const updatedProj = await ProjectModel.findByIdAndUpdate(
-        projectId,
+        resolvedProjectId,
         { $push: { states: { $each: statesToEmbed } } },
         { new: true },
       ).lean();
@@ -489,7 +488,7 @@ export const confirmProjectPlan = async (
       for (let i = 0; i < plan.epics.length; i++) {
         const ep = plan.epics[i];
         const createdEpic = await EpicModel.create({
-          projectId,
+          projectId: resolvedProjectId,
           name: ep.name,
           description: ep.description || "",
           order: i,
@@ -535,7 +534,7 @@ export const confirmProjectPlan = async (
         const depId = taskMap.get(dep.dependsOnTaskIndex);
         if (tId && depId) {
           await TaskDependencyModel.create({
-            projectId,
+            projectId: resolvedProjectId,
             taskId: tId,
             dependsOnTaskId: depId,
             type: dep.type || "BLOCKS",
@@ -578,7 +577,7 @@ ${(plan.risks || []).map((r: any) => `- [${r.severity}] **${r.title}**: ${r.miti
 `;
 
     await DocumentModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       workspaceId: targetWorkspaceId,
       title: `${plan.name} - Architecture & PRD Spec`,
       type: "PRD",

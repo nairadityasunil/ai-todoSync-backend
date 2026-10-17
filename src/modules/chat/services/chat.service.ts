@@ -8,6 +8,58 @@ import type {
   CreateMessagePayload,
   PaginationOptions,
 } from "../../../modules/chat/repositories/chat.repository.js";
+import {
+  getCachedProjectUuid,
+  resolveProjectObjectId,
+  resolveProjectUuid,
+} from "../../../utils/project-id.js";
+import CloudinaryService from "../../../shared/services/cloudinary.service.js";
+import logger from "../../../lib/logger.js";
+
+async function processAttachmentsCloudinary(
+  metadata?: IMessageMetadata,
+): Promise<IMessageMetadata | undefined> {
+  if (
+    !metadata ||
+    !metadata.attachments ||
+    !Array.isArray(metadata.attachments)
+  ) {
+    return metadata;
+  }
+
+  const updatedAttachments = await Promise.all(
+    metadata.attachments.map(async (att: any) => {
+      if (att && typeof att.url === "string" && att.url.startsWith("data:")) {
+        try {
+          const folder = att.type?.startsWith("image/")
+            ? "pristine/chat/images"
+            : "pristine/chat/files";
+          const uploadRes = await CloudinaryService.uploadDataUrl(
+            att.url,
+            folder,
+          );
+          return {
+            ...att,
+            url: uploadRes.secureUrl,
+            publicId: uploadRes.publicId,
+          };
+        } catch (err) {
+          logger.error(
+            "Failed to upload attachment to Cloudinary, keeping fallback URI",
+            err instanceof Error ? err : new Error(String(err)),
+          );
+          return att;
+        }
+      }
+      return att;
+    }),
+  );
+
+  return {
+    ...metadata,
+    attachments: updatedAttachments,
+  };
+}
 
 interface SenderDto {
   id: string;
@@ -83,15 +135,23 @@ class ChatService {
       metadata?: IMessageMetadata;
     },
   ): Promise<MessageDto> {
-    const trimmedContent = content.trim();
+    const trimmedContent = content?.trim() ?? "";
+    const hasAttachments =
+      options?.metadata?.attachments &&
+      Array.isArray(options.metadata.attachments) &&
+      options.metadata.attachments.length > 0;
 
-    if (!trimmedContent || trimmedContent.length === 0) {
-      throw new HttpError(400, "Message content is required");
+    if ((!trimmedContent || trimmedContent.length === 0) && !hasAttachments) {
+      throw new HttpError(400, "Message content or attachment is required");
     }
+
+    const resolvedProjectId =
+      (await resolveProjectObjectId(projectId)) || projectId;
+    const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
 
     // Issue #5: Validate active membership server-side
     const membership = await projectMemberRepository.getProjectMembership(
-      projectId,
+      resolvedProjectId,
       senderId,
     );
     if (membership == null) {
@@ -110,7 +170,7 @@ class ChatService {
     if (options?.replyToId) {
       const parentMessage = await chatRepository.getMessageByIdAndProject(
         options.replyToId,
-        projectId,
+        resolvedProjectId,
       );
 
       if (!parentMessage) {
@@ -136,18 +196,22 @@ class ChatService {
       });
     }
 
+    const processedMetadata = await processAttachmentsCloudinary(
+      options?.metadata,
+    );
+
     const payload: CreateMessagePayload = {
-      projectId,
+      projectId: resolvedProjectId,
       senderId,
       type: options?.type ?? MessageType.TEXT,
       content: trimmedContent,
       replyToId: normalizedReplyToId,
       mentions: mentionsList,
-      metadata: options?.metadata,
+      metadata: processedMetadata,
     };
 
     const message = await chatRepository.createMessage(payload);
-    return this.toDto(message);
+    return this.toDto(message, projectUuid);
   }
 
   /**
@@ -158,8 +222,12 @@ class ChatService {
     content: string,
     metadata: IMessageMetadata,
   ): Promise<MessageDto> {
+    const resolvedProjectId =
+      (await resolveProjectObjectId(projectId)) || projectId;
+    const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
+
     const payload: CreateMessagePayload = {
-      projectId,
+      projectId: resolvedProjectId,
       senderId: null,
       type: MessageType.SYSTEM,
       content,
@@ -167,7 +235,7 @@ class ChatService {
     };
 
     const message = await chatRepository.createMessage(payload);
-    return this.toDto(message);
+    return this.toDto(message, projectUuid);
   }
 
   /**
@@ -177,18 +245,25 @@ class ChatService {
     projectId: string,
     options: PaginationOptions = {},
   ): Promise<MessageListResult> {
-    const messages = await chatRepository.getMessagesByProject(projectId, {
-      limit: (options.limit ?? 50) + 1, // Fetch one extra to check if there's more
-      before: options.before,
-      after: options.after,
-    });
+    const resolvedProjectId =
+      (await resolveProjectObjectId(projectId)) || projectId;
+    const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
+
+    const messages = await chatRepository.getMessagesByProject(
+      resolvedProjectId,
+      {
+        limit: (options.limit ?? 50) + 1, // Fetch one extra to check if there's more
+        before: options.before,
+        after: options.after,
+      },
+    );
 
     const hasMore = messages.length > (options.limit ?? 50);
     const slicedMessages = hasMore ? messages.slice(0, -1) : messages;
 
     const messagesWithReplyCount = await Promise.all(
       slicedMessages.map(async (msg) => {
-        const dto = this.toDto(msg);
+        const dto = this.toDto(msg, projectUuid);
         dto.replyCount = await chatRepository.getReplyCount(msg._id.toString());
         return dto;
       }),
@@ -246,10 +321,14 @@ class ChatService {
       metadata?: IMessageMetadata;
     },
   ): Promise<MessageDto> {
-    const trimmedContent = content.trim();
+    const trimmedContent = content?.trim() ?? "";
+    const hasAttachments =
+      options?.metadata?.attachments &&
+      Array.isArray(options.metadata.attachments) &&
+      options.metadata.attachments.length > 0;
 
-    if (!trimmedContent || trimmedContent.length === 0) {
-      throw new HttpError(400, "Message content is required");
+    if ((!trimmedContent || trimmedContent.length === 0) && !hasAttachments) {
+      throw new HttpError(400, "Message content or attachment is required");
     }
 
     // Validate active workspace membership
@@ -292,6 +371,10 @@ class ChatService {
       });
     }
 
+    const processedMetadata = await processAttachmentsCloudinary(
+      options?.metadata,
+    );
+
     const payload: CreateMessagePayload = {
       projectId: null,
       workspaceId,
@@ -301,7 +384,7 @@ class ChatService {
       content: trimmedContent,
       replyToId: options?.replyToId ?? null,
       mentions: mentionsList,
-      metadata: options?.metadata,
+      metadata: processedMetadata,
     };
 
     const message = await chatRepository.createMessage(payload);
@@ -577,7 +660,10 @@ class ChatService {
   /**
    * Convert document to DTO
    */
-  private toDto(message: chatRepository.ChatMessageDocument): MessageDto {
+  private toDto(
+    message: chatRepository.ChatMessageDocument,
+    explicitProjectUuid?: string,
+  ): MessageDto {
     const sender = this.toSenderDto(message.senderId);
     const replyTo = message.replyToId
       ? this.toReplyToDto(
@@ -591,17 +677,53 @@ class ChatService {
       mentionedBy: m.mentionedBy.toString(),
     }));
 
+    const rawProjectId = message.projectId
+      ? message.projectId.toString()
+      : null;
+    const projectUuid =
+      explicitProjectUuid ||
+      (rawProjectId
+        ? (getCachedProjectUuid(rawProjectId) ?? rawProjectId)
+        : null);
+
+    const senderId =
+      sender?.id ||
+      (message.senderId
+        ? typeof message.senderId === "object" &&
+          "_id" in (message.senderId as any)
+          ? (message.senderId as any)._id.toString()
+          : message.senderId.toString()
+        : null);
+
+    const recipientId =
+      recipient?.id ||
+      ((message as any).recipientId
+        ? typeof (message as any).recipientId === "object" &&
+          "_id" in (message as any).recipientId
+          ? (message as any).recipientId._id.toString()
+          : (message as any).recipientId.toString()
+        : null);
+
+    const replyToId =
+      replyTo?.id ||
+      (message.replyToId
+        ? typeof message.replyToId === "object" &&
+          "_id" in (message.replyToId as any)
+          ? (message.replyToId as any)._id.toString()
+          : message.replyToId.toString()
+        : null);
+
     return {
       id: message._id.toString(),
-      projectId: message.projectId ? message.projectId.toString() : null,
+      projectId: projectUuid,
       workspaceId: message.workspaceId ? message.workspaceId.toString() : null,
-      recipientId: message.recipientId ? message.recipientId.toString() : null,
+      recipientId,
       recipient,
-      senderId: message.senderId?.toString() ?? null,
+      senderId,
       sender,
       type: message.type as MessageType,
       content: message.content,
-      replyToId: message.replyToId?.toString() ?? null,
+      replyToId,
       replyTo,
       readBy: message.readBy.map((id) => id.toString()),
       reactions: message.reactions.map((r) => ({

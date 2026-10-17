@@ -14,6 +14,7 @@ import type {
 } from "../../../modules/note/repositories/note.repository.js";
 import projectService from "../../project/services/project.service.js";
 import epicService from "../../epic/services/epic.service.js";
+import { getCachedProjectUuid } from "../../../utils/project-id.js";
 
 interface NoteDto {
   id: string;
@@ -50,20 +51,26 @@ class NoteService {
     projectId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    await projectService.assertProjectOwnership(userId, projectId);
+    const access = await projectService.assertProjectRole(
+      userId,
+      projectId,
+      "ADMIN",
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const projectUuid = access.project.uuid || resolvedProjectId;
 
     const createPayload: CreateNoteRepositoryPayload = {
       entityType: "project",
       parentType: "project",
-      parentId: projectId,
-      projectId,
+      parentId: resolvedProjectId,
+      projectId: resolvedProjectId,
       epicId: null,
       title: this.normalizeTitle(payload.title),
       content: this.normalizeContent(payload.content),
     };
 
     // Issue #10: Unique note titles within project
-    const projectNotes = await getNotesByProject(projectId);
+    const projectNotes = await getNotesByProject(resolvedProjectId);
     if (
       projectNotes.some(
         (n) => n.title.toLowerCase() === createPayload.title.toLowerCase(),
@@ -76,16 +83,21 @@ class NoteService {
     }
 
     const note = await createNote(createPayload);
-    return this.toDto(note);
+    return this.toDto(note, projectUuid);
   }
 
   public async fetchProjectNotes(
     userId: string,
     projectId: string,
   ): Promise<NoteDto[]> {
-    await projectService.assertProjectMembership(userId, projectId);
-    const notes = await getNotesByProject(projectId);
-    return notes.map((note) => this.toDto(note));
+    const access = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const projectUuid = access.project.uuid || resolvedProjectId;
+    const notes = await getNotesByProject(resolvedProjectId);
+    return notes.map((note) => this.toDto(note, projectUuid));
   }
 
   public async createEpicNote(
@@ -94,21 +106,27 @@ class NoteService {
     epicId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    await projectService.assertProjectOwnership(userId, projectId);
-    await epicService.assertEpicInProject(projectId, epicId);
+    const access = await projectService.assertProjectRole(
+      userId,
+      projectId,
+      "ADMIN",
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const projectUuid = access.project.uuid || resolvedProjectId;
+    await epicService.assertEpicInProject(resolvedProjectId, epicId);
 
     const createPayload: CreateNoteRepositoryPayload = {
       entityType: "epic",
       parentType: "epic",
       parentId: epicId,
-      projectId,
+      projectId: resolvedProjectId,
       epicId,
       title: this.normalizeTitle(payload.title),
       content: this.normalizeContent(payload.content),
     };
 
     // Issue #10: Unique note titles within project
-    const projectNotes = await getNotesByProject(projectId);
+    const projectNotes = await getNotesByProject(resolvedProjectId);
     if (
       projectNotes.some(
         (n) => n.title.toLowerCase() === createPayload.title.toLowerCase(),
@@ -121,7 +139,7 @@ class NoteService {
     }
 
     const note = await createNote(createPayload);
-    return this.toDto(note);
+    return this.toDto(note, projectUuid);
   }
 
   public async fetchEpicNotes(
@@ -129,10 +147,15 @@ class NoteService {
     projectId: string,
     epicId: string,
   ): Promise<NoteDto[]> {
-    await projectService.assertProjectMembership(userId, projectId);
-    await epicService.assertEpicInProject(projectId, epicId);
-    const notes = await getNotesByEpic(projectId, epicId);
-    return notes.map((note) => this.toDto(note));
+    const access = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const projectUuid = access.project.uuid || resolvedProjectId;
+    await epicService.assertEpicInProject(resolvedProjectId, epicId);
+    const notes = await getNotesByEpic(resolvedProjectId, epicId);
+    return notes.map((note) => this.toDto(note, projectUuid));
   }
 
   public async fetchNotesByParent(
@@ -255,14 +278,24 @@ class NoteService {
     return note;
   }
 
-  private toDto(note: INoteDocument): NoteDto {
+  private toDto(note: INoteDocument, explicitProjectUuid?: string): NoteDto {
+    const rawProjectId = note.projectId?.toString() ?? "";
+    const projectUuid =
+      explicitProjectUuid ||
+      (rawProjectId
+        ? (getCachedProjectUuid(rawProjectId) ?? rawProjectId)
+        : "");
+
     return {
       id: note._id.toString(),
       entityType:
         note.entityType ?? (note.parentType === "project" ? "project" : "epic"),
       parentType: note.parentType,
-      parentId: note.parentId.toString(),
-      projectId: note.projectId?.toString() ?? "",
+      parentId:
+        note.parentType === "project"
+          ? projectUuid || note.parentId.toString()
+          : note.parentId.toString(),
+      projectId: projectUuid,
       epicId: note.epicId?.toString() ?? null,
       title: note.title,
       content: note.content,

@@ -18,6 +18,10 @@ import type {
 } from "../../../interfaces/prompt/prompt.interface.js";
 
 import { HttpError } from "../../../shared/errors/http-error.js";
+import {
+  resolveProjectObjectId,
+  resolveProjectUuid,
+} from "../../../utils/project-id.js";
 
 export { HttpError };
 
@@ -135,12 +139,16 @@ export class PromptService {
     }
 
     try {
+      const resolvedProjectId = payload.projectId
+        ? (await resolveProjectObjectId(payload.projectId)) || payload.projectId
+        : null;
+
       return await runInTransaction(async (session) => {
         const promptDocs = await PromptLibraryModel.create(
           [
             {
               workspaceId,
-              projectId: payload.projectId || null,
+              projectId: resolvedProjectId,
               name: payload.name.trim(),
               slug,
               description: payload.description || "",
@@ -189,7 +197,12 @@ export class PromptService {
           session,
         );
 
-        return prompt;
+        const rawPid = prompt.projectId ? prompt.projectId.toString() : null;
+        const projectUuid = rawPid
+          ? (await resolveProjectUuid(rawPid)) || rawPid
+          : null;
+        const promptObj = prompt.toObject ? prompt.toObject() : prompt;
+        return { ...promptObj, projectId: projectUuid };
       });
     } catch (err: any) {
       if (err.code === 11000 && err.keyPattern?.slug) {
@@ -235,6 +248,14 @@ export class PromptService {
 
       const rootPromptId = targetPrompt.parentId || targetPrompt._id;
       let existing = targetPrompt;
+
+      const resolvedProjectId =
+        payload.projectId !== undefined
+          ? payload.projectId
+            ? (await resolveProjectObjectId(payload.projectId)) ||
+              payload.projectId
+            : null
+          : undefined;
 
       if (payload.folderId !== undefined && payload.folderId !== null) {
         const folder = await PromptFolderModel.findOne({
@@ -338,8 +359,8 @@ export class PromptService {
               workspaceId,
               parentId: rootPromptId,
               projectId:
-                payload.projectId !== undefined
-                  ? payload.projectId
+                resolvedProjectId !== undefined
+                  ? resolvedProjectId
                   : existing.projectId,
               name:
                 payload.name !== undefined
@@ -393,7 +414,16 @@ export class PromptService {
           { session },
         );
 
-        return updatedPrompt;
+        const rawUpdatedPid = updatedPrompt.projectId
+          ? updatedPrompt.projectId.toString()
+          : null;
+        const updatedProjectUuid = rawUpdatedPid
+          ? (await resolveProjectUuid(rawUpdatedPid)) || rawUpdatedPid
+          : null;
+        const updatedObj = updatedPrompt.toObject
+          ? updatedPrompt.toObject()
+          : updatedPrompt;
+        return { ...updatedObj, projectId: updatedProjectUuid };
       } else {
         if (payload.name !== undefined) existing.name = payload.name.trim();
         if (payload.description !== undefined)
@@ -403,14 +433,22 @@ export class PromptService {
           existing.tags = payload.tags.map((t) => t.toLowerCase().trim());
         if (payload.folderId !== undefined)
           existing.folderId = payload.folderId as any;
-        if (payload.projectId !== undefined)
-          existing.projectId = payload.projectId as any;
+        if (resolvedProjectId !== undefined)
+          existing.projectId = resolvedProjectId as any;
         if (payload.visibility) existing.visibility = payload.visibility;
         if (payload.parameters !== undefined)
           existing.parameters = payload.parameters as any;
 
         await existing.save({ session: session || undefined });
-        return existing;
+
+        const rawExistingPid = existing.projectId
+          ? existing.projectId.toString()
+          : null;
+        const existingProjectUuid = rawExistingPid
+          ? (await resolveProjectUuid(rawExistingPid)) || rawExistingPid
+          : null;
+        const existingObj = existing.toObject ? existing.toObject() : existing;
+        return { ...existingObj, projectId: existingProjectUuid };
       }
     });
   }

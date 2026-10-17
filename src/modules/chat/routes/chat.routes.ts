@@ -21,6 +21,7 @@ class ChatRoutes implements Routes {
     this.router.get("/messages", chatController.getMessages);
     this.router.post("/messages", chatController.sendMessage);
     this.router.put("/messages/:messageId", chatController.editMessage);
+    this.router.patch("/messages/:messageId", chatController.editMessage);
     this.router.delete("/messages/:messageId", chatController.deleteMessage);
 
     // Thread replies

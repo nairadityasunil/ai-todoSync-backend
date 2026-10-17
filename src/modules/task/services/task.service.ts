@@ -33,6 +33,12 @@ import { buildRefInMatch, buildRefMatch } from "../../../utils/mongo-ref.js";
 import operationalAnalyticsService from "../../analytics/services/operational-analytics.service.js";
 import slaService from "./sla.service.js";
 import priorityEngineService from "./priority-engine.service.js";
+import {
+  buildProjectUuidMap,
+  getCachedProjectUuid,
+  resolveProjectObjectId,
+  resolveProjectUuid,
+} from "../../../utils/project-id.js";
 
 interface TaskUserDto {
   id: string;
@@ -141,11 +147,12 @@ class TaskService {
     payload.epicId = this.normalizeNullableId(payload.epicId);
 
     if (payload.projectId) {
-      await projectService.assertProjectRole(
+      const access = await projectService.assertProjectRole(
         payload.userId,
         payload.projectId,
         "MEMBER",
       );
+      payload.projectId = access.project._id.toString();
     }
 
     const resolved = await this.resolveEpicId(
@@ -208,12 +215,22 @@ class TaskService {
 
     await priorityEngineService.evaluateAndPersist(task, payload.userId);
 
+    const projectUuid = task.projectId
+      ? (await resolveProjectUuid(task.projectId.toString())) ||
+        task.projectId.toString()
+      : null;
+    const uuidMap =
+      task.projectId && projectUuid
+        ? new Map([[task.projectId.toString(), projectUuid]])
+        : undefined;
+
     return this.toDto(
       payload.userId,
       task,
       payload.projectId
         ? new Map([[payload.projectId, "ADMIN" as const]])
         : new Map(),
+      uuidMap,
     );
   }
 
@@ -238,7 +255,13 @@ class TaskService {
           search,
         )
       : await getTasksByUser(userId, projectIds, assigneeId, search);
-    return tasks.map((task) => this.toDto(userId, task, roleMap));
+
+    const taskProjectIds = tasks
+      .map((t) => t.projectId?.toString())
+      .filter((id): id is string => Boolean(id));
+    const uuidMap = await buildProjectUuidMap(taskProjectIds);
+
+    return tasks.map((task) => this.toDto(userId, task, roleMap, uuidMap));
   }
 
   public async getTasksAssignedToMe(
@@ -257,8 +280,13 @@ class TaskService {
       .populate(taskPopulateOptions)
       .exec();
 
+    const taskProjectIds = tasks
+      .map((t) => t.projectId?.toString())
+      .filter((id): id is string => Boolean(id));
+    const uuidMap = await buildProjectUuidMap(taskProjectIds);
+
     return tasks.map((task) =>
-      this.toDto(userId, task as TaskDocumentWithAssignee, roleMap),
+      this.toDto(userId, task as TaskDocumentWithAssignee, roleMap, uuidMap),
     );
   }
 
@@ -329,11 +357,12 @@ class TaskService {
       Object.prototype.hasOwnProperty.call(updates, "projectId") &&
       updates.projectId
     ) {
-      await projectService.assertProjectRole(
+      const access = await projectService.assertProjectRole(
         userId,
         updates.projectId,
         "ADMIN",
       );
+      updates.projectId = access.project._id.toString();
     }
 
     const nextProjectId = Object.prototype.hasOwnProperty.call(
@@ -418,7 +447,16 @@ class TaskService {
     this.recordTaskUpdateEvents(userId, currentTask, updated);
     await priorityEngineService.evaluateAndPersist(updated, userId);
 
-    return this.toDto(userId, updated, roleMap);
+    const projectUuid = updated.projectId
+      ? (await resolveProjectUuid(updated.projectId.toString())) ||
+        updated.projectId.toString()
+      : null;
+    const uuidMap =
+      updated.projectId && projectUuid
+        ? new Map([[updated.projectId.toString(), projectUuid]])
+        : undefined;
+
+    return this.toDto(userId, updated, roleMap, uuidMap);
   }
 
   public async assignTask(
@@ -764,14 +802,23 @@ class TaskService {
     currentUserId: string,
     task: TaskDocumentWithAssignee,
     roleMap: Map<string, ProjectRole>,
+    uuidMap?: Map<string, string>,
   ): TaskDto {
-    const projectId = task.projectId?.toString() ?? null;
-    const currentRole = projectId ? (roleMap.get(projectId) ?? null) : null;
+    const rawProjectId = task.projectId?.toString() ?? null;
+    const currentRole = rawProjectId
+      ? (roleMap.get(rawProjectId) ?? null)
+      : null;
     const permissions = this.getTaskPermission(
       currentUserId,
       task,
       currentRole,
     );
+
+    const projectId = rawProjectId
+      ? (uuidMap?.get(rawProjectId) ??
+        getCachedProjectUuid(rawProjectId) ??
+        rawProjectId)
+      : null;
 
     return {
       id: task._id.toString(),
@@ -1262,6 +1309,9 @@ class TaskService {
       return null;
     }
 
+    const uuidRegex =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
     if (typeof value === "object") {
       const obj = value as Record<string, unknown>;
       if (obj._id != null) {
@@ -1272,7 +1322,7 @@ class TaskService {
       }
       if (typeof (value as any).toString === "function") {
         const s = (value as any).toString();
-        if (/^[a-f0-9]{24}$/i.test(s)) return s;
+        if (/^[a-f0-9]{24}$/i.test(s) || uuidRegex.test(s)) return s;
       }
       return null;
     }
@@ -1286,7 +1336,7 @@ class TaskService {
       return null;
     }
 
-    if (/^[a-f0-9]{24}$/i.test(trimmed)) {
+    if (/^[a-f0-9]{24}$/i.test(trimmed) || uuidRegex.test(trimmed)) {
       return trimmed;
     }
 

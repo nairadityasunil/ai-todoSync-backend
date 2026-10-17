@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
-import type { IProjectDocument } from "../models/project.model.js";
+import ProjectModel, {
+  type IProjectDocument,
+} from "../models/project.model.js";
 import type { ProjectRole } from "../models/project-member.model.js";
 import {
   findUserById,
@@ -241,6 +243,7 @@ class ProjectService {
       projectId,
       "project.update",
     );
+    const resolvedProjectId = access.project._id.toString();
     const updates: ProjectPayload = {};
 
     if (Object.prototype.hasOwnProperty.call(payload, "name")) {
@@ -255,7 +258,7 @@ class ProjectService {
     }
 
     try {
-      const project = await updateProject(projectId, updates);
+      const project = await updateProject(resolvedProjectId, updates);
 
       if (project == null) {
         throw new HttpError(404, "Project not found");
@@ -271,8 +274,13 @@ class ProjectService {
     projectId: string,
     userId: string,
   ): Promise<IProjectDocument> {
-    await this.assertProjectPermission(userId, projectId, "project.delete");
-    const project = await deleteProjectWithRelations(projectId);
+    const access = await this.assertProjectPermission(
+      userId,
+      projectId,
+      "project.delete",
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const project = await deleteProjectWithRelations(resolvedProjectId);
 
     if (project == null) {
       throw new HttpError(404, "Project not found");
@@ -302,12 +310,13 @@ class ProjectService {
     userId: string,
     projectId: string,
   ): Promise<ProjectMemberDto[]> {
-    await this.assertProjectMembership(userId, projectId);
-    const members = await getProjectMembers(projectId);
+    const { project } = await this.assertProjectMembership(userId, projectId);
+    const resolvedProjectId = project._id.toString();
+    const members = await getProjectMembers(resolvedProjectId);
 
     return members.map((member) => ({
       id: member.id,
-      projectId: member.projectId,
+      projectId: project.uuid || member.projectId,
       userId: member.userId,
       role: member.role,
       createdAt: member.createdAt,
@@ -324,11 +333,12 @@ class ProjectService {
     projectId: string,
     payload: AddProjectMemberPayload,
   ): Promise<ProjectMemberDto> {
-    const { workspaceAccess } = await this.assertProjectRole(
+    const { workspaceAccess, project } = await this.assertProjectRole(
       actorUserId,
       projectId,
       "ADMIN",
     );
+    const resolvedProjectId = project._id.toString();
     const targetUserId = this.normalizeIdentifier(
       payload.userId,
       "User id is required",
@@ -340,7 +350,7 @@ class ProjectService {
     );
     const [user, existingMembership] = await Promise.all([
       findUserById(targetUserId),
-      getProjectMembership(projectId, targetUserId),
+      getProjectMembership(resolvedProjectId, targetUserId),
     ]);
 
     if (user == null) {
@@ -353,7 +363,7 @@ class ProjectService {
 
     try {
       const member = await createProjectMember({
-        projectId,
+        projectId: resolvedProjectId,
         userId: targetUserId,
         role: "MEMBER",
         grantedBy: actorUserId,
@@ -361,7 +371,7 @@ class ProjectService {
 
       return {
         id: member._id.toString(),
-        projectId: member.projectId.toString(),
+        projectId: project.uuid || member.projectId.toString(),
         userId: user._id.toString(),
         role: member.role,
         createdAt: member.createdAt,
@@ -381,8 +391,16 @@ class ProjectService {
     projectId: string,
     targetUserId: string,
   ): Promise<void> {
-    await this.assertProjectRole(actorUserId, projectId, "ADMIN");
-    const membership = await getProjectMembership(projectId, targetUserId);
+    const { project } = await this.assertProjectRole(
+      actorUserId,
+      projectId,
+      "ADMIN",
+    );
+    const resolvedProjectId = project._id.toString();
+    const membership = await getProjectMembership(
+      resolvedProjectId,
+      targetUserId,
+    );
 
     if (membership == null) {
       throw new HttpError(404, "Project member not found");
@@ -397,8 +415,12 @@ class ProjectService {
 
     try {
       await runInTransaction(async (session) => {
-        await deleteProjectMembership(projectId, targetUserId, session);
-        await clearTaskAssignmentsForUser(projectId, targetUserId, session);
+        await deleteProjectMembership(resolvedProjectId, targetUserId, session);
+        await clearTaskAssignmentsForUser(
+          resolvedProjectId,
+          targetUserId,
+          session,
+        );
       });
     } catch (error) {
       throw this.mapPersistenceError(error);
@@ -406,7 +428,9 @@ class ProjectService {
   }
 
   public async leaveProject(userId: string, projectId: string): Promise<void> {
-    const membership = await getProjectMembership(projectId, userId);
+    const { project } = await this.assertProjectMembership(userId, projectId);
+    const resolvedProjectId = project._id.toString();
+    const membership = await getProjectMembership(resolvedProjectId, userId);
 
     if (membership == null) {
       throw new HttpError(404, "You are not a member of this project");
@@ -421,8 +445,8 @@ class ProjectService {
 
     try {
       await runInTransaction(async (session) => {
-        await deleteProjectMembership(projectId, userId, session);
-        await clearTaskAssignmentsForUser(projectId, userId, session);
+        await deleteProjectMembership(resolvedProjectId, userId, session);
+        await clearTaskAssignmentsForUser(resolvedProjectId, userId, session);
       });
     } catch (error) {
       throw this.mapPersistenceError(error);
@@ -622,11 +646,14 @@ class ProjectService {
     currentUserRole: ProjectRole,
   ): ProjectDto {
     const creatorUser = project.userId as any;
-    const effectiveUuid = project.uuid || project._id.toString();
+    let effectiveUuid = project.uuid;
 
-    if (!project.uuid) {
-      project.uuid = crypto.randomUUID();
-      void project.save().catch(() => {});
+    if (!effectiveUuid) {
+      effectiveUuid = crypto.randomUUID();
+      project.uuid = effectiveUuid;
+      void ProjectModel.collection
+        .updateOne({ _id: project._id }, { $set: { uuid: effectiveUuid } })
+        .catch(() => {});
     }
 
     const dto: ProjectDto = {

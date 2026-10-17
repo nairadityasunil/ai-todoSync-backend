@@ -11,14 +11,16 @@ class HealthRoutes implements Routes {
   }
 
   private initializeRoutes() {
-    this.router.get(`${this.path}`, (_req, res) => {
+    const handler = (_req: any, res: any) => {
       const dbConnected = isDatabaseConnected();
       res.status(200).json({
         status: dbConnected ? "ok" : "degraded",
         database: dbConnected ? "connected" : "disconnected",
         timestamp: new Date().toISOString(),
       });
-    });
+    };
+    this.router.get("/", handler);
+    this.router.get("/health", handler);
   }
 }
 

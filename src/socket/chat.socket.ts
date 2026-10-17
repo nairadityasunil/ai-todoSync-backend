@@ -10,6 +10,10 @@ import authService from "../modules/auth/services/auth.service.js";
 import chatService from "../modules/chat/services/chat.service.js";
 import env from "../config/env.js";
 import logger from "../lib/logger.js";
+import {
+  resolveProjectObjectId,
+  resolveProjectUuid,
+} from "../utils/project-id.js";
 
 /**
  * Socket.IO events for real-time chat
@@ -64,6 +68,7 @@ interface MessagePayload {
   content: string;
   replyToId?: string;
   mentions?: string[];
+  clientMessageId?: string;
 }
 
 interface EditMessagePayload {
@@ -84,7 +89,9 @@ interface ReactionPayload {
 }
 
 interface TypingPayload {
-  projectId: string;
+  projectId?: string;
+  workspaceId?: string;
+  recipientId?: string;
 }
 
 interface JoinProjectPayload {
@@ -319,9 +326,13 @@ class ChatSocketServer {
       const { projectId } = payload;
       const userId = socket.user!._id.toString();
 
+      const resolvedProjectId =
+        (await resolveProjectObjectId(projectId)) || projectId;
+      const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
+
       // Verify project membership
       const membership = await ProjectMemberModel.findOne({
-        projectId,
+        projectId: resolvedProjectId,
         userId,
       });
 
@@ -335,22 +346,30 @@ class ChatSocketServer {
         socket.leave(`project:${socket.currentProjectId}`);
       }
 
-      // Join new project room
+      // Join rooms for both representations so events are received regardless of format
       socket.join(`project:${projectId}`);
-      socket.currentProjectId = projectId;
+      socket.join(`project:${resolvedProjectId}`);
+      socket.join(`project:${projectUuid}`);
+      socket.currentProjectId = projectUuid;
 
       // Broadcast user joined
-      socket.to(`project:${projectId}`).emit(ChatSocketEvents.PRESENCE_JOIN, {
-        userId,
-        timestamp: new Date().toISOString(),
-      });
+      socket
+        .to(`project:${projectUuid}`)
+        .to(`project:${resolvedProjectId}`)
+        .emit(ChatSocketEvents.PRESENCE_JOIN, {
+          userId,
+          timestamp: new Date().toISOString(),
+        });
 
       // Get unread count
-      const unreadCount = await chatService.getUnreadCount(projectId, userId);
+      const unreadCount = await chatService.getUnreadCount(
+        resolvedProjectId,
+        userId,
+      );
 
       const response = {
         success: true,
-        projectId,
+        projectId: projectUuid,
         unreadCount,
       };
 
@@ -486,20 +505,31 @@ class ChatSocketServer {
           { recipientId, replyToId, mentions },
         );
 
+        if (payload.clientMessageId) {
+          (message as any).clientMessageId = payload.clientMessageId;
+        }
+
         if (recipientId) {
           // Direct 1-on-1 message: emit to recipient's personal room & sender's room
           this.io!.to(`user:${recipientId}`)
             .to(`user:${userId}`)
-            .emit(ChatSocketEvents.MESSAGE_RECEIVE, { message });
+            .emit(ChatSocketEvents.MESSAGE_RECEIVE, {
+              message,
+              clientMessageId: payload.clientMessageId,
+            });
         } else {
           // Workspace common lounge
           this.io!.to(`workspace:${workspaceId}`).emit(
             ChatSocketEvents.MESSAGE_RECEIVE,
-            { message },
+            { message, clientMessageId: payload.clientMessageId },
           );
         }
 
-        socket.emit(ChatSocketEvents.MESSAGE_SEND, { success: true, message });
+        socket.emit(ChatSocketEvents.MESSAGE_SEND, {
+          success: true,
+          message,
+          clientMessageId: payload.clientMessageId,
+        });
         return;
       }
 
@@ -512,10 +542,17 @@ class ChatSocketServer {
         return;
       }
 
+      const resolvedProjectId =
+        (await resolveProjectObjectId(projectId)) || projectId;
+      const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
+
       // Verify user is in the project room or auto-join if member
-      if (socket.currentProjectId !== projectId) {
+      if (
+        socket.currentProjectId !== projectUuid &&
+        socket.currentProjectId !== resolvedProjectId
+      ) {
         const membership = await ProjectMemberModel.findOne({
-          projectId,
+          projectId: resolvedProjectId,
           userId,
         });
         if (!membership) {
@@ -523,24 +560,42 @@ class ChatSocketServer {
           return;
         }
         socket.join(`project:${projectId}`);
-        socket.currentProjectId = projectId;
+        socket.join(`project:${resolvedProjectId}`);
+        socket.join(`project:${projectUuid}`);
+        socket.currentProjectId = projectUuid;
       }
 
       const message = await chatService.sendMessage(
-        projectId,
+        resolvedProjectId,
         userId,
         content,
         { replyToId, mentions },
       );
 
+      // Ensure message.projectId sent to socket is projectUuid!
+      if (!message.projectId || message.projectId === resolvedProjectId) {
+        message.projectId = projectUuid;
+      }
+
+      if (payload.clientMessageId) {
+        (message as any).clientMessageId = payload.clientMessageId;
+      }
+
       // Broadcast to all project members
-      this.io!.to(`project:${projectId}`).emit(
-        ChatSocketEvents.MESSAGE_RECEIVE,
-        { message },
-      );
+      this.io!.to(`project:${projectId}`)
+        .to(`project:${resolvedProjectId}`)
+        .to(`project:${projectUuid}`)
+        .emit(ChatSocketEvents.MESSAGE_RECEIVE, {
+          message,
+          clientMessageId: payload.clientMessageId,
+        });
 
       // Also emit to sender for confirmation
-      socket.emit(ChatSocketEvents.MESSAGE_SEND, { success: true, message });
+      socket.emit(ChatSocketEvents.MESSAGE_SEND, {
+        success: true,
+        message,
+        clientMessageId: payload.clientMessageId,
+      });
     } catch (error) {
       logger.error("Error sending message", error as Error);
       socket.emit("error", {
@@ -734,16 +789,42 @@ class ChatSocketServer {
     socket: AuthenticatedSocket,
     payload: TypingPayload,
   ): Promise<void> {
-    const { projectId } = payload;
+    const { projectId, workspaceId, recipientId } = payload;
     const userId = socket.user!._id.toString();
     const user = socket.user!;
 
-    socket.to(`project:${projectId}`).emit(ChatSocketEvents.TYPING_UPDATE, {
-      projectId,
-      userId,
-      userName: user.name || user.email,
-      isTyping: true,
-    });
+    if (projectId) {
+      const resolvedProjectId =
+        (await resolveProjectObjectId(projectId)) || projectId;
+      const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
+      socket
+        .to(`project:${projectUuid}`)
+        .to(`project:${resolvedProjectId}`)
+        .to(`project:${projectId}`)
+        .emit(ChatSocketEvents.TYPING_UPDATE, {
+          projectId: projectUuid,
+          userId,
+          userName: user.name || user.email,
+          isTyping: true,
+        });
+    } else if (recipientId) {
+      this.io?.to(`user:${recipientId}`).emit(ChatSocketEvents.TYPING_UPDATE, {
+        workspaceId,
+        recipientId,
+        userId,
+        userName: user.name || user.email,
+        isTyping: true,
+      });
+    } else if (workspaceId) {
+      socket
+        .to(`workspace:${workspaceId}`)
+        .emit(ChatSocketEvents.TYPING_UPDATE, {
+          workspaceId,
+          userId,
+          userName: user.name || user.email,
+          isTyping: true,
+        });
+    }
   }
 
   /**
@@ -753,14 +834,38 @@ class ChatSocketServer {
     socket: AuthenticatedSocket,
     payload: TypingPayload,
   ): Promise<void> {
-    const { projectId } = payload;
+    const { projectId, workspaceId, recipientId } = payload;
     const userId = socket.user!._id.toString();
 
-    socket.to(`project:${projectId}`).emit(ChatSocketEvents.TYPING_UPDATE, {
-      projectId,
-      userId,
-      isTyping: false,
-    });
+    if (projectId) {
+      const resolvedProjectId =
+        (await resolveProjectObjectId(projectId)) || projectId;
+      const projectUuid = (await resolveProjectUuid(projectId)) || projectId;
+      socket
+        .to(`project:${projectUuid}`)
+        .to(`project:${resolvedProjectId}`)
+        .to(`project:${projectId}`)
+        .emit(ChatSocketEvents.TYPING_UPDATE, {
+          projectId: projectUuid,
+          userId,
+          isTyping: false,
+        });
+    } else if (recipientId) {
+      this.io?.to(`user:${recipientId}`).emit(ChatSocketEvents.TYPING_UPDATE, {
+        workspaceId,
+        recipientId,
+        userId,
+        isTyping: false,
+      });
+    } else if (workspaceId) {
+      socket
+        .to(`workspace:${workspaceId}`)
+        .emit(ChatSocketEvents.TYPING_UPDATE, {
+          workspaceId,
+          userId,
+          isTyping: false,
+        });
+    }
   }
 
   /**

@@ -2,11 +2,11 @@ import ApprovalWorkflowModel, {
   type ApprovalAction,
   type ApprovalStatus,
 } from "../../../modules/approval-workflow/models/approval-workflow.model.js";
-import ProjectMemberModel from "../../project/models/project-member.model.js";
+import { getProjectMembership } from "../../project/repositories/project-member.repository.js";
 import TaskModel, { type TaskPriority } from "../../task/models/task.model.js";
 import activityLogService from "../../audit/services/activity-log.service.js";
 import projectService from "../../project/services/project.service.js";
-import { buildRefMatch } from "../../../utils/mongo-ref.js";
+import { resolveProjectUuid } from "../../../utils/project-id.js";
 
 class HttpError extends Error {
   public status: number;
@@ -30,22 +30,28 @@ class ApprovalWorkflowService {
       payload?: unknown;
     },
   ) {
-    const projectId = this.requiredString(payload.projectId, "projectId");
-    await projectService.assertProjectRole(actorUserId, projectId, "MEMBER");
+    const rawProjectId = this.requiredString(payload.projectId, "projectId");
+    const access = await projectService.assertProjectRole(
+      actorUserId,
+      rawProjectId,
+      "MEMBER",
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const publicProjectUuid = access.project.uuid || resolvedProjectId;
     const approverUserIds = this.normalizeApprovers(payload.approverUserIds);
 
     for (const approverUserId of approverUserIds) {
-      const isMember = await ProjectMemberModel.exists({
-        ...buildRefMatch("projectId", projectId),
-        ...buildRefMatch("userId", approverUserId),
-      });
+      const isMember = await getProjectMembership(
+        resolvedProjectId,
+        approverUserId,
+      );
       if (!isMember) {
         throw new HttpError(400, "All approvers must be project members");
       }
     }
 
     const workflow = await ApprovalWorkflowModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       taskId: this.optionalString(payload.taskId),
       requestedBy: actorUserId,
       action: this.normalizeAction(payload.action),
@@ -63,9 +69,9 @@ class ApprovalWorkflowService {
     });
 
     await activityLogService.logActivity({
-      projectId,
+      projectId: publicProjectUuid,
       entityType: "project",
-      entityId: projectId,
+      entityId: publicProjectUuid,
       action: "created",
       userId: actorUserId,
       userName: "System",
@@ -74,18 +80,24 @@ class ApprovalWorkflowService {
       metadata: { action: workflow.action, taskId: workflow.taskId },
     });
 
-    return this.toDto(workflow);
+    return this.toDto(workflow, publicProjectUuid);
   }
 
   public async listApprovals(userId: string, projectId: string) {
-    await projectService.assertProjectRole(userId, projectId, "MEMBER");
+    const access = await projectService.assertProjectRole(
+      userId,
+      projectId,
+      "MEMBER",
+    );
+    const resolvedProjectId = access.project._id.toString();
+    const publicProjectUuid = access.project.uuid || resolvedProjectId;
     const workflows = await ApprovalWorkflowModel.find({
-      ...buildRefMatch("projectId", projectId),
+      projectId: resolvedProjectId,
     })
       .sort({ createdAt: -1 })
       .lean();
 
-    return workflows.map((workflow) => this.toDto(workflow));
+    return workflows.map((workflow) => this.toDto(workflow, publicProjectUuid));
   }
 
   public async decide(
@@ -142,10 +154,14 @@ class ApprovalWorkflowService {
 
     await workflow.save();
 
+    const publicProjectUuid =
+      (await resolveProjectUuid(workflow.projectId.toString())) ||
+      workflow.projectId.toString();
+
     await activityLogService.logActivity({
-      projectId: workflow.projectId.toString(),
+      projectId: publicProjectUuid,
       entityType: workflow.taskId ? "task" : "project",
-      entityId: workflow.taskId?.toString() ?? workflow.projectId.toString(),
+      entityId: workflow.taskId?.toString() ?? publicProjectUuid,
       action: decision === "APPROVED" ? "approved" : "rejected",
       userId: actorUserId,
       userName: "System",
@@ -154,7 +170,7 @@ class ApprovalWorkflowService {
       metadata: { action: workflow.action, finalStatus: workflow.status },
     });
 
-    return this.toDto(workflow);
+    return this.toDto(workflow, publicProjectUuid);
   }
 
   private async applyApprovedAction(workflow: any): Promise<void> {
@@ -217,10 +233,10 @@ class ApprovalWorkflowService {
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
-  private toDto(workflow: any) {
+  private toDto(workflow: any, projectUuid?: string) {
     return {
       id: workflow._id.toString(),
-      projectId: workflow.projectId.toString(),
+      projectId: projectUuid || workflow.projectId.toString(),
       taskId: workflow.taskId?.toString() ?? null,
       requestedBy: workflow.requestedBy.toString(),
       action: workflow.action,

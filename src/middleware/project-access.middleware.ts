@@ -50,6 +50,18 @@ export const isProjectMember = async (
       projectId,
     );
 
+    const resolvedObjectId = req.projectAccess.project._id.toString();
+    if (req.params.projectId) {
+      req.params.projectId = resolvedObjectId;
+    }
+    if (
+      req.params.id &&
+      (req.params.id === projectId ||
+        req.params.id === req.projectAccess.project.uuid)
+    ) {
+      req.params.id = resolvedObjectId;
+    }
+
     next();
   } catch (error) {
     const status = (error as { status?: number }).status ?? 500;

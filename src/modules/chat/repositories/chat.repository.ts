@@ -1,10 +1,10 @@
 import type { ClientSession } from "mongoose";
-
 import ChatMessageModel, {
   type IChatMessageDocument,
   type IMessageMetadata,
   MessageType,
 } from "../../../modules/chat/models/chat-message.model.js";
+import { resolveProjectObjectId } from "../../../utils/project-id.js";
 
 export type ChatMessageDocument = IChatMessageDocument;
 
@@ -64,11 +64,14 @@ export const createMessage = async (
   payload: CreateMessagePayload,
   session?: ClientSession,
 ): Promise<ChatMessageDocument> => {
+  const resolvedProjectId = payload.projectId
+    ? (await resolveProjectObjectId(payload.projectId)) || payload.projectId
+    : null;
   const message = await ChatMessageModel.create(
     [
       {
         ...payload,
-        projectId: payload.projectId ?? null,
+        projectId: resolvedProjectId,
         workspaceId: payload.workspaceId ?? null,
         recipientId: payload.recipientId ?? null,
         type: payload.type ?? MessageType.TEXT,
@@ -93,9 +96,13 @@ export const getMessagesByProject = async (
   projectId: string,
   options: PaginationOptions = {},
 ): Promise<ChatMessageDocument[]> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   const { limit = 50, before, after } = options;
 
-  const query: Record<string, unknown> = { projectId };
+  const query: Record<string, unknown> = {
+    projectId: resolvedProjectId,
+  };
 
   if (before) {
     query.createdAt = {
@@ -172,9 +179,11 @@ export const getMessageByIdAndProject = async (
   messageId: string,
   projectId: string,
 ): Promise<ChatMessageDocument | null> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   return ChatMessageModel.findOne({
     _id: messageId,
-    projectId,
+    projectId: resolvedProjectId,
   })
     .populate([senderPopulation, replyToPopulation])
     .exec();
@@ -285,8 +294,10 @@ export const markMessagesAsRead = async (
   messageIds?: string[],
   session?: ClientSession,
 ): Promise<void> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   const query: Record<string, unknown> = {
-    projectId,
+    projectId: resolvedProjectId,
     senderId: { $ne: userId }, // Don't mark own messages as read
     readBy: { $ne: userId },
   };
@@ -309,8 +320,10 @@ export const getUnreadCount = async (
   projectId: string,
   userId: string,
 ): Promise<number> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   return ChatMessageModel.countDocuments({
-    projectId,
+    projectId: resolvedProjectId,
     senderId: { $ne: userId },
     readBy: { $ne: userId },
   }).exec();
@@ -353,12 +366,14 @@ export const searchMessages = async (
   query: string,
   options: PaginationOptions = {},
 ): Promise<ChatMessageDocument[]> => {
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
   const { limit = 20 } = options;
 
   const searchRegex = { $regex: query.trim(), $options: "i" };
 
   return ChatMessageModel.find({
-    projectId,
+    projectId: resolvedProjectId,
     content: searchRegex,
     isDeleted: false,
   })
@@ -375,5 +390,10 @@ export const deleteAllMessagesInProject = async (
   projectId: string,
   session?: ClientSession,
 ): Promise<void> => {
-  await ChatMessageModel.deleteMany({ projectId }, { session }).exec();
+  const resolvedProjectId =
+    (await resolveProjectObjectId(projectId)) || projectId;
+  await ChatMessageModel.deleteMany(
+    { projectId: resolvedProjectId },
+    { session },
+  ).exec();
 };

@@ -37,22 +37,23 @@ class AiPlanningService {
       userId,
       projectId,
     );
+    const resolvedProjectId = access.project._id.toString();
     const [milestones, tasks, notes, team] = await Promise.all([
-      EpicModel.find(buildSafeRefMatch("projectId", projectId))
+      EpicModel.find(buildSafeRefMatch("projectId", resolvedProjectId))
         .sort({ order: 1, _id: 1 })
         .lean(),
-      TaskModel.find(buildSafeRefMatch("projectId", projectId))
+      TaskModel.find(buildSafeRefMatch("projectId", resolvedProjectId))
         .sort({ date: 1, order: 1, _id: 1 })
         .lean(),
-      NoteModel.find(buildSafeRefMatch("projectId", projectId))
+      NoteModel.find(buildSafeRefMatch("projectId", resolvedProjectId))
         .sort({ updatedAt: -1, _id: -1 })
         .lean(),
-      projectService.fetchProjectMembers(userId, projectId),
+      projectService.fetchProjectMembers(userId, resolvedProjectId),
     ]);
 
     return {
       project: {
-        id: access.project._id.toString(),
+        id: access.project.uuid || access.project._id.toString(),
         name: access.project.name,
         description: access.project.description ?? "",
         workspaceId: access.project.workspaceId
@@ -98,9 +99,13 @@ class AiPlanningService {
   }
 
   public async listSessions(userId: string, projectId: string) {
-    await projectService.assertProjectMembership(userId, projectId);
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
     const sessions = await AiPlanningSessionModel.find(
-      buildSafeRefMatch("projectId", projectId),
+      buildSafeRefMatch("projectId", resolvedProjectId),
     )
       .sort({ updatedAt: -1, _id: -1 })
       .lean();
@@ -113,13 +118,17 @@ class AiPlanningService {
     projectId: string,
     payload: { title?: unknown },
   ) {
-    await projectService.assertProjectMembership(userId, projectId);
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
     const title =
       typeof payload.title === "string" && payload.title.trim()
         ? payload.title.trim().slice(0, 120)
         : "Planning conversation";
     const session = await AiPlanningSessionModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       createdBy: userId,
       title,
       status: "ACTIVE",
@@ -133,8 +142,12 @@ class AiPlanningService {
     projectId: string,
     sessionId: string,
   ) {
-    await projectService.assertProjectMembership(userId, projectId);
-    const session = await this.requireSession(projectId, sessionId);
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
+    const session = await this.requireSession(resolvedProjectId, sessionId);
     const [messages, drafts] = await Promise.all([
       AiPlanningMessageModel.find(buildSafeRefMatch("sessionId", sessionId))
         .sort({ createdAt: 1, _id: 1 })
@@ -157,12 +170,16 @@ class AiPlanningService {
     sessionId: string,
     payload: { content?: unknown },
   ) {
-    await projectService.assertProjectMembership(userId, projectId);
-    await this.requireSession(projectId, sessionId);
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
+    await this.requireSession(resolvedProjectId, sessionId);
     const content = this.requiredText(payload.content, "Message", 8000);
 
     const userMessage = await AiPlanningMessageModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       sessionId,
       role: "USER",
       content,
@@ -172,18 +189,17 @@ class AiPlanningService {
       updatedAt: new Date(),
     }).exec();
 
-    const context = await this.getContext(userId, projectId);
+    const context = await this.getContext(userId, resolvedProjectId);
     const history = await AiPlanningMessageModel.find(
       buildSafeRefMatch("sessionId", sessionId),
     )
       .sort({ createdAt: 1, _id: 1 })
       .lean();
 
-    const projectDoc = await ProjectModel.findById(projectId).lean();
-    const config = projectDoc?.ai ?? null;
+    const config = project.ai ?? null;
     const assistantContent = await this.generateAssistantReply(
       userId,
-      projectId,
+      resolvedProjectId,
       config,
       context,
       history.map((message) => ({
@@ -192,7 +208,7 @@ class AiPlanningService {
       })),
     );
     const assistantMessage = await AiPlanningMessageModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       sessionId,
       role: "ASSISTANT",
       content: assistantContent,
@@ -213,8 +229,12 @@ class AiPlanningService {
     projectId: string,
     sessionId: string,
   ) {
-    await projectService.assertProjectMembership(userId, projectId);
-    await this.requireSession(projectId, sessionId);
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
+    await this.requireSession(resolvedProjectId, sessionId);
     const history = await AiPlanningMessageModel.find({
       ...buildSafeRefMatch("sessionId", sessionId),
       role: "USER",
@@ -229,18 +249,17 @@ class AiPlanningService {
       );
     }
 
-    const context = await this.getContext(userId, projectId);
-    const projectDoc2 = await ProjectModel.findById(projectId).lean();
-    const config = projectDoc2?.ai ?? null;
+    const context = await this.getContext(userId, resolvedProjectId);
+    const config = project.ai ?? null;
     const plan = await this.generatePlan(
       userId,
-      projectId,
+      resolvedProjectId,
       config,
       context,
       history.map((message) => message.content),
     );
     const draft = await AiPlanningDraftModel.create({
-      projectId,
+      projectId: resolvedProjectId,
       sessionId,
       requestedBy: userId,
       status: "REVIEW",
@@ -249,7 +268,7 @@ class AiPlanningService {
 
     await this.logProjectEvent(
       userId,
-      projectId,
+      resolvedProjectId,
       "created",
       "generated AI planning draft",
       {
@@ -269,11 +288,15 @@ class AiPlanningService {
     draftId: string,
     payload: { reason?: unknown },
   ) {
-    await projectService.assertProjectMembership(userId, projectId);
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
+    const resolvedProjectId = project._id.toString();
     const draft = await AiPlanningDraftModel.findOneAndUpdate(
       {
         _id: draftId,
-        ...buildSafeRefMatch("projectId", projectId),
+        ...buildSafeRefMatch("projectId", resolvedProjectId),
         status: "REVIEW",
       },
       {
@@ -291,7 +314,7 @@ class AiPlanningService {
 
     await this.logProjectEvent(
       userId,
-      projectId,
+      resolvedProjectId,
       "rejected",
       "rejected AI planning draft",
       {
@@ -309,11 +332,16 @@ class AiPlanningService {
     projectId: string,
     draftId: string,
   ) {
-    await projectService.assertProjectRole(userId, projectId, "ADMIN");
+    const { project } = await projectService.assertProjectRole(
+      userId,
+      projectId,
+      "ADMIN",
+    );
+    const resolvedProjectId = project._id.toString();
     const draft = await AiPlanningDraftModel.findOneAndUpdate(
       {
         _id: draftId,
-        ...buildSafeRefMatch("projectId", projectId),
+        ...buildSafeRefMatch("projectId", resolvedProjectId),
         status: "REVIEW",
       },
       { status: "EXECUTING", approvedBy: userId },
@@ -325,14 +353,18 @@ class AiPlanningService {
     }
 
     try {
-      const artifacts = await this.executePlan(userId, projectId, draft);
+      const artifacts = await this.executePlan(
+        userId,
+        resolvedProjectId,
+        draft,
+      );
       draft.status = "EXECUTED";
       draft.artifacts = artifacts;
       draft.executedAt = new Date();
       await draft.save();
       await this.logProjectEvent(
         userId,
-        projectId,
+        resolvedProjectId,
         "approved",
         "approved and executed AI planning draft",
         {
@@ -350,7 +382,7 @@ class AiPlanningService {
       await draft.save();
       await this.logProjectEvent(
         userId,
-        projectId,
+        resolvedProjectId,
         "updated",
         "AI planning draft execution failed",
         {
@@ -487,8 +519,10 @@ class AiPlanningService {
   }
 
   public async getSettings(userId: string, projectId: string) {
-    await projectService.assertProjectMembership(userId, projectId);
-    const project = await ProjectModel.findById(projectId).lean();
+    const { project } = await projectService.assertProjectMembership(
+      userId,
+      projectId,
+    );
     const config = project?.ai ?? null;
 
     const user = await UserModel.findById(userId).exec();
@@ -519,7 +553,12 @@ class AiPlanningService {
   }
 
   public async updateSettings(userId: string, projectId: string, payload: any) {
-    await projectService.assertProjectRole(userId, projectId, "ADMIN");
+    const { project } = await projectService.assertProjectRole(
+      userId,
+      projectId,
+      "ADMIN",
+    );
+    const resolvedProjectId = project._id.toString();
 
     const enabled = !!payload.enabled;
     const provider = payload.provider || "gemini";
@@ -548,11 +587,10 @@ class AiPlanningService {
       }
     }
 
-    const oldProject = await ProjectModel.findById(projectId).lean();
-    const oldAi = oldProject?.ai;
+    const oldAi = project.ai;
 
     const updatedProject = await ProjectModel.findByIdAndUpdate(
-      projectId,
+      resolvedProjectId,
       {
         $set: {
           "ai.enabled": enabled,
@@ -567,20 +605,32 @@ class AiPlanningService {
 
     // Activity log events
     if (!oldAi?.enabled && enabled) {
-      await this.logProjectEvent(userId, projectId, "updated", "AI Enabled", {
-        provider,
-        modelName,
-      });
+      await this.logProjectEvent(
+        userId,
+        resolvedProjectId,
+        "updated",
+        "AI Enabled",
+        {
+          provider,
+          modelName,
+        },
+      );
     } else if (oldAi?.enabled && !enabled) {
-      await this.logProjectEvent(userId, projectId, "updated", "AI Disabled", {
-        provider,
-        modelName,
-      });
+      await this.logProjectEvent(
+        userId,
+        resolvedProjectId,
+        "updated",
+        "AI Disabled",
+        {
+          provider,
+          modelName,
+        },
+      );
     }
     if (oldAi?.provider && oldAi.provider !== provider) {
       await this.logProjectEvent(
         userId,
-        projectId,
+        resolvedProjectId,
         "updated",
         "Provider Changed",
         { oldProvider: oldAi.provider, newProvider: provider },
@@ -589,7 +639,7 @@ class AiPlanningService {
     if (oldAi?.modelName && oldAi.modelName !== modelName) {
       await this.logProjectEvent(
         userId,
-        projectId,
+        resolvedProjectId,
         "updated",
         "Model Changed",
         { oldModelName: oldAi.modelName, newModelName: modelName },
