@@ -33,6 +33,22 @@ jobs:
       - name: Build Project
         run: npm run build
 
+      - name: Unit Tests
+        run: npm test
+        env:
+          PORT: "4000"
+          MONGODB_URI: mongodb://127.0.0.1:1/ci-unused
+          JWT_SECRET: ci-test-secret
+          JWT_EXPIRES_IN: 1h
+          ALLOWED_ORIGINS: http://localhost
+          GOOGLE_CLIENT_ID: ci
+          GOOGLE_CLIENT_SECRET: ci
+          GOOGLE_REDIRECT_URI: http://localhost/callback
+          FRONTEND_BASE_URL: http://localhost:5173
+          GPT_OAUTH_REDIRECT_URI: http://localhost/gpt
+          BACKEND_URL: http://localhost:4000
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef
+
       - name: Run Console Log Check
         run: npm run check:console
       

@@ -293,6 +293,14 @@ const taskSchema = new Schema<ITaskDocument>(
   { timestamps: true },
 );
 
+// Access-path indexes for task lists: by owner, project and assignee, each
+// with date for the day view, plus epic and subtask-assignee lookups.
+taskSchema.index({ userId: 1, date: 1 });
+taskSchema.index({ projectId: 1, date: 1 });
+taskSchema.index({ assignedTo: 1, date: 1 });
+taskSchema.index({ epicId: 1 });
+taskSchema.index({ "subtasks.assignedToUserId": 1 });
+taskSchema.index({ status: 1 });
 taskSchema.index({ responseBreached: 1, resolutionBreached: 1, priority: 1 });
 taskSchema.index({ slaResponseDueAt: 1, slaResolutionDueAt: 1, status: 1 });
 taskSchema.index({ blockedByTaskId: 1, status: 1 });
