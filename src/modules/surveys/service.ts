@@ -310,12 +310,16 @@ class SurveyService {
         }
       }
 
+      // Multiple-choice answers are arrays: count each selected option.
       qAnswers.forEach((ans) => {
-        const key =
-          typeof ans === "object" && ans !== null
-            ? JSON.stringify(ans)
-            : String(ans);
-        distribution[key] = (distribution[key] ?? 0) + 1;
+        const values = Array.isArray(ans) ? ans : [ans];
+        values.forEach((value) => {
+          const key =
+            typeof value === "object" && value !== null
+              ? JSON.stringify(value)
+              : String(value);
+          distribution[key] = (distribution[key] ?? 0) + 1;
+        });
       });
 
       let mostSelectedOption: string | null = null;
