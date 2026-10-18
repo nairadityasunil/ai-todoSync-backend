@@ -427,11 +427,25 @@ class AuthController {
         userAgent: req.get("user-agent") ?? null,
       });
 
-      const finalRedirectUrl = new URL(
+      // redirectTo is an internal path that may carry its own query string
+      // (e.g. /accept-invitation?token=...), so resolve it as a URL rather
+      // than assigning it to pathname, which would encode the "?".
+      const redirectOrigin = new URL(
         decodedState.origin || env.FRONTEND_BASE_URL,
+      ).origin;
+      let finalRedirectUrl = new URL(
+        ensureInternalPath(decodedState.redirectTo),
+        redirectOrigin,
       );
-      finalRedirectUrl.pathname = decodedState.redirectTo || "/";
-      finalRedirectUrl.searchParams.set("token", authResult.accessToken);
+      if (finalRedirectUrl.origin !== redirectOrigin) {
+        finalRedirectUrl = new URL("/", redirectOrigin);
+      }
+      // Tokens go in the fragment: browsers never send it to servers, so it
+      // stays out of access logs and Referer headers.
+      finalRedirectUrl.hash = new URLSearchParams({
+        token: authResult.accessToken,
+        refreshToken: authResult.refreshToken,
+      }).toString();
 
       logger.info(
         `Google OAuth redirecting to ${finalRedirectUrl.origin}${finalRedirectUrl.pathname}`,
@@ -662,7 +676,8 @@ const verifyState = (state?: string) => {
 };
 
 const ensureInternalPath = (value?: string | null): string => {
-  if (!value || !value.startsWith("/")) {
+  // "//host" and "/\\host" are protocol-relative URLs to another site.
+  if (!value || !value.startsWith("/") || /^\/[\\/]/.test(value)) {
     return "/";
   }
 

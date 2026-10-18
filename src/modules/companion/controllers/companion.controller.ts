@@ -335,6 +335,7 @@ export const pairCompanionDeviceWithQr = async (
     data: {
       user: authResult.user,
       token: authResult.token,
+      refreshToken: authResult.refreshToken,
       session: authResult.session,
     },
   });
@@ -364,6 +365,7 @@ export const pairCompanionDeviceWithKey = async (
     data: {
       user: authResult.user,
       token: authResult.token,
+      refreshToken: authResult.refreshToken,
       session: authResult.session,
     },
   });
