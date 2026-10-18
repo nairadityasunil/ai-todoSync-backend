@@ -12,6 +12,7 @@ import {
   buildRefMatch,
   buildSafeRefMatch,
 } from "../../../utils/mongo-ref.js";
+import { escapeRegex } from "../../../utils/escape-regex.js";
 
 export type TaskDocumentWithAssignee = ITaskDocument;
 
@@ -133,7 +134,7 @@ export const getTasksByUser = async (
   }
 
   if (search) {
-    const searchRegex = { $regex: search.trim(), $options: "i" };
+    const searchRegex = { $regex: escapeRegex(search.trim()), $options: "i" };
     const searchFilter = {
       $or: [{ title: searchRegex }, { note: searchRegex }],
     };
@@ -213,7 +214,7 @@ export const getTasksByDate = async (
   }
 
   if (search) {
-    const searchRegex = { $regex: search.trim(), $options: "i" };
+    const searchRegex = { $regex: escapeRegex(search.trim()), $options: "i" };
     const searchFilter = {
       $or: [{ title: searchRegex }, { note: searchRegex }],
     };

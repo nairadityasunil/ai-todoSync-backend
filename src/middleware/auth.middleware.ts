@@ -44,7 +44,8 @@ const getBearerToken = (
   return match?.[1]?.trim() || undefined;
 };
 
-const resolveUserFromJwt = async (
+/** Resolves a user from an access token, rejecting revoked sessions and devices. */
+export const resolveUserFromJwt = async (
   token: string,
 ): Promise<IUserDocument | null> => {
   try {

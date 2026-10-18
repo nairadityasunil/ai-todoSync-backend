@@ -4,6 +4,7 @@ import promptAuthorizationService from "./prompt-authorization.service.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
 
 import { HttpError } from "../../../shared/errors/http-error.js";
+import { escapeRegex } from "../../../utils/escape-regex.js";
 
 export class PromptQueryService {
   public async listPrompts(
@@ -55,7 +56,7 @@ export class PromptQueryService {
     }
 
     if (options.search && options.search.trim()) {
-      const searchRegex = new RegExp(options.search.trim(), "i");
+      const searchRegex = new RegExp(escapeRegex(options.search.trim()), "i");
       const searchClause = [
         { name: searchRegex },
         { description: searchRegex },

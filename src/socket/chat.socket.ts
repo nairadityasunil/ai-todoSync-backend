@@ -1,12 +1,11 @@
 import type { Server as HTTPServer } from "http";
 import { Server, type Socket } from "socket.io";
-import jwt from "jsonwebtoken";
 
-import UserModel, {
-  type IUserDocument,
-} from "../modules/auth/models/user.model.js";
+import type { IUserDocument } from "../modules/auth/models/user.model.js";
+import ChatMessageModel from "../modules/chat/models/chat-message.model.js";
 import ProjectMemberModel from "../modules/project/models/project-member.model.js";
-import authService from "../modules/auth/services/auth.service.js";
+import { resolveUserFromJwt } from "../middleware/auth.middleware.js";
+import { findUserBySyncApiKey } from "../modules/auth/repositories/auth.repository.js";
 import chatService from "../modules/chat/services/chat.service.js";
 import env from "../config/env.js";
 import logger from "../lib/logger.js";
@@ -115,7 +114,7 @@ class ChatSocketServer {
           ) {
             callback(null, true);
           } else {
-            callback(null, true); // Allow dev origins gracefully
+            callback(new Error("Origin not allowed"), false);
           }
         },
         credentials: true,
@@ -145,32 +144,15 @@ class ChatSocketServer {
         return next(new Error("Authentication required"));
       }
 
-      let user: IUserDocument | null = null;
-
-      try {
-        const decoded = authService.verifyAccessToken(token);
-        if (decoded?.userId) {
-          user = await UserModel.findById(decoded.userId);
-        }
-      } catch {
-        // Fall back to direct JWT verification
-        try {
-          const decoded = jwt.verify(token, env.JWT_SECRET) as {
-            userId: string;
-          };
-          if (decoded?.userId) {
-            user = await UserModel.findById(decoded.userId);
-          }
-        } catch {
-          // Fall back to Sync API key verification
-          const { findUserBySyncApiKey } =
-            await import("../modules/auth/repositories/auth.repository.js");
-          user = await findUserBySyncApiKey(token);
-        }
+      // Same rules as HTTP auth: access tokens must belong to an active
+      // session; refresh tokens and revoked sessions are rejected.
+      let user: IUserDocument | null = await resolveUserFromJwt(token);
+      if (!user) {
+        user = await findUserBySyncApiKey(token);
       }
 
       if (!user) {
-        return next(new Error("User not found"));
+        return next(new Error("Authentication failed"));
       }
 
       socket.user = user;
@@ -520,12 +502,32 @@ class ChatSocketServer {
   /**
    * Handle opening a thread
    */
-  private handleThreadOpen(
+  private async handleThreadOpen(
     socket: AuthenticatedSocket,
     payload: ThreadPayload,
-  ): void {
-    const { messageId } = payload;
-    socket.join(`thread:${messageId}`);
+  ): Promise<void> {
+    try {
+      const { messageId } = payload ?? {};
+      if (typeof messageId !== "string" || !/^[a-f0-9]{24}$/i.test(messageId)) {
+        return;
+      }
+      // Only project members may follow a thread's replies.
+      const message = await ChatMessageModel.findById(messageId)
+        .select("projectId")
+        .lean();
+      if (!message) return;
+      const isMember = await ProjectMemberModel.exists({
+        projectId: message.projectId,
+        userId: socket.user!._id,
+      });
+      if (!isMember) {
+        socket.emit("error", { message: "Not a project member" });
+        return;
+      }
+      socket.join(`thread:${messageId}`);
+    } catch (error) {
+      logger.error("Error opening thread", error as Error);
+    }
   }
 
   /**

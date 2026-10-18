@@ -30,6 +30,11 @@ interface ConditionEvaluation {
   reason: string;
 }
 
+const MAX_REGEX_LENGTH = 200;
+const MAX_REGEX_INPUT_LENGTH = 2048;
+/** A quantified group that itself contains a quantifier, e.g. (a+)+ or (x*)*. */
+const NESTED_QUANTIFIER = /\([^)]*[+*][^)]*\)\s*[+*{]/;
+
 const PRIORITY_INDEX: Record<string, number> = {
   LOW: 1,
   MEDIUM: 2,
@@ -318,9 +323,15 @@ class TargetingService {
     actual: string | undefined,
     label: string,
   ): ConditionEvaluation {
+    const pattern = String(condition.value ?? "");
+    // Patterns are admin-authored but run on the shared server for every
+    // page view, so refuse the shapes that cause catastrophic backtracking.
+    if (pattern.length > MAX_REGEX_LENGTH || NESTED_QUANTIFIER.test(pattern)) {
+      return { matched: false, reason: `${label}: unsupported regex` };
+    }
     try {
-      const matched = new RegExp(String(condition.value ?? "")).test(
-        actual ?? "",
+      const matched = new RegExp(pattern).test(
+        (actual ?? "").slice(0, MAX_REGEX_INPUT_LENGTH),
       );
       return { matched, reason: `${label}: ${matched ? "matched" : "failed"}` };
     } catch {

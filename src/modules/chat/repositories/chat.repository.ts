@@ -5,6 +5,7 @@ import ChatMessageModel, {
   type IMessageMetadata,
   MessageType,
 } from "../../../modules/chat/models/chat-message.model.js";
+import { escapeRegex } from "../../../utils/escape-regex.js";
 
 export type ChatMessageDocument = IChatMessageDocument;
 
@@ -294,7 +295,7 @@ export const searchMessages = async (
 ): Promise<ChatMessageDocument[]> => {
   const { limit = 20 } = options;
 
-  const searchRegex = { $regex: query.trim(), $options: "i" };
+  const searchRegex = { $regex: escapeRegex(query.trim()), $options: "i" };
 
   return ChatMessageModel.find({
     projectId,

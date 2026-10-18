@@ -4,6 +4,7 @@ import {
 } from "../../../modules/comment/repositories/comment.repository.js";
 import UserModel from "../../auth/models/user.model.js";
 import type { ICommentDocument } from "../models/comment.model.js";
+import { escapeRegex } from "../../../utils/escape-regex.js";
 
 class HttpError extends Error {
   public status: number;
@@ -68,8 +69,8 @@ class CommentService {
       const user = await UserModel.findOne({
         $or: [
           { email: handle.toLowerCase() },
-          { name: new RegExp(`^${handle}$`, "i") },
-          { firstName: new RegExp(`^${handle}$`, "i") },
+          { name: new RegExp(`^${escapeRegex(handle)}$`, "i") },
+          { firstName: new RegExp(`^${escapeRegex(handle)}$`, "i") },
         ],
       })
         .select("_id")

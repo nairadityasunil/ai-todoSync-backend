@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import {
   createTask,
   deleteTask,
@@ -30,6 +31,31 @@ import { buildRefInMatch, buildRefMatch } from "../../../utils/mongo-ref.js";
 import operationalAnalyticsService from "../../analytics/services/operational-analytics.service.js";
 import slaService from "./sla.service.js";
 import priorityEngineService from "./priority-engine.service.js";
+
+/** Id of a reference that may or may not be populated. */
+const refId = (value: unknown): string => {
+  if (value && typeof value === "object" && "_id" in value) {
+    return String((value as { _id: unknown })._id);
+  }
+  return String(value ?? "");
+};
+
+const UPDATABLE_TASK_FIELDS = new Set([
+  "title",
+  "description",
+  "note",
+  "date",
+  "status",
+  "priority",
+  "isBlocked",
+  "blockedByTaskId",
+  "order",
+  "projectId",
+  "epicId",
+  "assignedTo",
+  "subtasks",
+  "estimatedHours",
+]);
 
 interface TaskUserDto {
   id: string;
@@ -279,6 +305,26 @@ class TaskService {
 
     if (permission.canUpdate === false) {
       throw new HttpError(403, "Task update not allowed");
+    }
+
+    // Only these fields are client-editable; ownership, SLA and priority
+    // engine fields are server-managed.
+    updates = Object.fromEntries(
+      Object.entries(updates ?? {}).filter(([key]) =>
+        UPDATABLE_TASK_FIELDS.has(key),
+      ),
+    ) as UpdateTaskPayload;
+
+    if (
+      updates.assignedTo !== undefined &&
+      String(updates.assignedTo) !== refId(currentTask.assignedTo)
+    ) {
+      await this.assertCanReassign(
+        userId,
+        currentTask,
+        permission,
+        String(updates.assignedTo),
+      );
     }
 
     const hasFullEditAccess = permission.canEdit;
@@ -790,6 +836,34 @@ class TaskService {
     };
   }
 
+  private async assertCanReassign(
+    userId: string,
+    task: TaskDocumentWithAssignee,
+    permission: TaskPermissionsDto,
+    assigneeId: string,
+  ): Promise<void> {
+    if (!task.projectId) {
+      // Personal tasks can only be assigned to their owner.
+      if (assigneeId !== userId) {
+        throw new HttpError(403, "Personal tasks cannot be reassigned");
+      }
+      return;
+    }
+    if (!permission.canAssign) {
+      throw new HttpError(403, "Task reassignment not allowed");
+    }
+    if (!mongoose.isValidObjectId(assigneeId)) {
+      throw new HttpError(400, "Invalid assignee");
+    }
+    const isMember = await ProjectMemberModel.exists({
+      projectId: task.projectId,
+      userId: assigneeId,
+    });
+    if (!isMember) {
+      throw new HttpError(400, "Assignee must be a project member");
+    }
+  }
+
   private buildRoleMap(
     memberships: Awaited<ReturnType<typeof getProjectMembershipsByUser>>,
   ): Map<string, ProjectRole> {
@@ -820,7 +894,7 @@ class TaskService {
         isAdmin ||
         isCreator ||
         isAssignee ||
-        task.assignedTo?.toString() === currentUserId ||
+        refId(task.assignedTo) === currentUserId ||
         role !== null,
       canReassign: task.projectId != null && (isAdmin || isCreator),
     };

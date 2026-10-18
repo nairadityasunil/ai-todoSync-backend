@@ -103,7 +103,8 @@ class AuthController {
       const { email } = req.body as { email?: string };
       await authService.forgotPassword(email ?? "");
       res.status(200).json({
-        message: "OTP sent to email",
+        message:
+          "If an account exists for that email, a reset code has been sent.",
       });
     } catch (error) {
       this.respondWithError(res, error);
@@ -432,7 +433,9 @@ class AuthController {
       finalRedirectUrl.pathname = decodedState.redirectTo || "/";
       finalRedirectUrl.searchParams.set("token", authResult.accessToken);
 
-      logger.info(`Final redirect URL: ${finalRedirectUrl.toString()}`);
+      logger.info(
+        `Google OAuth redirecting to ${finalRedirectUrl.origin}${finalRedirectUrl.pathname}`,
+      );
       res.redirect(finalRedirectUrl.toString());
     } catch (error) {
       logger.error("Google OAuth Callback Error: " + JSON.stringify(error));

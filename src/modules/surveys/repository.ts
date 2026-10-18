@@ -10,6 +10,7 @@ import {
   type ISurveyDocument,
 } from "./model.js";
 import type { NpsCategory } from "../engagement/types.js";
+import { escapeRegex } from "../../utils/escape-regex.js";
 
 class SurveyRepository {
   public listSurveys(
@@ -25,8 +26,8 @@ class SurveyRepository {
 
     if (query.search) {
       filter.$or = [
-        { title: { $regex: query.search, $options: "i" } },
-        { description: { $regex: query.search, $options: "i" } },
+        { title: { $regex: escapeRegex(query.search), $options: "i" } },
+        { description: { $regex: escapeRegex(query.search), $options: "i" } },
       ];
     }
 

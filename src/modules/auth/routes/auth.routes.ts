@@ -24,6 +24,32 @@ class AuthRoutes implements Routes {
       max: 10,
       message: { error: "Too many refresh attempts, please try again later." },
     });
+    // Per-IP limits on credential and code endpoints. Codes also lock after
+    // a few wrong attempts in AuthService, which covers distributed guessing.
+    const authLimiter = (max: number, error: string) =>
+      rateLimit({
+        windowMs: 15 * 60 * 1000,
+        max,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: { error },
+      });
+    const loginLimiter = authLimiter(
+      20,
+      "Too many sign-in attempts, please try again in 15 minutes.",
+    );
+    const registerLimiter = authLimiter(
+      10,
+      "Too many sign-up attempts, please try again later.",
+    );
+    const codeRequestLimiter = authLimiter(
+      5,
+      "Too many code requests, please try again in 15 minutes.",
+    );
+    const codeVerifyLimiter = authLimiter(
+      10,
+      "Too many attempts, please try again in 15 minutes.",
+    );
     const companionLoginLimiter = rateLimit({
       windowMs: 15 * 60 * 1000,
       max: 10,
@@ -32,12 +58,24 @@ class AuthRoutes implements Routes {
       },
     });
 
-    this.router.post("/register", authController.register);
-    this.router.post("/login", authController.login);
+    this.router.post("/register", registerLimiter, authController.register);
+    this.router.post("/login", loginLimiter, authController.login);
     this.router.post("/refresh", refreshLimiter, authController.refresh);
-    this.router.post("/forgot-password", authController.forgotPassword);
-    this.router.post("/verify-otp", authController.verifyOtp);
-    this.router.post("/verify-2fa", authController.verify2FA);
+    this.router.post(
+      "/forgot-password",
+      codeRequestLimiter,
+      authController.forgotPassword,
+    );
+    this.router.post(
+      "/verify-otp",
+      codeVerifyLimiter,
+      authController.verifyOtp,
+    );
+    this.router.post(
+      "/verify-2fa",
+      codeVerifyLimiter,
+      authController.verify2FA,
+    );
     this.router.post("/2fa/toggle", authMiddleware, authController.toggle2FA);
     this.router.post(
       "/companion-login",

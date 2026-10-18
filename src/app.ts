@@ -49,7 +49,8 @@ class App {
     this.app.use((req, _res, next) => {
       const hasAuth = !!req.headers.authorization;
       const hasSyncKey = !!req.headers["x-sync-api-key"];
-      logger.info(`Incoming Request: ${req.method} ${req.url}`, {
+      // Log the path only: query strings can carry tokens (invites, OAuth).
+      logger.info(`Incoming Request: ${req.method} ${req.path}`, {
         authType: hasAuth ? "Bearer JWT" : hasSyncKey ? "Sync API Key" : "None",
         userAgent: req.headers["user-agent"],
       });

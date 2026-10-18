@@ -42,6 +42,7 @@ import type {
   SessionDeviceKind,
 } from "../../../modules/auth/models/device-session.model.js";
 import type { IUserDocument } from "../models/user.model.js";
+import DeviceSessionModel from "../models/device-session.model.js";
 import type {
   AuthProfile,
   AuthResult,
@@ -123,6 +124,10 @@ export interface CompanionKeyResult {
   activeCompanionDevices: number;
 }
 
+const OTP_TTL_MS = 10 * 60 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
+const MIN_PASSWORD_LENGTH = 8;
+
 class HttpError extends Error {
   public status: number;
 
@@ -148,6 +153,7 @@ class AuthService {
     if (payload.email == null || payload.password == null) {
       throw new HttpError(400, "Email and password are required");
     }
+    this.assertPasswordStrength(payload.password);
 
     const existingUser = await findUserByEmail(payload.email);
     if (existingUser != null) {
@@ -207,9 +213,10 @@ class AuthService {
     }
 
     if (user.twoFactorEnabled) {
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-      user.twoFactorCode = otp;
-      user.twoFactorCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+      const otp = this.generateOtp();
+      user.twoFactorCode = this.hashSecret(otp);
+      user.twoFactorCodeExpiresAt = new Date(Date.now() + OTP_TTL_MS);
+      user.twoFactorAttempts = 0;
       await user.save();
 
       await EmailService.sendOtpEmail(user.email, otp, "2fa");
@@ -229,11 +236,8 @@ class AuthService {
     }
 
     const user = await findUserByEmail(email);
-    if (user == null) {
-      throw new HttpError(404, "User not found");
-    }
-
     if (
+      user == null ||
       !user.twoFactorCode ||
       !user.twoFactorCodeExpiresAt ||
       user.twoFactorCodeExpiresAt.getTime() < Date.now()
@@ -241,12 +245,24 @@ class AuthService {
       throw new HttpError(400, "2FA code has expired or is invalid");
     }
 
-    if (user.twoFactorCode !== code) {
+    if (!this.safeEqual(this.hashSecret(String(code)), user.twoFactorCode)) {
+      user.twoFactorAttempts = (user.twoFactorAttempts ?? 0) + 1;
+      if (user.twoFactorAttempts >= MAX_OTP_ATTEMPTS) {
+        user.twoFactorCode = null;
+        user.twoFactorCodeExpiresAt = null;
+        await user.save();
+        throw new HttpError(
+          429,
+          "Too many incorrect codes. Sign in again to get a new code.",
+        );
+      }
+      await user.save();
       throw new HttpError(400, "Invalid 2FA code");
     }
 
     user.twoFactorCode = null;
     user.twoFactorCodeExpiresAt = null;
+    user.twoFactorAttempts = 0;
     await user.save();
 
     return this.issuePrimaryAuthResult(user, metadata);
@@ -258,13 +274,16 @@ class AuthService {
     }
 
     const user = await findUserByEmail(email);
-    if (user == null) {
-      throw new HttpError(404, "User not found");
+    // Respond the same way whether or not the account exists, so this
+    // endpoint cannot be used to discover registered emails.
+    if (user == null || user.authProvider === "google") {
+      return;
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.passwordResetCode = otp;
-    user.passwordResetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+    const otp = this.generateOtp();
+    user.passwordResetCode = this.hashSecret(otp);
+    user.passwordResetCodeExpiresAt = new Date(Date.now() + OTP_TTL_MS);
+    user.passwordResetAttempts = 0;
     await user.save();
 
     await EmailService.sendOtpEmail(user.email, otp, "forgot_password");
@@ -278,13 +297,11 @@ class AuthService {
     if (!email || !otp || !newPassword) {
       throw new HttpError(400, "Email, OTP and new password are required");
     }
+    this.assertPasswordStrength(newPassword);
 
     const user = await findUserByEmail(email);
-    if (user == null) {
-      throw new HttpError(404, "User not found");
-    }
-
     if (
+      user == null ||
       !user.passwordResetCode ||
       !user.passwordResetCodeExpiresAt ||
       user.passwordResetCodeExpiresAt.getTime() < Date.now()
@@ -292,14 +309,32 @@ class AuthService {
       throw new HttpError(400, "OTP has expired or is invalid");
     }
 
-    if (user.passwordResetCode !== otp) {
+    if (!this.safeEqual(this.hashSecret(String(otp)), user.passwordResetCode)) {
+      user.passwordResetAttempts = (user.passwordResetAttempts ?? 0) + 1;
+      if (user.passwordResetAttempts >= MAX_OTP_ATTEMPTS) {
+        user.passwordResetCode = null;
+        user.passwordResetCodeExpiresAt = null;
+        await user.save();
+        throw new HttpError(
+          429,
+          "Too many incorrect codes. Request a new code to continue.",
+        );
+      }
+      await user.save();
       throw new HttpError(400, "Invalid OTP");
     }
 
     user.password = newPassword;
     user.passwordResetCode = null;
     user.passwordResetCodeExpiresAt = null;
+    user.passwordResetAttempts = 0;
     await user.save();
+
+    // A reset means the old password may be compromised: sign out everywhere.
+    await DeviceSessionModel.updateMany(
+      { userId: user._id, revokedAt: null },
+      { revokedAt: new Date() },
+    ).exec();
   }
 
   public async toggle2FA(
@@ -1142,6 +1177,19 @@ class AuthService {
 
   private resolvePrimaryDeviceName(deviceName?: string | null): string {
     return this.normalizeOptionalText(deviceName) ?? "Primary Device";
+  }
+
+  private generateOtp(): string {
+    return crypto.randomInt(100000, 1000000).toString();
+  }
+
+  private assertPasswordStrength(password: string): void {
+    if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) {
+      throw new HttpError(
+        400,
+        `Password must be at least ${MIN_PASSWORD_LENGTH} characters`,
+      );
+    }
   }
 
   private hashSecret(secret: string): string {

@@ -5,6 +5,7 @@ import AnalyticsLogModel from "../models/analytics-log.model.js";
 import AnalyticsUserModel from "../models/analytics-user.model.js";
 import SdkIntegrationModel from "../../sdk-integrations/model.js";
 import logger from "../../../lib/logger.js";
+import { escapeRegex } from "../../../utils/escape-regex.js";
 
 class AnalyticsDataController {
   private parsePagination(req: Request) {
@@ -106,7 +107,7 @@ class AnalyticsDataController {
       if (eventNames.length > 0) {
         query.eventName = { $in: eventNames };
       } else if (eventName) {
-        query.eventName = new RegExp(eventName as string, "i");
+        query.eventName = new RegExp(escapeRegex(eventName as string), "i");
       }
 
       const events = await AnalyticsEventRegistryModel.find(query)
@@ -338,7 +339,7 @@ class AnalyticsDataController {
       } else if (eventName) {
         const matchingEvents = await AnalyticsEventRegistryModel.find({
           ...registryFilter,
-          eventName: new RegExp(eventName as string, "i"),
+          eventName: new RegExp(escapeRegex(eventName as string), "i"),
         })
           .select({ _id: 1 })
           .lean()
@@ -432,7 +433,7 @@ class AnalyticsDataController {
       if (eventNames.length > 0) {
         query.eventName = { $in: eventNames };
       } else if (eventName) {
-        query.eventName = new RegExp(eventName as string, "i");
+        query.eventName = new RegExp(escapeRegex(eventName as string), "i");
       }
 
       const events = await AnalyticsEventRegistryModel.find(query)
@@ -539,7 +540,7 @@ class AnalyticsDataController {
       } else if (eventName) {
         const matchingEvents = await AnalyticsEventRegistryModel.find({
           sdkIntegrationId,
-          eventName: new RegExp(eventName as string, "i"),
+          eventName: new RegExp(escapeRegex(eventName as string), "i"),
         })
           .select({ _id: 1 })
           .lean()

@@ -12,6 +12,7 @@ import {
   buildSafeRefMatch,
 } from "../../../utils/mongo-ref.js";
 import { runInTransaction } from "../../../utils/transaction.js";
+import { escapeRegex } from "../../../utils/escape-regex.js";
 
 export const projectPopulateOptions = [
   { path: "userId", select: "email name firstName lastName" },
@@ -64,7 +65,7 @@ export const getProjectsByUser = async (
   const query: Record<string, unknown> = buildSafeRefInMatch("_id", projectIds);
 
   if (params.search) {
-    query.name = { $regex: params.search, $options: "i" };
+    query.name = { $regex: escapeRegex(params.search), $options: "i" };
   }
 
   return ProjectModel.find(query)
@@ -96,7 +97,7 @@ export const countProjectsByUser = async (
   const query: Record<string, unknown> = buildSafeRefInMatch("_id", projectIds);
 
   if (search) {
-    query.name = { $regex: search, $options: "i" };
+    query.name = { $regex: escapeRegex(search), $options: "i" };
   }
 
   return ProjectModel.countDocuments(query).exec();

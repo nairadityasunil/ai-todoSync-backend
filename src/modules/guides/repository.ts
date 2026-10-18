@@ -1,5 +1,6 @@
 import GuideModel, { type IGuideDocument } from "./model.js";
 import type { CreateGuideDto, GuideQueryDto, UpdateGuideDto } from "./dtos.js";
+import { escapeRegex } from "../../utils/escape-regex.js";
 
 class GuideRepository {
   public listGuides(
@@ -16,8 +17,8 @@ class GuideRepository {
 
     if (query.search) {
       filter.$or = [
-        { title: { $regex: query.search, $options: "i" } },
-        { description: { $regex: query.search, $options: "i" } },
+        { title: { $regex: escapeRegex(query.search), $options: "i" } },
+        { description: { $regex: escapeRegex(query.search), $options: "i" } },
       ];
     }
 

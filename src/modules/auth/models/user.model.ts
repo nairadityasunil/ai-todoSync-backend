@@ -21,6 +21,8 @@ export interface IUser {
   twoFactorCodeExpiresAt?: Date | null;
   passwordResetCode?: string | null;
   passwordResetCodeExpiresAt?: Date | null;
+  twoFactorAttempts?: number;
+  passwordResetAttempts?: number;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -112,6 +114,14 @@ const userSchema = new Schema<IUserDocument>(
     passwordResetCodeExpiresAt: {
       type: Date,
       default: null,
+    },
+    twoFactorAttempts: {
+      type: Number,
+      default: 0,
+    },
+    passwordResetAttempts: {
+      type: Number,
+      default: 0,
     },
   },
   {
