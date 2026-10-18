@@ -200,6 +200,9 @@ class App {
 
       this.server.listen(this.port, () => {
         logger.info(`Server listening on port ${this.port}`);
+        logger.info(
+          `Google OAuth callback URI (must be an authorized redirect URI in Google Cloud Console): ${env.BACKEND_URL}/api/auth/google/callback`,
+        );
         logger.info(`Socket.IO server ready for connections`);
       });
     } catch (error) {

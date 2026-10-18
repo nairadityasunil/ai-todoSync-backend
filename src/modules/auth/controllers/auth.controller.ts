@@ -452,7 +452,14 @@ class AuthController {
       );
       res.redirect(finalRedirectUrl.toString());
     } catch (error) {
-      logger.error("Google OAuth Callback Error: " + JSON.stringify(error));
+      // JSON.stringify(Error) is "{}", so log the message and Google's reply.
+      const googleReply = (error as { response?: { data?: unknown } })?.response
+        ?.data;
+      logger.error("Google OAuth callback failed", {
+        message: error instanceof Error ? error.message : String(error),
+        googleError: googleReply,
+        callbackUri: authService.googleCallbackUri,
+      });
       let targetOrigin = env.FRONTEND_BASE_URL;
       try {
         const state = req.query.state;

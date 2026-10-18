@@ -192,3 +192,28 @@ test("AuthService: toggle2FA updates user document settings", async () => {
     UserModel.findById = originalFindById;
   }
 });
+
+test("AuthService: Google sign-in and code exchange use the same redirect URI", async () => {
+  const authUrl = new URL(authService.getGoogleAuthorizationUrl("state"));
+  const sentRedirect = authUrl.searchParams.get("redirect_uri");
+
+  let exchangeArgs: any = null;
+  const client = (authService as any).googleClient;
+  const originalGetToken = client.getToken;
+  client.getToken = async (args: unknown) => {
+    exchangeArgs = args;
+    return { tokens: {} };
+  };
+
+  try {
+    await assert.rejects(
+      authService.exchangeGoogleCode("code-123"),
+      /ID token missing/,
+    );
+    assert.equal(exchangeArgs.code, "code-123");
+    assert.equal(exchangeArgs.redirect_uri, sentRedirect);
+    assert.equal(sentRedirect, authService.googleCallbackUri);
+  } finally {
+    client.getToken = originalGetToken;
+  }
+});

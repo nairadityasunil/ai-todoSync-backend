@@ -732,15 +732,20 @@ class AuthService {
     }
   }
 
+  /**
+   * The OAuth callback URL sent to Google. It must be listed under
+   * "Authorized redirect URIs" for the OAuth client in Google Cloud Console.
+   */
+  public get googleCallbackUri(): string {
+    return `${env.BACKEND_URL}/api/auth/google/callback`;
+  }
+
   public getGoogleAuthorizationUrl(state?: string): string {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
 
     url.searchParams.set("client_id", env.GOOGLE_CLIENT_ID);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set(
-      "redirect_uri",
-      `${env.BACKEND_URL}/api/auth/google/callback`,
-    );
+    url.searchParams.set("redirect_uri", this.googleCallbackUri);
     url.searchParams.set("scope", this.googleScopes.join(" "));
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
@@ -760,7 +765,12 @@ class AuthService {
       throw new HttpError(400, "Google authorization code is required");
     }
 
-    const { tokens } = await this.googleClient.getToken(code);
+    // Google rejects the exchange unless redirect_uri matches the one used
+    // to start sign-in exactly, so both use googleCallbackUri.
+    const { tokens } = await this.googleClient.getToken({
+      code,
+      redirect_uri: this.googleCallbackUri,
+    });
 
     if (!tokens.id_token) {
       throw new HttpError(
