@@ -103,7 +103,9 @@ class AnalyticsDataController {
         query = { apiKeyId };
       }
 
-      const eventNames = this.parseEventNames(req.query.eventNames);
+      const eventNames = this.parseEventNames(
+        req.query.eventNames ?? req.query["eventNames[]"],
+      );
       if (eventNames.length > 0) {
         query.eventName = { $in: eventNames };
       } else if (eventName) {
@@ -317,7 +319,9 @@ class AnalyticsDataController {
       const effectiveSkip =
         Number.isFinite(legacyOffset) && legacyOffset > 0 ? legacyOffset : skip;
 
-      const eventNames = this.parseEventNames(req.query.eventNames);
+      const eventNames = this.parseEventNames(
+        req.query.eventNames ?? req.query["eventNames[]"],
+      );
       const registryFilter = sdkIntegrationId
         ? { sdkIntegrationId }
         : { apiKeyId };
@@ -429,7 +433,9 @@ class AnalyticsDataController {
       const { eventName, startDate, endDate } = req.query;
 
       const query: Record<string, unknown> = { sdkIntegrationId };
-      const eventNames = this.parseEventNames(req.query.eventNames);
+      const eventNames = this.parseEventNames(
+        req.query.eventNames ?? req.query["eventNames[]"],
+      );
       if (eventNames.length > 0) {
         query.eventName = { $in: eventNames };
       } else if (eventName) {
@@ -523,7 +529,9 @@ class AnalyticsDataController {
       const effectiveSkip =
         Number.isFinite(legacyOffset) && legacyOffset > 0 ? legacyOffset : skip;
 
-      const eventNames = this.parseEventNames(req.query.eventNames);
+      const eventNames = this.parseEventNames(
+        req.query.eventNames ?? req.query["eventNames[]"],
+      );
       if (eventNames.length > 0) {
         const matchingEvents = await AnalyticsEventRegistryModel.find({
           sdkIntegrationId,
