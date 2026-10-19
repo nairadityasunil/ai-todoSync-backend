@@ -217,3 +217,39 @@ test("AuthService: Google sign-in and code exchange use the same redirect URI", 
     client.getToken = originalGetToken;
   }
 });
+
+test("AuthService: login keeps working for a password account that also linked Google", async () => {
+  const mockUser = {
+    _id: new mongoose.Types.ObjectId(),
+    email: "linked@example.com",
+    authProvider: "google",
+    password: "hashed",
+    twoFactorEnabled: true,
+    comparePassword: async (candidate: string) => candidate === "right-password",
+    save: async () => undefined,
+  };
+  const googleOnlyUser = { ...mockUser, email: "google-only@example.com", password: null };
+
+  const originalFindOne = UserModel.findOne;
+  const originalSendOtpEmail = EmailService.sendOtpEmail;
+  EmailService.sendOtpEmail = async () => true;
+  UserModel.findOne = function (query: any) {
+    if (query.email === mockUser.email) return makeMockQuery(mockUser) as any;
+    if (query.email === googleOnlyUser.email) return makeMockQuery(googleOnlyUser) as any;
+    return makeMockQuery(null) as any;
+  };
+
+  try {
+    // Reaching the 2FA step means the password check passed.
+    const result = await authService.login({ email: mockUser.email, password: "right-password" });
+    assert.deepEqual(result, { require2fa: true, email: mockUser.email });
+
+    await assert.rejects(
+      authService.login({ email: googleOnlyUser.email, password: "anything" }),
+      /registered via Google/,
+    );
+  } finally {
+    UserModel.findOne = originalFindOne;
+    EmailService.sendOtpEmail = originalSendOtpEmail;
+  }
+});

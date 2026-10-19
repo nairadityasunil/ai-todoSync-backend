@@ -199,7 +199,9 @@ class AuthService {
       throw new HttpError(401, "Invalid credentials");
     }
 
-    if (user.authProvider === "google") {
+    // Accounts created through Google have no password; accounts that
+    // linked Google later keep theirs and can still use it.
+    if (!user.password) {
       throw new HttpError(
         401,
         "This account is registered via Google. Please sign in with Google.",
@@ -1136,7 +1138,8 @@ class AuthService {
       hasChanges = true;
     }
 
-    if (user.authProvider !== "google") {
+    // Linking Google must not lock out an account's existing password.
+    if (user.authProvider !== "google" && !user.password) {
       user.authProvider = "google";
       hasChanges = true;
     }
