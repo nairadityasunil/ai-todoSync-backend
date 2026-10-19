@@ -685,7 +685,7 @@ const verifyState = (state?: string) => {
 const ensureInternalPath = (value?: string | null): string => {
   // "//host" and "/\\host" are protocol-relative URLs to another site.
   if (!value || !value.startsWith("/") || /^\/[\\/]/.test(value)) {
-    return "/";
+    return "/dashboard";
   }
 
   return value;
