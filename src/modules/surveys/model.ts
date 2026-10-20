@@ -145,6 +145,10 @@ surveyResponseSchema.index({ tenantId: 1, surveyId: 1, submittedAt: -1 });
 surveyResponseSchema.index({ tenantId: 1, category: 1, submittedAt: -1 });
 surveyResponseSchema.index({ sdkIntegrationId: 1, surveyId: 1, submittedAt: -1 });
 surveyResponseSchema.index({ sdkIntegrationId: 1, category: 1, submittedAt: -1 });
+surveyResponseSchema.index(
+  { surveyId: 1, "metadata.idempotencyKey": 1 },
+  { sparse: true },
+);
 
 export const SurveyModel = model<ISurveyDocument>("Survey", surveySchema);
 export const SurveyResponseModel = model<ISurveyResponseDocument>(

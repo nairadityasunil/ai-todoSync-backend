@@ -46,10 +46,16 @@ class EngagementService {
               string,
               unknown
             >,
-            metadata: (input.dto.properties?.metadata || {}) as Record<
-              string,
-              unknown
-            >,
+            metadata: {
+              ...((input.dto.properties?.metadata || {}) as Record<
+                string,
+                unknown
+              >),
+              // The SDK retries submissions; this key lets a retry be ignored.
+              ...(typeof input.dto.properties?.idempotencyKey === "string"
+                ? { idempotencyKey: input.dto.properties.idempotencyKey }
+                : {}),
+            },
           },
         );
       }

@@ -389,6 +389,7 @@ class TargetingService {
             : String(condition.value ?? ""));
     const count = await this.countEvents({
       tenantId: context.tenantId,
+      sdkIntegrationId: context.sdkIntegrationId,
       userId: context.userId,
       sessionId: context.sessionId,
       eventName,
@@ -414,6 +415,7 @@ class TargetingService {
 
   private async countEvents(input: {
     tenantId: string;
+    sdkIntegrationId?: string;
     userId?: string;
     sessionId?: string;
     eventName: string;
@@ -428,7 +430,12 @@ class TargetingService {
       .select("_id")
       .lean()
       .exec();
+    // SDK integration keys store events under the integration's id, so
+    // count those as well as legacy analytics keys.
     const apiKeyIds = keys.map((key) => key._id.toString());
+    if (input.sdkIntegrationId) {
+      apiKeyIds.push(input.sdkIntegrationId);
+    }
 
     if (apiKeyIds.length === 0) {
       return 0;

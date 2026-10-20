@@ -110,6 +110,24 @@ class SurveyService {
     dto: SubmitSurveyResponseDto,
   ) {
     const survey = await this.getSurvey(tenantId, sdkIntegrationId, surveyId);
+
+    // A retried submission (same idempotency key) returns the stored response
+    // instead of counting the same answers twice.
+    const idempotencyKey =
+      typeof dto.metadata?.idempotencyKey === "string"
+        ? dto.metadata.idempotencyKey
+        : null;
+    if (idempotencyKey) {
+      const existing = await surveyRepository.findResponseByIdempotencyKey(
+        sdkIntegrationId,
+        surveyId,
+        idempotencyKey,
+      );
+      if (existing) {
+        return existing;
+      }
+    }
+
     const npsScore = this.extractNpsScore(survey, dto.answers);
     const category = this.categorizeNps(npsScore);
     const response = await surveyRepository.createResponse({

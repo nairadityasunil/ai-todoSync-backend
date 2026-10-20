@@ -127,6 +127,18 @@ class SurveyRepository {
     });
   }
 
+  public findResponseByIdempotencyKey(
+    sdkIntegrationId: string,
+    surveyId: string,
+    idempotencyKey: string,
+  ) {
+    return SurveyResponseModel.findOne({
+      sdkIntegrationId,
+      surveyId,
+      "metadata.idempotencyKey": idempotencyKey,
+    }).exec();
+  }
+
   public listResponses(
     tenantId: string,
     sdkIntegrationId: string,
