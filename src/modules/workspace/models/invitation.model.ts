@@ -55,6 +55,8 @@ const invitationSchema = new Schema<IInvitationDocument>(
 
 invitationSchema.index({ projectId: 1, email: 1 }, { unique: true });
 invitationSchema.index({ token: 1 });
+// "My pending invitations" runs on every page load.
+invitationSchema.index({ email: 1, status: 1 });
 
 const InvitationModel = model<IInvitationDocument>(
   "Invitation",

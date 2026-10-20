@@ -1,5 +1,6 @@
 import http from "http";
 import express, { Application } from "express";
+import compression from "compression";
 import helmet from "helmet";
 import hpp from "hpp";
 import { rateLimit } from "express-rate-limit";
@@ -138,6 +139,8 @@ class App {
     this.app.use(limiter);
 
     this.app.use(helmet());
+    // Gzip JSON responses over 1 KB; lists of tasks/events shrink ~80%.
+    this.app.use(compression({ threshold: 1024 }));
     this.app.use(hpp());
     this.app.use(express.json());
     this.app.use(express.urlencoded({ extended: true }));

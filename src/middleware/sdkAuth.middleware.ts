@@ -44,6 +44,10 @@ export const setCorsHeaders = (res: Response, origin: string): void => {
     "Access-Control-Allow-Headers",
     "Content-Type, Authorization, x-api-key, x-sdk-key, x-session-id, x-timestamp, x-nonce, x-body-sha256, x-signature, x-sync-api-key, x-sdk-version",
   );
+  // Let browsers reuse the preflight answer for 2 hours (Chrome's cap)
+  // instead of sending an extra OPTIONS round trip before most API calls.
+  res.setHeader("Access-Control-Max-Age", "7200");
+  res.setHeader("Vary", "Origin");
 };
 
 const logSecurityEvent = (

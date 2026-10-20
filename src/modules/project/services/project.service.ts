@@ -5,11 +5,12 @@ import {
   searchUsersByEmail,
 } from "../../../modules/auth/repositories/auth.repository.js";
 import {
-  countProjectsByUser,
   createProject,
   deleteProjectWithRelations,
   deleteProjectsWithRelations,
   getProjectById,
+  getProjectByIdUnpopulated,
+  getProjectsPageByIds,
   getProjectByName,
   getProjectsByUser,
   updateProject,
@@ -207,11 +208,17 @@ class ProjectService {
     search?: string,
   ): Promise<PaginatedProjects> {
     const skip = (page - 1) * limit;
-    const [projects, total, memberships] = await Promise.all([
-      getProjectsByUser({ userId, search, skip, limit }),
-      countProjectsByUser(userId, search),
-      getProjectMembershipsByUser(userId),
-    ]);
+    // Memberships give both the project ids and the user's roles, so load
+    // them once and then fetch the page and total together.
+    const memberships = await getProjectMembershipsByUser(userId);
+    const { projects, total } = await getProjectsPageByIds({
+      projectIds: memberships.map((membership) =>
+        membership.projectId.toString(),
+      ),
+      search,
+      skip,
+      limit,
+    });
     const membershipByProject = new Map(
       memberships.map((membership) => [
         membership.projectId.toString(),
@@ -436,8 +443,10 @@ class ProjectService {
     userId: string,
     projectId: string,
   ): Promise<ProjectAccess> {
+    // Access checks run on almost every project request; skip populating
+    // the creator, which they never use.
     const [project, membership] = await Promise.all([
-      getProjectById(projectId),
+      getProjectByIdUnpopulated(projectId),
       getProjectMembership(projectId, userId),
     ]);
 

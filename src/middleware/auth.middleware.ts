@@ -8,6 +8,7 @@ import {
   findUserBySyncApiKey,
 } from "../modules/auth/repositories/auth.repository.js";
 import { findActiveDeviceSessionById } from "../modules/auth/repositories/device-session.repository.js";
+import type { IDeviceSessionDocument } from "../modules/auth/models/device-session.model.js";
 import authService from "../modules/auth/services/auth.service.js";
 import type { AuthenticatedRequest } from "../types/auth.js";
 
@@ -44,10 +45,18 @@ const getBearerToken = (
   return match?.[1]?.trim() || undefined;
 };
 
-/** Resolves a user from an access token, rejecting revoked sessions and devices. */
-export const resolveUserFromJwt = async (
-  token: string,
-): Promise<IUserDocument | null> => {
+interface JwtAuth {
+  user: IUserDocument;
+  session: IDeviceSessionDocument;
+  companionDevice: Awaited<ReturnType<typeof findCompanionDeviceById>>;
+}
+
+/**
+ * Resolves the user and device session behind an access token, rejecting
+ * revoked sessions and devices. User and session load in parallel, so this
+ * costs one database round trip (two for companion devices).
+ */
+const resolveJwtAuth = async (token: string): Promise<JwtAuth | null> => {
   try {
     const decoded = authService.verifyAccessToken(token);
     const userId =
@@ -81,9 +90,10 @@ export const resolveUserFromJwt = async (
       if (companionDevice == null || companionDevice.status !== "active") {
         return null;
       }
+      return { user, session, companionDevice };
     }
 
-    return user;
+    return { user, session, companionDevice: null };
   } catch (error) {
     logger.error(
       "Failed to verify JWT",
@@ -92,6 +102,12 @@ export const resolveUserFromJwt = async (
     return null;
   }
 };
+
+/** Resolves a user from an access token, rejecting revoked sessions and devices. */
+export const resolveUserFromJwt = async (
+  token: string,
+): Promise<IUserDocument | null> =>
+  (await resolveJwtAuth(token))?.user ?? null;
 
 const resolveUserFromSyncKey = async (
   req: Request,
@@ -111,83 +127,62 @@ const resolveUserFromSyncKey = async (
   return findUserBySyncApiKey(apiKey);
 };
 
+const SYNC_KEY_AUTH = {
+  sessionId: null,
+  deviceId: null,
+  deviceType: "sync_key",
+  deviceName: "Sync API Key",
+  companionDeviceType: null,
+  authMethod: "sync_api_key",
+} as const;
+
 const authMiddleware = async (
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction,
 ): Promise<void> => {
-  const authorizationHeader = getHeaderValue(req.headers.authorization);
-  const bearerToken = getBearerToken(authorizationHeader);
-  let user = bearerToken ? await resolveUserFromJwt(bearerToken) : null;
-
-  if (user == null) {
-    logger.debug("Attempting to resolve user from Sync API Key");
-    user = await resolveUserFromSyncKey(req);
-    if (user) {
-      logger.debug(
-        `Successfully resolved user: ${user.email} (ID: ${user._id})`,
-      );
-    } else {
-      logger.warn("Failed to resolve user from Sync API Key - unauthorized");
-    }
+  // Nested routers (e.g. /api/projects and /api/projects/:id/epics) both run
+  // this middleware; authenticate once per request.
+  if (req.user && req.auth) {
+    next();
+    return;
   }
 
+  const authorizationHeader = getHeaderValue(req.headers.authorization);
+  const bearerToken = getBearerToken(authorizationHeader);
+  const jwtAuth = bearerToken ? await resolveJwtAuth(bearerToken) : null;
+
+  if (jwtAuth) {
+    const { user, session, companionDevice } = jwtAuth;
+    req.user = user;
+    req.deviceSession = session;
+    req.auth = {
+      sessionId: session._id.toString(),
+      deviceId: session.deviceId?.toString() ?? null,
+      deviceType: session.deviceType,
+      deviceName: session.deviceName,
+      companionDeviceType: session.companionDeviceType ?? null,
+      authMethod: "access_token",
+    };
+    if (companionDevice) {
+      req.companionDevice = companionDevice;
+    }
+    next();
+    return;
+  }
+
+  logger.debug("Attempting to resolve user from Sync API Key");
+  const user = await resolveUserFromSyncKey(req);
   if (user == null) {
+    logger.warn("Failed to resolve user from Sync API Key - unauthorized");
     respondUnauthorized(res);
     return;
   }
 
+  logger.debug(`Successfully resolved user: ${user.email} (ID: ${user._id})`);
   req.user = user;
-
-  if (bearerToken) {
-    try {
-      const decoded = authService.verifyAccessToken(bearerToken);
-      const sessionId =
-        typeof decoded.sessionId === "string" ? decoded.sessionId : null;
-      const session =
-        sessionId != null
-          ? await findActiveDeviceSessionById(sessionId, new Date())
-          : null;
-
-      if (session != null) {
-        req.deviceSession = session;
-        req.auth = {
-          sessionId: session._id.toString(),
-          deviceId: session.deviceId?.toString() ?? null,
-          deviceType: session.deviceType,
-          deviceName: session.deviceName,
-          companionDeviceType: session.companionDeviceType ?? null,
-          authMethod: "access_token",
-        };
-
-        if (session.deviceType === "companion" && session.deviceId != null) {
-          req.companionDevice = await findCompanionDeviceById(
-            session.deviceId.toString(),
-          );
-        }
-      }
-    } catch {
-      req.deviceSession = null;
-      req.auth = {
-        sessionId: null,
-        deviceId: null,
-        deviceType: "sync_key",
-        deviceName: "Sync API Key",
-        companionDeviceType: null,
-        authMethod: "sync_api_key",
-      };
-    }
-  } else {
-    req.auth = {
-      sessionId: null,
-      deviceId: null,
-      deviceType: "sync_key",
-      deviceName: "Sync API Key",
-      companionDeviceType: null,
-      authMethod: "sync_api_key",
-    };
-  }
-
+  req.deviceSession = null;
+  req.auth = { ...SYNC_KEY_AUTH };
   next();
 };
 

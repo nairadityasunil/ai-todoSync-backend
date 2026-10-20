@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import WorkspaceModel, {
   IWorkspaceDocument,
 } from "../../../modules/workspace/models/workspace.model.js";
@@ -128,34 +129,52 @@ class WorkspaceService {
       workspaceIds.push(defaultWs._id);
     }
 
-    const workspaces = await WorkspaceModel.find({ _id: { $in: workspaceIds } })
-      .sort({ createdAt: 1 })
-      .lean();
-
-    return Promise.all(
-      workspaces.map(async (ws) => {
-        const memberCount = await WorkspaceMemberModel.countDocuments({
-          workspaceId: ws._id,
-        });
-        const projectCount = await ProjectModel.countDocuments({
-          workspaceId: ws._id,
-        });
-        const member = memberships.find(
-          (m) => m.workspaceId.toString() === ws._id.toString(),
-        );
-
-        return {
-          id: ws._id.toString(),
-          name: ws.name,
-          slug: ws.slug,
-          ownerId: ws.ownerId.toString(),
-          role: member?.role || "MEMBER",
-          memberCount,
-          projectCount,
-          createdAt: ws.createdAt,
-        };
-      }),
+    // Workspaces and their member/project counts load together: two grouped
+    // counts instead of two queries per workspace.
+    const countBy = (
+      model: typeof WorkspaceMemberModel | typeof ProjectModel,
+    ): Promise<Array<{ _id: unknown; count: number }>> =>
+      (model as typeof WorkspaceMemberModel)
+        .aggregate<{ _id: unknown; count: number }>([
+          // Aggregations skip Mongoose casting, so pass real ObjectIds.
+          {
+            $match: {
+              workspaceId: {
+                $in: workspaceIds.map((id) => new Types.ObjectId(String(id))),
+              },
+            },
+          },
+          { $group: { _id: "$workspaceId", count: { $sum: 1 } } },
+        ])
+        .exec();
+    const [workspaces, memberCounts, projectCounts] = await Promise.all([
+      WorkspaceModel.find({ _id: { $in: workspaceIds } })
+        .sort({ createdAt: 1 })
+        .lean(),
+      countBy(WorkspaceMemberModel),
+      countBy(ProjectModel),
+    ]);
+    const toMap = (rows: Array<{ _id: unknown; count: number }>) =>
+      new Map(rows.map((row) => [String(row._id), row.count]));
+    const membersByWorkspace = toMap(memberCounts);
+    const projectsByWorkspace = toMap(projectCounts);
+    const roleByWorkspace = new Map(
+      memberships.map((m) => [m.workspaceId.toString(), m.role]),
     );
+
+    return workspaces.map((ws) => {
+      const id = ws._id.toString();
+      return {
+        id,
+        name: ws.name,
+        slug: ws.slug,
+        ownerId: ws.ownerId.toString(),
+        role: roleByWorkspace.get(id) || "MEMBER",
+        memberCount: membersByWorkspace.get(id) ?? 0,
+        projectCount: projectsByWorkspace.get(id) ?? 0,
+        createdAt: ws.createdAt,
+      };
+    });
   }
 
   public async getWorkspaceDetails(userId: string, workspaceId: string) {

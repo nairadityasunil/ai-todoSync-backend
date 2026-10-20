@@ -76,6 +76,40 @@ export const getProjectsByUser = async (
     .exec();
 };
 
+const projectIdQuery = (
+  projectIds: string[],
+  search?: string,
+): Record<string, unknown> => {
+  const query: Record<string, unknown> = buildSafeRefInMatch("_id", projectIds);
+  if (search) {
+    query.name = { $regex: escapeRegex(search), $options: "i" };
+  }
+  return query;
+};
+
+/** One page of the given projects plus the total, fetched in parallel. */
+export const getProjectsPageByIds = async (params: {
+  projectIds: string[];
+  search?: string;
+  skip?: number;
+  limit?: number;
+}): Promise<{ projects: IProjectDocument[]; total: number }> => {
+  if (params.projectIds.length === 0) {
+    return { projects: [], total: 0 };
+  }
+  const query = projectIdQuery(params.projectIds, params.search);
+  const [projects, total] = await Promise.all([
+    ProjectModel.find(query)
+      .populate(projectPopulateOptions)
+      .sort({ name: 1, _id: 1 })
+      .skip(params.skip || 0)
+      .limit(params.limit || 0)
+      .exec(),
+    ProjectModel.countDocuments(query).exec(),
+  ]);
+  return { projects, total };
+};
+
 export const countProjectsByUser = async (
   userId: string,
   search?: string,
@@ -107,6 +141,11 @@ export const getProjectById = async (
   projectId: string,
 ): Promise<IProjectDocument | null> =>
   ProjectModel.findById(projectId).populate(projectPopulateOptions).exec();
+
+/** The project without its creator populated; enough for access checks. */
+export const getProjectByIdUnpopulated = async (
+  projectId: string,
+): Promise<IProjectDocument | null> => ProjectModel.findById(projectId).exec();
 
 export const getProjectByIdAndUser = async (
   projectId: string,
