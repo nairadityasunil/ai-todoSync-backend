@@ -87,6 +87,9 @@ class HealthRoutes implements Routes {
         status: overallStatus,
         timestamp: new Date().toISOString(),
         environment: process.env.NODE_ENV || "development",
+        // Set automatically by Render; shows which commit is deployed.
+        commit: process.env.RENDER_GIT_COMMIT ?? process.env.GIT_COMMIT ?? null,
+        branch: process.env.RENDER_GIT_BRANCH ?? null,
         uptime: {
           seconds: uptimeSec,
           formatted: `${hours}h ${minutes}m ${seconds}s`,
