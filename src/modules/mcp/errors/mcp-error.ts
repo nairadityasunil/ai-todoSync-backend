@@ -6,7 +6,8 @@ export type McpErrorCode =
   | "conflict"
   | "rate_limited"
   | "internal_error"
-  | "confirmation_required";
+  | "confirmation_required"
+  | "approval_required";
 
 const HTTP_STATUS_MAP: Record<McpErrorCode, number> = {
   unauthorized: 401,
@@ -17,6 +18,7 @@ const HTTP_STATUS_MAP: Record<McpErrorCode, number> = {
   rate_limited: 429,
   internal_error: 500,
   confirmation_required: 202,
+  approval_required: 202,
 };
 
 export class McpError extends Error {

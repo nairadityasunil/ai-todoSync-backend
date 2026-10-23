@@ -1,0 +1,238 @@
+import type { NextFunction, Request, Response } from "express";
+import { Types } from "mongoose";
+
+import type { McpScope, RiskLevel } from "../mcp/registry/tool-types.js";
+import { runAsAgent } from "./activity.service.js";
+import {
+  authorize,
+  recordDecision,
+  resolveProjectId,
+  type AuthorizeInput,
+} from "./guard.js";
+import type { IAgentDocument } from "./model.js";
+import { snapshotBefore } from "./undo.service.js";
+
+/**
+ * Applies agent governance to REST calls made with an agent credential
+ * (API keys, ChatGPT Actions, companion devices). Calls are named like MCP
+ * tools ("task:delete", "epic:create") so one policy covers both channels.
+ */
+
+export interface RestAction {
+  action: string;
+  domain: string;
+  risk: RiskLevel;
+  scope: McpScope;
+  /** Agents may never call this endpoint (credential and agent management). */
+  forbidden: boolean;
+  refs: { projectId?: string; taskId?: string; epicId?: string };
+}
+
+const isId = (segment: string): boolean =>
+  Types.ObjectId.isValid(segment) && /^[a-f0-9]{24}$/i.test(segment);
+
+const singular = (word: string): string => {
+  if (word.endsWith("ies")) return `${word.slice(0, -3)}y`;
+  if (word.endsWith("sses")) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+};
+
+const VERBS: Record<string, string> = {
+  POST: "create",
+  PUT: "update",
+  PATCH: "update",
+  DELETE: "delete",
+};
+
+/** Endpoints only a person may use. GET /api/agents/approvals/:id stays open so agents can poll. */
+const isForbiddenForAgents = (
+  domain: string,
+  segments: string[],
+  method: string,
+): boolean => {
+  if (domain === "agent")
+    return !(method === "GET" && segments[0] === "approvals");
+  if (domain === "auth") return method !== "GET";
+  return false;
+};
+
+export function describeRestCall(method: string, path: string): RestAction {
+  const segments = path
+    .split("?")[0]
+    .split("/")
+    .filter(Boolean)
+    .map((segment) =>
+      decodeURIComponent(segment)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, ""),
+    );
+  if (segments[0] === "api") segments.shift();
+  const domain = singular(segments[0] || "api").replace(/-/g, "_");
+  const rest = segments.slice(1);
+  const words = rest.filter((segment) => !isId(segment));
+  const lastWord = words[words.length - 1];
+  const endsWithId = rest.length > 0 && isId(rest[rest.length - 1]);
+
+  const isRead = method === "GET" || method === "HEAD";
+  const verb = isRead
+    ? endsWithId
+      ? "get"
+      : "list"
+    : (VERBS[method] ?? method.toLowerCase());
+  let action: string;
+  if (!lastWord) {
+    action = `${domain}:${verb}`;
+  } else if (singular(lastWord) !== lastWord) {
+    // Nested collection: POST /projects/:id/epics -> epic:create
+    action = `${singular(lastWord).replace(/-/g, "_")}:${verb}`;
+  } else {
+    // Command or view: POST /tasks/:id/complete -> task:complete
+    action = `${domain}:${lastWord.replace(/-/g, "_")}`;
+  }
+
+  let risk: RiskLevel = "read";
+  if (method !== "GET" && method !== "HEAD") {
+    risk = method === "DELETE" ? "destructive" : "write";
+    if (
+      ["workspace", "invitation"].includes(domain) ||
+      /member|invite|role|permission/.test(path)
+    ) {
+      risk = method === "DELETE" ? "destructive" : "sensitive_write";
+    }
+    if (domain === "auth" || domain === "agent") risk = "security_critical";
+  }
+
+  let scope: McpScope = "work:read";
+  if (risk !== "read") {
+    if (domain === "workspace") scope = "workspace:admin";
+    else if (["ai", "ai_planning", "ai_planner"].includes(domain))
+      scope = "ai:execute";
+    else if (domain === "prompt" || domain === "prompt_library")
+      scope = "prompt:write";
+    else if (["chat", "comment", "note", "document"].includes(domain))
+      scope = "collaboration:write";
+    else scope = "work:write";
+  }
+
+  const refs: RestAction["refs"] = {};
+  rest.forEach((segment, index) => {
+    if (!isId(segment)) return;
+    const owner = index === 0 ? segments[0] : rest[index - 1];
+    if (owner === "projects") refs.projectId = segment;
+    if (owner === "tasks") refs.taskId = segment;
+    if (owner === "epics") refs.epicId = segment;
+  });
+
+  return {
+    action,
+    domain,
+    risk,
+    scope,
+    forbidden: isForbiddenForAgents(domain, rest, method),
+    refs,
+  };
+}
+
+const firstString = (...values: unknown[]): string | undefined =>
+  values.find(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
+
+/** Runs inside authMiddleware once the request is known to come from an agent. */
+export async function guardAgentRequest(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  agent: IAgentDocument,
+  userId: string,
+): Promise<void> {
+  const method = req.method.toUpperCase();
+  const path = req.originalUrl;
+  const call = describeRestCall(method, path);
+
+  if (call.forbidden) {
+    res.status(403).json({
+      error: "agent_forbidden",
+      message: "Agents cannot manage credentials, sign-in or agent governance.",
+    });
+    return;
+  }
+  if (!agent.scopes.includes(call.scope)) {
+    res.status(403).json({
+      error: "agent_scope",
+      message: `This agent lacks the "${call.scope}" scope needed for ${call.action}.`,
+    });
+    return;
+  }
+
+  const body = (
+    req.body && typeof req.body === "object" ? req.body : {}
+  ) as Record<string, unknown>;
+  const query = req.query as Record<string, unknown>;
+  const projectId = await resolveProjectId({
+    projectId: firstString(
+      call.refs.projectId,
+      body.projectId,
+      query.projectId,
+    ),
+    taskId: firstString(call.refs.taskId, body.taskId, query.taskId),
+    epicId: firstString(call.refs.epicId, body.epicId, query.epicId),
+  });
+
+  const guardInput: AuthorizeInput = {
+    agent,
+    userId,
+    channel: "rest",
+    action: call.action,
+    domain: call.domain,
+    risk: call.risk,
+    input: body,
+    projectId,
+    request: { method, path },
+  };
+  const decision = await authorize(guardInput);
+
+  if (decision.effect === "deny") {
+    recordDecision(guardInput, decision, { statusCode: 403 });
+    res.status(403).json({
+      error: "agent_blocked",
+      message: decision.reason,
+      policy: decision.policy?.name ?? null,
+    });
+    return;
+  }
+  if (decision.effect === "require_approval") {
+    recordDecision(guardInput, decision, { statusCode: 202 });
+    const approvalId = decision.approval._id.toString();
+    res.status(202).json({
+      error: "approval_required",
+      message: `${call.action} needs approval under policy "${decision.policy.name}". It runs automatically once a workspace or project admin approves it.`,
+      approvalId,
+      statusUrl: `/api/agents/approvals/${approvalId}`,
+      expiresAt: decision.approval.expiresAt,
+    });
+    return;
+  }
+
+  // Reads are frequent (sync polling), so only changes and blocks are logged.
+  if (call.risk !== "read" || decision.advisory.length > 0) {
+    const undo =
+      call.risk !== "read"
+        ? await snapshotBefore(call.action, {
+            taskId: firstString(call.refs.taskId, body.taskId),
+            epicId: firstString(call.refs.epicId, body.epicId),
+          })
+        : null;
+    const started = Date.now();
+    res.on("finish", () => {
+      recordDecision(guardInput, decision, {
+        statusCode: res.statusCode,
+        error: res.statusCode >= 400 ? `HTTP ${res.statusCode}` : null,
+        durationMs: Date.now() - started,
+        undo,
+      });
+    });
+  }
+  runAsAgent(agent, () => next());
+}

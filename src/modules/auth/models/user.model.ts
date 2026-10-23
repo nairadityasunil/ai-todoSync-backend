@@ -1,5 +1,4 @@
 import bcrypt from "bcryptjs";
-import { randomBytes } from "crypto";
 import type { Document } from "mongoose";
 import { Schema, model } from "mongoose";
 import { encrypt, decrypt } from "../../../utils/encryption.js";
@@ -7,7 +6,8 @@ import { encrypt, decrypt } from "../../../utils/encryption.js";
 export interface IUser {
   email: string;
   password: string | null;
-  syncApiKey: string;
+  /** Legacy plain-text Sync key; moved to a hashed agent key on first use. */
+  syncApiKey?: string | null;
   authProvider: "local" | "google";
   googleId?: string | null;
   name?: string | null;
@@ -29,10 +29,7 @@ export interface IUser {
 
 export interface IUserDocument extends IUser, Document {
   comparePassword(candidate: string): Promise<boolean>;
-  regenerateSyncApiKey(): string;
 }
-
-const generateSyncApiKey = () => randomBytes(32).toString("hex");
 
 const userSchema = new Schema<IUserDocument>(
   {
@@ -49,8 +46,8 @@ const userSchema = new Schema<IUserDocument>(
     },
     syncApiKey: {
       type: String,
-      required: true,
-      default: generateSyncApiKey,
+      default: null,
+      index: { sparse: true },
     },
     authProvider: {
       type: String,
@@ -146,11 +143,6 @@ userSchema.methods.comparePassword = async function (candidate: string) {
   }
 
   return bcrypt.compare(candidate, this.password);
-};
-
-userSchema.methods.regenerateSyncApiKey = function () {
-  this.syncApiKey = generateSyncApiKey();
-  return this.syncApiKey;
 };
 
 const UserModel = model<IUserDocument>("User", userSchema);

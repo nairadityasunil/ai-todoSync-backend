@@ -2,6 +2,7 @@ import crypto from "crypto";
 import type { Request, Response } from "express";
 
 import env from "../../../config/env.js";
+import agentService from "../../agents/agent.service.js";
 import logger from "../../../lib/logger.js";
 import type { CreateUserPayload } from "../repositories/auth.repository.js";
 import authService, { HttpError } from "../services/auth.service.js";
@@ -384,6 +385,13 @@ class AuthController {
         code ?? "",
         this.extractDeviceMetadata(req),
       );
+      // Tokens issued here go to ChatGPT Actions: govern them as an agent.
+      if (authResult.session.sessionId) {
+        await agentService.linkChatGptSession(
+          authResult.user.id,
+          authResult.session.sessionId,
+        );
+      }
 
       res.status(200).json({
         access_token: authResult.accessToken,
@@ -523,7 +531,8 @@ class AuthController {
       );
 
       res.status(200).json({
-        message: "Sync API key regenerated",
+        message:
+          "Personal API key created. Copy it now: it will not be shown again.",
         data: { syncApiKey },
       });
     } catch (error) {

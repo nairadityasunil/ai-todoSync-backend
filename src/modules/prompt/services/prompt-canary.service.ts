@@ -8,11 +8,17 @@ import workspaceService from "../../workspace/services/workspace.service.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import { runInTransaction } from "../../../utils/transaction.js";
 import logger from "../../../lib/logger.js";
+import {
+  checkPrompt,
+  hasBlockingFindings,
+} from "../../agents/prompt-checks.js";
 
 export interface StartCanaryPayload {
   candidateVersion: number;
   minRequests?: number;
   errorThreshold?: number; // e.g. 0.05
+  /** Start even though the pre-deployment prompt checks found high-severity issues. */
+  acknowledgeChecks?: boolean;
 }
 
 export class PromptCanaryService {
@@ -54,6 +60,21 @@ export class PromptCanaryService {
       throw new HttpError(
         404,
         `Candidate version ${payload.candidateVersion} not found`,
+      );
+    }
+
+    // Pre-deployment checks: secrets and injection phrases block the rollout.
+    const findings = checkPrompt({
+      body: candidateVersionDoc.body,
+      messages: candidateVersionDoc.messages,
+    });
+    if (hasBlockingFindings(findings) && !payload.acknowledgeChecks) {
+      throw new HttpError(
+        422,
+        `Prompt checks failed: ${findings
+          .filter((finding) => finding.severity === "high")
+          .map((finding) => finding.message)
+          .join(" ")} Fix the prompt or start again with acknowledgeChecks.`,
       );
     }
 

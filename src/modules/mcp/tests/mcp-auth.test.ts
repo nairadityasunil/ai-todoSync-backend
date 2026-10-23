@@ -3,7 +3,11 @@ import test, { describe } from "node:test";
 import "../mcp.server.js"; // Bootstraps and imports all tool modules into toolRegistry
 import toolRegistry from "../registry/tool-registry.js";
 import { validateInput } from "../validation/schema-validator.js";
-import { checkConfirmation } from "../registry/risk-policy.js";
+import {
+  checkConfirmation,
+  createMemoryConfirmationStore,
+  setConfirmationStore,
+} from "../registry/risk-policy.js";
 import { McpError } from "../errors/mcp-error.js";
 
 describe("MCP Auth, Registry & Validation Tests", () => {
@@ -51,7 +55,8 @@ describe("MCP Auth, Registry & Validation Tests", () => {
       handler: async () => ({ deleted: true }),
     };
 
-    const checkResult = checkConfirmation(toolEntry, "user-1", {});
+    setConfirmationStore(createMemoryConfirmationStore());
+    const checkResult = await checkConfirmation(toolEntry, "user-1", {});
     assert.ok(checkResult !== null, "Should return confirmation payload");
     assert.equal(checkResult?.confirmationRequired, true);
     assert.ok(
@@ -59,7 +64,7 @@ describe("MCP Auth, Registry & Validation Tests", () => {
       "Should generate confirmation token",
     );
 
-    const validTokenResult = checkConfirmation(toolEntry, "user-1", {
+    const validTokenResult = await checkConfirmation(toolEntry, "user-1", {
       _confirmationToken: checkResult?.confirmationToken,
     });
     assert.equal(
@@ -68,7 +73,7 @@ describe("MCP Auth, Registry & Validation Tests", () => {
       "Call with valid token should proceed",
     );
 
-    const invalidTokenResult = checkConfirmation(toolEntry, "user-1", {
+    const invalidTokenResult = await checkConfirmation(toolEntry, "user-1", {
       _confirmationToken: "invalid-token",
     });
     assert.ok(

@@ -7,6 +7,8 @@ export interface IDeviceSession {
   userId: Types.ObjectId | string;
   deviceId?: Types.ObjectId | string | null;
   deviceType: SessionDeviceKind;
+  /** Set when the session belongs to an agent (e.g. ChatGPT Actions). */
+  agentId?: Types.ObjectId | string | null;
   deviceName: string;
   companionDeviceType?: string | null;
   refreshTokenHash: string;
@@ -47,6 +49,11 @@ const deviceSessionSchema = new Schema<IDeviceSessionDocument>(
       type: String,
       default: null,
       trim: true,
+    },
+    agentId: {
+      type: Schema.Types.ObjectId,
+      ref: "Agent",
+      default: null,
     },
     refreshTokenHash: {
       type: String,

@@ -29,10 +29,12 @@ import DocumentRoutes from "./modules/document/routes/document.routes.js";
 import PromptLibraryRoutes from "./modules/prompt/routes/prompt-library.routes.js";
 import CompanionRoutes from "./modules/companion/routes/companion.routes.js";
 import McpRoutes from "./modules/mcp/mcp.routes.js";
+import AgentRoutes from "./modules/agents/routes.js";
 import logger from "./lib/logger.js";
 
 const server = new App([
   new McpRoutes(),
+  new AgentRoutes(),
   new CompanionRoutes(),
   new PromptLibraryRoutes(),
   new DocumentRoutes(),

@@ -4,6 +4,8 @@ import { Schema, model } from "mongoose";
 export interface IWorkspaceSettings {
   defaultProjectRole?: string;
   allowGuestInvites?: boolean;
+  /** Mask personal data and secrets before prompts go to AI providers. */
+  aiDataMasking?: boolean;
 }
 
 export interface IWorkspace {
@@ -38,6 +40,7 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
     settings: {
       defaultProjectRole: { type: String, default: "MEMBER" },
       allowGuestInvites: { type: Boolean, default: true },
+      aiDataMasking: { type: Boolean, default: false },
     },
   },
   { timestamps: true },

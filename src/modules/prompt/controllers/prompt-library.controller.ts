@@ -511,6 +511,7 @@ class PromptLibraryController {
           candidateVersion,
           minRequests: req.body.minRequests,
           errorThreshold: req.body.errorThreshold,
+          acknowledgeChecks: req.body.acknowledgeChecks === true,
         },
       );
       res.status(201).json({ status: "success", data: canary });

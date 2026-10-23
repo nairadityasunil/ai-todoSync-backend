@@ -33,6 +33,14 @@ class McpRoutes implements Routes {
           tools,
           count: tools.length,
           scopes: req.mcpScopes,
+          agent: req.mcpAgent
+            ? {
+                id: req.mcpAgent._id.toString(),
+                name: req.mcpAgent.name,
+                kind: req.mcpAgent.kind,
+                projectIds: (req.mcpAgent.projectIds ?? []).map(String),
+              }
+            : null,
         });
       },
     );
@@ -50,7 +58,13 @@ class McpRoutes implements Routes {
         const rawInput = (req.body as Record<string, unknown>) ?? {};
 
         try {
-          const result = await callTool(toolName, userId, userScopes, rawInput);
+          const result = await callTool(
+            toolName,
+            userId,
+            userScopes,
+            rawInput,
+            req.mcpAgent ?? null,
+          );
           res.json(result);
         } catch (error) {
           if (error instanceof McpError) {

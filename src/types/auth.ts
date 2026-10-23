@@ -1,5 +1,6 @@
 import type { Request } from "express";
 
+import type { IAgentDocument } from "../modules/agents/model.js";
 import type { ICompanionDeviceDocument } from "../modules/ai/models/companion-device.model.js";
 import type {
   IDeviceSessionDocument,
@@ -14,7 +15,7 @@ import type { IWorkspaceMemberDocument } from "../modules/workspace/models/works
 export interface AuthProfile {
   id: string;
   email: string;
-  syncApiKey: string;
+  syncApiKey: string | null;
   name: string | null;
   firstName: string | null;
   lastName: string | null;
@@ -32,6 +33,8 @@ export interface SessionDeviceContext {
   deviceName: string | null;
   companionDeviceType: string | null;
   authMethod: "access_token" | "sync_api_key";
+  /** Set when the request comes from a governed agent. */
+  agentId?: string | null;
 }
 
 export interface AuthResult {
@@ -40,7 +43,7 @@ export interface AuthResult {
   refreshToken: string;
   accessTokenExpiresIn: number;
   refreshTokenExpiresIn: number;
-  syncApiKey: string;
+  syncApiKey: string | null;
   user: AuthProfile;
   session: SessionDeviceContext;
 }
@@ -50,6 +53,9 @@ export interface AuthenticatedRequest extends Request {
   auth?: SessionDeviceContext;
   deviceSession?: IDeviceSessionDocument | null;
   companionDevice?: ICompanionDeviceDocument | null;
+  agent?: IAgentDocument | null;
+  /** Set on an approved agent request replayed by the approvals service. */
+  agentApprovalId?: string | null;
   projectAccess?: {
     project: IProjectDocument;
     role: ProjectRole;

@@ -7,6 +7,7 @@ import ProjectModel from "../../project/models/project.model.js";
 import logger from "../../../lib/logger.js";
 import { createHash } from "crypto";
 import projectService from "../../project/services/project.service.js";
+import { currentAgent } from "../../agents/activity.service.js";
 
 interface LogActivityParams {
   projectId: string;
@@ -63,7 +64,10 @@ class ActivityLogService {
         userName: params.userName,
         changes: params.changes ?? [],
         description: params.description,
-        metadata: params.metadata ?? {},
+        // Changes made by an agent carry who it was, for review and undo.
+        metadata: currentAgent()
+          ? { ...(params.metadata ?? {}), agent: currentAgent() }
+          : (params.metadata ?? {}),
         approvalId: params.approvalId ?? null,
         sequence,
         previousHash,

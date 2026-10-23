@@ -5,7 +5,7 @@ import type { IUserDocument } from "../modules/auth/models/user.model.js";
 import ChatMessageModel from "../modules/chat/models/chat-message.model.js";
 import ProjectMemberModel from "../modules/project/models/project-member.model.js";
 import { resolveUserFromJwt } from "../middleware/auth.middleware.js";
-import { findUserBySyncApiKey } from "../modules/auth/repositories/auth.repository.js";
+import agentService from "../modules/agents/agent.service.js";
 import chatService from "../modules/chat/services/chat.service.js";
 import env from "../config/env.js";
 import logger from "../lib/logger.js";
@@ -148,7 +148,8 @@ class ChatSocketServer {
       // session; refresh tokens and revoked sessions are rejected.
       let user: IUserDocument | null = await resolveUserFromJwt(token);
       if (!user) {
-        user = await findUserBySyncApiKey(token);
+        // API keys (and legacy Sync keys); blocked agents throw and are refused.
+        user = (await agentService.resolveApiKey(token))?.user ?? null;
       }
 
       if (!user) {

@@ -3,6 +3,8 @@ import type { Types } from "mongoose";
 export interface IWorkspaceSettings {
   defaultProjectRole?: string;
   allowGuestInvites?: boolean;
+  /** Mask personal data and secrets before prompts go to AI providers. */
+  aiDataMasking?: boolean;
 }
 
 export interface IWorkspace {

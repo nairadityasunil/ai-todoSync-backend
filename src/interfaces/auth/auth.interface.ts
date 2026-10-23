@@ -3,7 +3,7 @@ import type { Types } from "mongoose";
 export interface IUser {
   email: string;
   password: string | null;
-  syncApiKey: string;
+  syncApiKey: string | null;
   authProvider: "local" | "google";
   googleId?: string | null;
   name?: string | null;

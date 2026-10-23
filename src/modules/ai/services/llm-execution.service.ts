@@ -16,6 +16,7 @@ import type {
 } from "../adapters/base.adapter.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import logger from "../../../lib/logger.js";
+import { governAiCall } from "../../agents/ai-governance.js";
 
 export interface LlmExecutionPayload {
   workspaceId: string;
@@ -140,9 +141,19 @@ export class LlmExecutionService {
       baseUrl: payload.baseUrl,
     };
 
+    // 5. Agent governance: provider kill switch, policies and data masking.
+    const governed = await governAiCall({
+      workspaceId: payload.workspaceId,
+      userId: payload.userId,
+      projectId: payload.projectId,
+      providerId,
+      source: payload.source,
+      messages: payload.messages,
+    });
+
     try {
-      // 5. Execute LLM call
-      const response = await adapter.execute(payload.messages, execOptions);
+      // 6. Execute LLM call
+      const response = await adapter.execute(governed.messages, execOptions);
       const latencyMs = Date.now() - startTime;
 
       // 6. Calculate Cost

@@ -39,18 +39,8 @@ export const searchUsersByEmail = async (
     .limit(limit)
     .exec();
 
-export const updateSyncApiKey = async (
-  userId: string,
-  syncApiKey: string,
-): Promise<IUserDocument | null> =>
-  UserModel.findByIdAndUpdate(userId, { syncApiKey }, { new: true }).exec();
-
 export const updateUser = async (
   userId: string,
   data: Partial<CreateUserPayload>,
 ): Promise<IUserDocument | null> =>
   UserModel.findByIdAndUpdate(userId, data, { new: true }).exec();
-
-export const findUserBySyncApiKey = async (
-  syncApiKey: string,
-): Promise<IUserDocument | null> => UserModel.findOne({ syncApiKey }).exec();

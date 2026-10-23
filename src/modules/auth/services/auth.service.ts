@@ -43,6 +43,7 @@ import type {
 } from "../../../modules/auth/models/device-session.model.js";
 import type { IUserDocument } from "../models/user.model.js";
 import DeviceSessionModel from "../models/device-session.model.js";
+import agentService from "../../agents/agent.service.js";
 import type {
   AuthProfile,
   AuthResult,
@@ -418,10 +419,8 @@ class AuthService {
       throw new HttpError(404, "User not found");
     }
 
-    const syncApiKey = user.regenerateSyncApiKey();
-    await user.save();
-
-    return syncApiKey;
+    // The new key is a hashed agent key; it is shown once and never stored in plain text.
+    return agentService.regeneratePersonalKey(user._id.toString());
   }
 
   public async updateProfile(
@@ -1034,7 +1033,7 @@ class AuthService {
     return {
       id: user._id.toString(),
       email: user.email,
-      syncApiKey: user.syncApiKey,
+      syncApiKey: null,
       name: user.name ?? null,
       firstName: user.firstName ?? null,
       lastName: user.lastName ?? null,
@@ -1057,7 +1056,7 @@ class AuthService {
       refreshToken: sessionResult.refreshToken,
       accessTokenExpiresIn: sessionResult.accessTokenExpiresIn,
       refreshTokenExpiresIn: sessionResult.refreshTokenExpiresIn,
-      syncApiKey: user.syncApiKey,
+      syncApiKey: null,
       user: this.buildProfile(user),
       session: this.buildSessionContext(sessionResult.session, companionDevice),
     };

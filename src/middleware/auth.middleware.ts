@@ -3,10 +3,15 @@ import { NextFunction, Request, Response } from "express";
 import logger from "../lib/logger.js";
 import type { IUserDocument } from "../modules/auth/models/user.model.js";
 import { findCompanionDeviceById } from "../modules/ai/repositories/companion-device.repository.js";
-import {
-  findUserById,
-  findUserBySyncApiKey,
-} from "../modules/auth/repositories/auth.repository.js";
+import { findUserById } from "../modules/auth/repositories/auth.repository.js";
+import agentService, {
+  AgentAccessError,
+  agentBlockReason,
+} from "../modules/agents/agent.service.js";
+import approvalService from "../modules/agents/approval.service.js";
+import type { IAgentDocument } from "../modules/agents/model.js";
+import { withRequestContext } from "../modules/agents/request-context.js";
+import { guardAgentRequest } from "../modules/agents/rest-guard.js";
 import { findActiveDeviceSessionById } from "../modules/auth/repositories/device-session.repository.js";
 import type { IDeviceSessionDocument } from "../modules/auth/models/device-session.model.js";
 import authService from "../modules/auth/services/auth.service.js";
@@ -56,7 +61,9 @@ interface JwtAuth {
  * revoked sessions and devices. User and session load in parallel, so this
  * costs one database round trip (two for companion devices).
  */
-const resolveJwtAuth = async (token: string): Promise<JwtAuth | null> => {
+export const resolveJwtAuth = async (
+  token: string,
+): Promise<JwtAuth | null> => {
   try {
     const decoded = authService.verifyAccessToken(token);
     const userId =
@@ -106,25 +113,58 @@ const resolveJwtAuth = async (token: string): Promise<JwtAuth | null> => {
 /** Resolves a user from an access token, rejecting revoked sessions and devices. */
 export const resolveUserFromJwt = async (
   token: string,
-): Promise<IUserDocument | null> =>
-  (await resolveJwtAuth(token))?.user ?? null;
+): Promise<IUserDocument | null> => (await resolveJwtAuth(token))?.user ?? null;
 
-const resolveUserFromSyncKey = async (
-  req: Request,
-): Promise<IUserDocument | null> => {
+/** The raw API key a request carries, if any. */
+export const extractApiKey = (req: Request): string | undefined => {
   const authorizationHeader = getHeaderValue(req.headers.authorization);
-  const apiKey =
+  return (
     getHeaderValue(req.headers["x-sync-api-key"]) ??
     getBearerToken(authorizationHeader) ??
-    (typeof req.query.apiKey === "string"
-      ? req.query.apiKey.trim()
-      : undefined);
+    (typeof req.query.apiKey === "string" ? req.query.apiKey.trim() : undefined)
+  );
+};
 
-  if (!apiKey) {
-    return null;
+/**
+ * The agent behind a signed-in session: ChatGPT Actions sessions carry an
+ * agentId, companion devices register themselves. Portal sessions have none.
+ */
+export const resolveSessionAgent = async (
+  user: IUserDocument,
+  session: IDeviceSessionDocument,
+): Promise<IAgentDocument | null> => {
+  if (session.agentId) return agentService.getById(session.agentId.toString());
+  if (session.deviceType === "companion" && session.deviceId) {
+    return agentService.registerCompanion(
+      user,
+      session.deviceId.toString(),
+      session.deviceName,
+    );
   }
+  return null;
+};
 
-  return findUserBySyncApiKey(apiKey);
+const respondAgentBlocked = (
+  res: Response,
+  agent: IAgentDocument,
+  reason: string,
+): void => {
+  res.status(403).json({
+    error: "agent_blocked",
+    code: "AGENT_BLOCKED",
+    message: `Agent "${agent.name}" is ${reason}.`,
+  });
+};
+
+const contextFor = (req: Request, userId: string) => {
+  const body = (
+    req.body && typeof req.body === "object" ? req.body : {}
+  ) as Record<string, unknown>;
+  const projectId = body.projectId ?? req.query.projectId;
+  return {
+    userId,
+    projectId: typeof projectId === "string" ? projectId : null,
+  };
 };
 
 const SYNC_KEY_AUTH = {
@@ -136,6 +176,30 @@ const SYNC_KEY_AUTH = {
   authMethod: "sync_api_key",
 } as const;
 
+/** An approved agent request replayed by the approvals service. */
+const handleReplay = async (
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction,
+  token: string,
+): Promise<void> => {
+  const replay = await approvalService.consumeReplayToken(
+    token,
+    req.method.toUpperCase(),
+    req.originalUrl,
+  );
+  if (!replay) {
+    respondUnauthorized(res);
+    return;
+  }
+  req.user = replay.user;
+  req.deviceSession = null;
+  req.agent = replay.agent;
+  req.agentApprovalId = replay.approval._id.toString();
+  req.auth = { ...SYNC_KEY_AUTH, agentId: replay.agent._id.toString() };
+  withRequestContext(contextFor(req, replay.user._id.toString()), () => next());
+};
+
 const authMiddleware = async (
   req: AuthenticatedRequest,
   res: Response,
@@ -145,6 +209,12 @@ const authMiddleware = async (
   // this middleware; authenticate once per request.
   if (req.user && req.auth) {
     next();
+    return;
+  }
+
+  const replayToken = getHeaderValue(req.headers["x-agent-replay"]);
+  if (replayToken) {
+    await handleReplay(req, res, next, replayToken);
     return;
   }
 
@@ -167,23 +237,61 @@ const authMiddleware = async (
     if (companionDevice) {
       req.companionDevice = companionDevice;
     }
-    next();
+    const context = contextFor(req, user._id.toString());
+    const agent = await resolveSessionAgent(user, session);
+    if (!agent) {
+      withRequestContext(context, () => next());
+      return;
+    }
+    const blocked = agentBlockReason(agent);
+    if (blocked) {
+      respondAgentBlocked(res, agent, blocked);
+      return;
+    }
+    req.agent = agent;
+    req.auth.agentId = agent._id.toString();
+    await withRequestContext(context, () =>
+      guardAgentRequest(req, res, next, agent, user._id.toString()),
+    );
     return;
   }
 
-  logger.debug("Attempting to resolve user from Sync API Key");
-  const user = await resolveUserFromSyncKey(req);
-  if (user == null) {
-    logger.warn("Failed to resolve user from Sync API Key - unauthorized");
+  const apiKey = extractApiKey(req);
+  if (!apiKey) {
     respondUnauthorized(res);
     return;
   }
 
-  logger.debug(`Successfully resolved user: ${user.email} (ID: ${user._id})`);
-  req.user = user;
+  let resolved: Awaited<ReturnType<typeof agentService.resolveApiKey>>;
+  try {
+    resolved = await agentService.resolveApiKey(apiKey);
+  } catch (error) {
+    if (error instanceof AgentAccessError) {
+      res
+        .status(403)
+        .json({
+          error: "agent_blocked",
+          code: error.code,
+          message: error.message,
+        });
+      return;
+    }
+    throw error;
+  }
+  if (resolved == null) {
+    logger.warn("Unknown API key - unauthorized");
+    respondUnauthorized(res);
+    return;
+  }
+
+  req.user = resolved.user;
   req.deviceSession = null;
-  req.auth = { ...SYNC_KEY_AUTH };
-  next();
+  req.agent = resolved.agent;
+  req.auth = { ...SYNC_KEY_AUTH, agentId: resolved.agent._id.toString() };
+  const userId = resolved.user._id.toString();
+  await withRequestContext(contextFor(req, userId), () =>
+    guardAgentRequest(req, res, next, resolved.agent, userId),
+  );
 };
 
 export default authMiddleware;
