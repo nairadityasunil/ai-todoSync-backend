@@ -8,6 +8,8 @@ import {
 import agentService, {
   AgentAccessError,
   agentBlockReason,
+  ALL_AGENT_SCOPES,
+  STANDARD_AGENT_SCOPES,
 } from "../../agents/agent.service.js";
 import type { IAgentDocument } from "../../agents/model.js";
 import { withRequestContext } from "../../agents/request-context.js";
@@ -49,18 +51,34 @@ export const mcpAuthMiddleware = async (
 
   let user: IUserDocument | null = null;
   let agent: IAgentDocument | null = null;
+  let personScopes: McpScope[] | null = null;
 
   try {
     const jwtAuth = bearerToken ? await resolveJwtAuth(bearerToken) : null;
     if (jwtAuth) {
       user = jwtAuth.user;
-      agent =
-        (await resolveSessionAgent(jwtAuth.user, jwtAuth.session)) ??
-        (await agentService.registerMcpClient(jwtAuth.user, {
-          clientName: headerValue(req.headers["x-mcp-client"]),
+      const sessionAgent = await resolveSessionAgent(
+        jwtAuth.user,
+        jwtAuth.session,
+      );
+      const clientName = headerValue(req.headers["x-mcp-client"]);
+      if (sessionAgent) {
+        agent = sessionAgent;
+      } else if (!clientName && headerValue(req.headers.origin)) {
+        // The portal itself (a person in a browser), e.g. browsing the tool
+        // manifest in Settings: not an agent.
+        personScopes = (await agentService.isWorkspaceAdminAnywhere(
+          jwtAuth.user._id.toString(),
+        ))
+          ? ALL_AGENT_SCOPES
+          : STANDARD_AGENT_SCOPES;
+      } else {
+        agent = await agentService.registerMcpClient(jwtAuth.user, {
+          clientName,
           userAgent: headerValue(req.headers["user-agent"]),
           sessionId: jwtAuth.session._id.toString(),
-        }));
+        });
+      }
     } else {
       const apiKey = extractApiKey(req);
       const resolved = apiKey ? await agentService.resolveApiKey(apiKey) : null;
@@ -77,7 +95,7 @@ export const mcpAuthMiddleware = async (
     throw error;
   }
 
-  if (!user || !agent) {
+  if (!user || (!agent && !personScopes)) {
     res.status(401).json({
       error: "unauthorized",
       message: "Authentication required for MCP access",
@@ -85,8 +103,8 @@ export const mcpAuthMiddleware = async (
     return;
   }
 
-  const blocked = agentBlockReason(agent);
-  if (blocked) {
+  const blocked = agent ? agentBlockReason(agent) : null;
+  if (agent && blocked) {
     res.status(403).json({
       error: "agent_blocked",
       message: `Agent "${agent.name}" is ${blocked}.`,
@@ -96,8 +114,8 @@ export const mcpAuthMiddleware = async (
 
   req.mcpUser = user;
   req.mcpUserId = user._id.toString();
-  req.mcpAgent = agent;
-  req.mcpScopes = [...agent.scopes];
+  req.mcpAgent = agent ?? undefined;
+  req.mcpScopes = agent ? [...agent.scopes] : [...(personScopes ?? [])];
 
   const body = (
     req.body && typeof req.body === "object" ? req.body : {}
