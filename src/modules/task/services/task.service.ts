@@ -27,7 +27,11 @@ import chatSocketServer from "../../../socket/chat.socket.js";
 import TaskModel from "../models/task.model.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
-import { buildRefInMatch, buildRefMatch } from "../../../utils/mongo-ref.js";
+import {
+  andRefMatches,
+  buildRefInMatch,
+  buildRefMatch,
+} from "../../../utils/mongo-ref.js";
 import operationalAnalyticsService from "../../analytics/services/operational-analytics.service.js";
 import slaService from "./sla.service.js";
 import priorityEngineService from "./priority-engine.service.js";
@@ -269,10 +273,12 @@ class TaskService {
     const projectIds = memberships.map((m) => m.projectId.toString());
     const roleMap = this.buildRoleMap(memberships);
 
-    const tasks = await TaskModel.find({
-      ...buildRefMatch("assignedTo", userId),
-      ...buildRefInMatch("projectId", projectIds),
-    })
+    const tasks = await TaskModel.find(
+      andRefMatches(
+        buildRefMatch("assignedTo", userId),
+        buildRefInMatch("projectId", projectIds),
+      ),
+    )
       .populate(taskPopulateOptions)
       .exec();
 
@@ -494,10 +500,14 @@ class TaskService {
     }
 
     if (currentTask.projectId) {
-      const targetMembership = await ProjectMemberModel.findOne({
-        ...buildRefMatch("projectId", currentTask.projectId.toString()),
-        ...buildRefMatch("userId", targetUserId),
-      });
+      // Both conditions use $expr, so they must be combined with $and:
+      // spreading them would keep only the last one.
+      const targetMembership = await ProjectMemberModel.findOne(
+        andRefMatches(
+          buildRefMatch("projectId", currentTask.projectId.toString()),
+          buildRefMatch("userId", targetUserId),
+        ),
+      );
       if (!targetMembership) {
         throw new HttpError(400, "Target user is not a member of the project");
       }
@@ -674,10 +684,12 @@ class TaskService {
       }
 
       if (task.projectId) {
-        const isMember = await ProjectMemberModel.exists({
-          ...buildRefMatch("projectId", task.projectId.toString()),
-          ...buildRefMatch("userId", targetUserId),
-        });
+        const isMember = await ProjectMemberModel.exists(
+          andRefMatches(
+            buildRefMatch("projectId", task.projectId.toString()),
+            buildRefMatch("userId", targetUserId),
+          ),
+        );
         if (!isMember) {
           continue;
         }

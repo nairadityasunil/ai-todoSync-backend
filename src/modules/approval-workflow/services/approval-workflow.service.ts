@@ -6,7 +6,7 @@ import ProjectMemberModel from "../../project/models/project-member.model.js";
 import TaskModel, { type TaskPriority } from "../../task/models/task.model.js";
 import activityLogService from "../../audit/services/activity-log.service.js";
 import projectService from "../../project/services/project.service.js";
-import { buildRefMatch } from "../../../utils/mongo-ref.js";
+import { andRefMatches, buildRefMatch } from "../../../utils/mongo-ref.js";
 
 class HttpError extends Error {
   public status: number;
@@ -35,10 +35,12 @@ class ApprovalWorkflowService {
     const approverUserIds = this.normalizeApprovers(payload.approverUserIds);
 
     for (const approverUserId of approverUserIds) {
-      const isMember = await ProjectMemberModel.exists({
-        ...buildRefMatch("projectId", projectId),
-        ...buildRefMatch("userId", approverUserId),
-      });
+      const isMember = await ProjectMemberModel.exists(
+        andRefMatches(
+          buildRefMatch("projectId", projectId),
+          buildRefMatch("userId", approverUserId),
+        ),
+      );
       if (!isMember) {
         throw new HttpError(400, "All approvers must be project members");
       }
