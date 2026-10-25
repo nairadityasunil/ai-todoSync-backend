@@ -98,11 +98,17 @@ class AgentService {
   >();
   /** Session and self-registered agents by id or fingerprint. */
   private agentCache = new Map<string, { agent: IAgentDocument; at: number }>();
+  /** Short-lived yes/no lookups (admin rights, blocked sessions). */
+  private flagCache = new Map<string, { value: boolean; at: number }>();
   private pendingTouches = new Map<string, number>();
   private touchTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Forget cached lookups so suspensions take effect immediately in this process. */
+  /**
+   * Forget cached lookups so suspensions take effect immediately in this
+   * process; other instances pick them up within CACHE_TTL_MS.
+   */
   public invalidate(agentId?: string): void {
+    this.flagCache.clear();
     if (!agentId) {
       this.keyCache.clear();
       this.agentCache.clear();
@@ -127,6 +133,18 @@ class AgentService {
     if (agent) this.agentCache.set(key, { agent, at: Date.now() });
     else this.agentCache.delete(key);
     return agent;
+  }
+
+  private async cachedFlag(
+    key: string,
+    load: () => Promise<boolean>,
+  ): Promise<boolean> {
+    const hit = this.flagCache.get(key);
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
+    const value = await load();
+    if (this.flagCache.size > 10_000) this.flagCache.clear();
+    this.flagCache.set(key, { value, at: Date.now() });
+    return value;
   }
 
   public async getById(agentId: string): Promise<IAgentDocument | null> {
@@ -162,8 +180,10 @@ class AgentService {
   }
 
   public async isWorkspaceAdminAnywhere(userId: string): Promise<boolean> {
-    const memberships = await findMembershipsByUser(userId);
-    return memberships.some((m) => m.role === "OWNER" || m.role === "ADMIN");
+    return this.cachedFlag(`admin:${userId}`, async () => {
+      const memberships = await findMembershipsByUser(userId);
+      return memberships.some((m) => m.role === "OWNER" || m.role === "ADMIN");
+    });
   }
 
   /* ---------------------------- API keys ---------------------------- */
@@ -424,7 +444,27 @@ class AgentService {
       clientFamily(info.userAgent) ||
       "MCP client"
     ).slice(0, 80);
-    const canAdmin = await this.isWorkspaceAdminAnywhere(user._id.toString());
+    // A suspended client cannot come back under another name: not within the
+    // same session, and not at all while an admin's suspension stands.
+    const ownerUserId = user._id.toString();
+    const blocked = await this.cachedFlag(
+      `mcp-blocked:${ownerUserId}:${info.sessionId ?? ""}`,
+      async () =>
+        Boolean(
+          await AgentModel.exists({
+            ownerUserId,
+            kind: "mcp_client",
+            fingerprint: { $ne: clientName.toLowerCase() },
+            status: { $ne: "active" },
+            $or: [
+              { statusSetByAdmin: true },
+              ...(info.sessionId ? [{ sessionId: info.sessionId }] : []),
+            ],
+          }),
+        ),
+    );
+    if (blocked) throw new AgentAccessError("suspended", clientName);
+    const canAdmin = await this.isWorkspaceAdminAnywhere(ownerUserId);
     return this.upsertByFingerprint({
       user,
       kind: "mcp_client",

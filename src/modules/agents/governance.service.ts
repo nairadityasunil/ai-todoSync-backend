@@ -141,6 +141,42 @@ export const ALERT_THRESHOLDS = {
   volumeMultiplier: 5,
 };
 
+/**
+ * Hours of day (UTC) in which matching activity happened, with the total
+ * count. Grouped in the database: at most 24 rows per agent, whatever its
+ * volume. Stores without $hour (e.g. some Mongo-compatible engines) fall
+ * back to a capped scan.
+ */
+async function usualHoursOf(
+  match: Record<string, unknown>,
+  from: Date,
+  to: Date,
+): Promise<{ hours: number[]; count: number }> {
+  const filter = { ...match, createdAt: { $gte: from, $lt: to } };
+  try {
+    const rows = await AgentActivityModel.aggregate<{ _id: number; n: number }>(
+      [
+        { $match: filter },
+        { $group: { _id: { $hour: "$createdAt" }, n: { $sum: 1 } } },
+      ],
+    );
+    return {
+      hours: rows.map((row) => row._id),
+      count: rows.reduce((sum, row) => sum + row.n, 0),
+    };
+  } catch {
+    const rows = await AgentActivityModel.find(filter)
+      .select("createdAt -_id")
+      .sort({ createdAt: -1 })
+      .limit(5000)
+      .lean();
+    return {
+      hours: [...new Set(rows.map((row) => row.createdAt.getUTCHours()))],
+      count: rows.length,
+    };
+  }
+}
+
 /** Looks at the last 15 minutes of agent activity and raises alerts. */
 export async function detectAlerts(now = new Date()): Promise<number> {
   const since = new Date(now.getTime() - WINDOW_MS);
@@ -296,23 +332,18 @@ export async function detectAlerts(now = new Date()): Promise<number> {
         outcome: "allowed",
       };
       const [history, recent] = await Promise.all([
-        AgentActivityModel.find({
-          ...changes,
-          createdAt: { $gte: new Date(now.getTime() - 30 * DAY), $lt: since },
-        })
-          .select("createdAt -_id")
-          .sort({ createdAt: -1 })
-          .limit(5000)
-          .lean(),
+        usualHoursOf(changes, new Date(now.getTime() - 30 * DAY), since),
         AgentActivityModel.find({
           ...changes,
           createdAt: { $gte: since, $lte: now },
         })
           .select("createdAt -_id")
+          .limit(500)
           .lean(),
       ]);
       const hours = unusualHours(
-        history.map((r) => r.createdAt),
+        history.hours,
+        history.count,
         recent.map((r) => r.createdAt),
       );
       if (hours.length > 0) {

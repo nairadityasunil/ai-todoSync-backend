@@ -10,7 +10,7 @@ import toolRegistry from "../mcp/registry/tool-registry.js";
 import ProjectMemberModel from "../project/models/project-member.model.js";
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import activityService, { runAsAgent } from "./activity.service.js";
-import { hashKey } from "./agent.service.js";
+import { agentBlockReason, hashKey } from "./agent.service.js";
 import {
   AgentApprovalModel,
   AgentModel,
@@ -66,7 +66,11 @@ export async function canDecide(
     scope.workspaceIds.some((id) =>
       id.equals(approval.workspaceId as Types.ObjectId),
     );
+  // Project admins review other people's agents, never their own: anyone can
+  // create a project and become its admin.
+  const isRequester = approval.ownerUserId.toString() === userId;
   const inProject =
+    !isRequester &&
     approval.projectId != null &&
     scope.projectIds.some((id) =>
       id.equals(approval.projectId as Types.ObjectId),
@@ -137,8 +141,10 @@ class AgentApprovalService {
 
   public async reject(approvalId: string, userId: string, note?: string) {
     const approval = await this.claim(approvalId, userId, "rejected", note);
+    const agent = await AgentModel.findById(approval.agentId);
+    if (!agent) return this.getForUser(approvalId, userId);
     activityService.record({
-      agent: (await AgentModel.findById(approval.agentId)) as IAgentDocument,
+      agent,
       userId: approval.ownerUserId.toString(),
       channel: approval.channel,
       action: approval.action,
@@ -159,12 +165,13 @@ class AgentApprovalService {
       AgentModel.findById(approval.agentId),
       UserModel.findById(approval.ownerUserId),
     ]);
-    if (!agent || !owner || agent.status !== "active") {
+    const blocked = agent ? agentBlockReason(agent) : "revoked";
+    if (!agent || !owner || blocked) {
       await this.finish(
         approval,
         "failed",
         null,
-        "The agent is no longer active.",
+        `The agent is ${blocked ?? "no longer active"}, so the action did not run.`,
       );
       return this.getForUser(approvalId, userId);
     }

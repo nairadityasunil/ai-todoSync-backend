@@ -53,7 +53,16 @@ const isForbiddenForAgents = (
 ): boolean => {
   if (domain === "agent")
     return !(method === "GET" && segments[0] === "approvals");
-  if (domain === "auth") return method !== "GET";
+  if (method === "GET" || method === "HEAD") return false;
+  // Anything that signs in, pairs a device or mints a key: an agent must not
+  // be able to turn itself into a broader credential.
+  if (["auth", "companion", "key", "user"].includes(domain)) return true;
+  if (domain === "sdk_integration") {
+    return (
+      segments.length === 0 ||
+      segments.some((segment) => /regenerate|key|secret/.test(segment))
+    );
+  }
   return false;
 };
 
@@ -170,15 +179,23 @@ export async function guardAgentRequest(
     req.body && typeof req.body === "object" ? req.body : {}
   ) as Record<string, unknown>;
   const query = req.query as Record<string, unknown>;
-  const projectId = await resolveProjectId({
+  // Records named in the path are the ones being changed; body and query ids
+  // only count when the path names none.
+  const pathNamesRecord = Boolean(call.refs.taskId || call.refs.epicId);
+  const resolution = await resolveProjectId({
     projectId: firstString(
       call.refs.projectId,
       body.projectId,
       query.projectId,
     ),
-    taskId: firstString(call.refs.taskId, body.taskId, query.taskId),
-    epicId: firstString(call.refs.epicId, body.epicId, query.epicId),
+    taskId: pathNamesRecord
+      ? call.refs.taskId
+      : firstString(body.taskId, query.taskId),
+    epicId: pathNamesRecord
+      ? call.refs.epicId
+      : firstString(body.epicId, query.epicId),
   });
+  const projectId = resolution.projectId;
 
   const guardInput: AuthorizeInput = {
     agent,
@@ -189,6 +206,7 @@ export async function guardAgentRequest(
     risk: call.risk,
     input: body,
     projectId,
+    resolvedProjects: resolution,
     request: { method, path },
   };
   const decision = await authorize(guardInput);
@@ -219,9 +237,11 @@ export async function guardAgentRequest(
   if (call.risk !== "read" || decision.advisory.length > 0) {
     const undo =
       call.risk !== "read"
-        ? await snapshotBefore(call.action, {
-            taskId: firstString(call.refs.taskId, body.taskId),
-            epicId: firstString(call.refs.epicId, body.epicId),
+        ? // Only the record the route itself targets: ids in the body may name
+          // records the call never touches.
+          await snapshotBefore(call.action, {
+            taskId: call.refs.taskId,
+            epicId: call.refs.epicId,
           })
         : null;
     const started = Date.now();

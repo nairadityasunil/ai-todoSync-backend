@@ -46,6 +46,10 @@ export interface IAgent {
   status: AgentStatus;
   legacy: boolean;
   statusReason?: string | null;
+  /** Suspended or revoked by a workspace admin: only an admin may lift it. */
+  statusSetByAdmin: boolean;
+  /** Permissions were narrowed by an admin: the owner may only narrow further. */
+  adminLocked: boolean;
   expiresAt?: Date | null;
   lastSeenAt?: Date | null;
   callCount: number;
@@ -99,6 +103,8 @@ const agentSchema = new Schema<IAgentDocument>(
     },
     legacy: { type: Boolean, default: false },
     statusReason: { type: String, default: null },
+    statusSetByAdmin: { type: Boolean, default: false },
+    adminLocked: { type: Boolean, default: false },
     expiresAt: { type: Date, default: null },
     lastSeenAt: { type: Date, default: null },
     callCount: { type: Number, default: 0 },
@@ -114,8 +120,26 @@ const agentSchema = new Schema<IAgentDocument>(
   { timestamps: true },
 );
 
-agentSchema.index({ keyHash: 1 }, { unique: true, sparse: true });
-agentSchema.index({ ownerUserId: 1, kind: 1, fingerprint: 1 });
+// Partial, not sparse: agents without a key store keyHash/fingerprint as
+// null, and a sparse unique index still counts nulls as duplicates.
+agentSchema.index(
+  { keyHash: 1 },
+  { unique: true, partialFilterExpression: { keyHash: { $type: "string" } } },
+);
+// One self-registered agent per user, kind and client (prevents duplicates
+// when a new client's first calls arrive in parallel).
+agentSchema.index(
+  { ownerUserId: 1, kind: 1, fingerprint: 1, workspaceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { fingerprint: { $type: "string" } },
+  },
+);
+// One agent per AI provider per workspace.
+agentSchema.index(
+  { workspaceId: 1, fingerprint: 1 },
+  { unique: true, partialFilterExpression: { kind: "ai_provider" } },
+);
 agentSchema.index({ workspaceId: 1, status: 1 });
 agentSchema.index({ sessionId: 1 }, { sparse: true });
 agentSchema.index({ deviceId: 1 }, { sparse: true });

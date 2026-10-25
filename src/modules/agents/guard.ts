@@ -35,7 +35,9 @@ export interface AuthorizeInput {
   domain: string;
   risk: RiskLevel;
   input: Record<string, unknown>;
+  /** Already resolved by the caller (REST); otherwise read from `input`. */
   projectId?: string | null;
+  resolvedProjects?: ProjectResolution;
   request?: { method: string; path: string } | null;
   /** Calls that cannot wait (interactive AI) are denied instead of held. */
   noHold?: boolean;
@@ -108,68 +110,99 @@ const asId = (value: unknown): string | null => {
   return id && Types.ObjectId.isValid(id) ? id : null;
 };
 
-/** Works out which project a call touches from the ids it carries. */
+export interface ProjectResolution {
+  /** The project of the record being changed (null: personal or none). */
+  projectId: string | null;
+  /** Every project the call touches, e.g. both ends of a move. */
+  touched: Array<string | null>;
+}
+
+/**
+ * Works out which projects a call touches. The task or epic named in the
+ * call decides the project; a supplied projectId is trusted alone only when
+ * no such record is named, and otherwise counts as a second project touched
+ * (a move), so a caller cannot claim one project while changing another.
+ */
 export async function resolveProjectId(refs: {
   projectId?: unknown;
   taskId?: unknown;
   epicId?: unknown;
-}): Promise<string | null> {
-  const projectId = asId(refs.projectId);
-  if (projectId) return projectId;
+}): Promise<ProjectResolution> {
+  const claimed = asId(refs.projectId);
+  const owners: Array<string | null> = [];
   const epicId = asId(refs.epicId);
   if (epicId) {
     const epic = await EpicModel.findById(epicId).select("projectId").lean();
-    if (epic?.projectId) return epic.projectId.toString();
+    if (epic) owners.push(epic.projectId ? epic.projectId.toString() : null);
   }
   const taskId = asId(refs.taskId);
   if (taskId) {
     const task = await TaskModel.findById(taskId).select("projectId").lean();
-    if (task?.projectId) return task.projectId.toString();
+    if (task) owners.push(task.projectId ? task.projectId.toString() : null);
   }
-  return null;
+  if (owners.length === 0) return { projectId: claimed, touched: [claimed] };
+  const touched = [...new Set([...owners, ...(claimed ? [claimed] : [])])];
+  return { projectId: owners[0], touched };
 }
+
+const STRICTNESS = { allow: 0, require_approval: 1, deny: 2 } as const;
 
 export async function authorize(
   input: AuthorizeInput,
 ): Promise<AuthorizeResult> {
   const { agent } = input;
   const workspaceId = agent.workspaceId ? agent.workspaceId.toString() : null;
-  const projectId =
-    input.projectId ??
-    (await resolveProjectId({
-      projectId: input.input.projectId,
-      taskId: input.input.taskId,
-      epicId: input.input.epicId,
-    }));
+  const resolved: ProjectResolution = input.resolvedProjects
+    ? input.resolvedProjects
+    : input.projectId !== undefined
+      ? { projectId: input.projectId, touched: [input.projectId] }
+      : await resolveProjectId({
+          projectId: input.input.projectId,
+          taskId: input.input.taskId,
+          epicId: input.input.epicId,
+        });
+  const { projectId } = resolved;
 
-  // Project allowlist: a scoped agent can only change its own projects.
+  // Project allowlist: a scoped agent can only change its own projects, and
+  // every project a call touches must be one of them.
   const allowed = (agent.projectIds ?? []).map(String);
   if (allowed.length > 0) {
-    const outside = projectId
-      ? !allowed.includes(projectId)
-      : riskRank(input.risk) > 0;
+    const outside = resolved.touched.some((touched) =>
+      touched ? !allowed.includes(touched) : riskRank(input.risk) > 0,
+    );
     if (outside) {
       return {
         effect: "deny",
         policy: null,
         advisory: [],
         projectId,
-        reason: projectId
+        reason: resolved.touched.some(Boolean)
           ? "This agent is not allowed to access that project."
           : "This agent is limited to specific projects; include a projectId.",
       };
     }
   }
 
+  // Policies are checked for each project touched; the strictest result wins.
   const policies = await loadPolicies(workspaceId);
-  const decision = evaluatePolicies(policies, {
-    agentId: agent._id.toString(),
-    agentKind: agent.kind,
-    action: input.action,
-    domain: input.domain,
-    risk: input.risk,
-    projectId,
-  });
+  const decisions = resolved.touched.map((touched) =>
+    evaluatePolicies(policies, {
+      agentId: agent._id.toString(),
+      agentKind: agent.kind,
+      action: input.action,
+      domain: input.domain,
+      risk: input.risk,
+      projectId: touched,
+    }),
+  );
+  const decision = decisions.reduce((worst, next) =>
+    STRICTNESS[next.effect] > STRICTNESS[worst.effect] ? next : worst,
+  );
+  decision.advisory = [
+    ...new Map(
+      decisions.flatMap((d) => d.advisory).map((p) => [p.id, p]),
+    ).values(),
+  ];
 
   if (decision.effect === "allow") {
     return {

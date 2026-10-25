@@ -6,6 +6,10 @@ import workspaceService from "../../workspace/services/workspace.service.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import { runInTransaction } from "../../../utils/transaction.js";
 import logger from "../../../lib/logger.js";
+import {
+  checkPrompt,
+  hasBlockingFindings,
+} from "../../agents/prompt-checks.js";
 
 export class PromptVersionService {
   public async getPromptVersions(
@@ -115,6 +119,18 @@ export class PromptVersionService {
       );
     }
 
+    const inCanary = await PromptCanaryDeploymentModel.exists({
+      promptId: rootId,
+      candidateVersion: versionNumber,
+      status: { $in: ["active", "paused"] },
+    });
+    if (inCanary) {
+      throw new HttpError(
+        409,
+        `Version ${versionNumber} is in a canary rollout. Complete, roll back or cancel it first.`,
+      );
+    }
+
     targetVersion.environment = "staging";
     await targetVersion.save();
 
@@ -176,6 +192,7 @@ export class PromptVersionService {
     userId: string,
     promptId: string,
     versionNumber: number,
+    options: { acknowledgeChecks?: boolean } = {},
   ) {
     await workspaceService.assertMembership(userId, workspaceId);
     const prompt = await PromptLibraryModel.findOne({
@@ -200,6 +217,21 @@ export class PromptVersionService {
 
     if (!targetVersion) {
       throw new HttpError(404, `Version ${versionNumber} not found.`);
+    }
+
+    // Same pre-deployment checks as a canary: all traffic is about to see it.
+    const findings = checkPrompt({
+      body: targetVersion.body,
+      messages: targetVersion.messages,
+    });
+    if (hasBlockingFindings(findings) && !options.acknowledgeChecks) {
+      throw new HttpError(
+        422,
+        `Prompt checks failed: ${findings
+          .filter((finding) => finding.severity === "high")
+          .map((finding) => finding.message)
+          .join(" ")} Fix the prompt or publish again with acknowledgeChecks.`,
+      );
     }
 
     // Cancel any active canary deployment so direct deploy takes over
@@ -256,12 +288,14 @@ export class PromptVersionService {
     userId: string,
     promptId: string,
     versionNumber: number,
+    options: { acknowledgeChecks?: boolean } = {},
   ) {
     return this.deployDirectToProduction(
       workspaceId,
       userId,
       promptId,
       versionNumber,
+      options,
     );
   }
 }

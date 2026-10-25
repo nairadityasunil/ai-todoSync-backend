@@ -400,6 +400,7 @@ class PromptLibraryController {
         userId,
         promptId,
         versionNumber,
+        { acknowledgeChecks: req.body.acknowledgeChecks === true },
       );
       res.status(200).json({ status: "success", data: result });
     } catch (err) {
@@ -481,6 +482,7 @@ class PromptLibraryController {
         userId,
         promptId,
         versionNumber,
+        { acknowledgeChecks: req.body.acknowledgeChecks === true },
       );
       res.status(200).json({ status: "success", data: result });
     } catch (err) {

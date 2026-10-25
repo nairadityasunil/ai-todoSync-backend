@@ -4,8 +4,14 @@ import { Server, type Socket } from "socket.io";
 import type { IUserDocument } from "../modules/auth/models/user.model.js";
 import ChatMessageModel from "../modules/chat/models/chat-message.model.js";
 import ProjectMemberModel from "../modules/project/models/project-member.model.js";
-import { resolveUserFromJwt } from "../middleware/auth.middleware.js";
-import agentService from "../modules/agents/agent.service.js";
+import {
+  resolveJwtAuth,
+  resolveSessionAgent,
+} from "../middleware/auth.middleware.js";
+import agentService, {
+  agentBlockReason,
+} from "../modules/agents/agent.service.js";
+import type { IAgentDocument } from "../modules/agents/model.js";
 import chatService from "../modules/chat/services/chat.service.js";
 import env from "../config/env.js";
 import logger from "../lib/logger.js";
@@ -146,14 +152,40 @@ class ChatSocketServer {
 
       // Same rules as HTTP auth: access tokens must belong to an active
       // session; refresh tokens and revoked sessions are rejected.
-      let user: IUserDocument | null = await resolveUserFromJwt(token);
-      if (!user) {
+      let user: IUserDocument | null = null;
+      let agent: IAgentDocument | null = null;
+      const jwtAuth = await resolveJwtAuth(token);
+      if (jwtAuth) {
+        user = jwtAuth.user;
+        agent = await resolveSessionAgent(jwtAuth.user, jwtAuth.session);
+      } else {
         // API keys (and legacy Sync keys); blocked agents throw and are refused.
-        user = (await agentService.resolveApiKey(token))?.user ?? null;
+        const resolved = await agentService.resolveApiKey(token);
+        user = resolved?.user ?? null;
+        agent = resolved?.agent ?? null;
       }
 
       if (!user) {
         return next(new Error("Authentication failed"));
+      }
+
+      // Agents get chat only while active, with both collaboration scopes and
+      // no project restriction: socket events are not checked one by one.
+      if (agent) {
+        const blocked = agentBlockReason(agent);
+        const scoped =
+          agent.scopes.includes("collaboration:read") &&
+          agent.scopes.includes("collaboration:write") &&
+          (agent.projectIds ?? []).length === 0;
+        if (blocked || !scoped) {
+          return next(
+            new Error(
+              blocked
+                ? `Agent is ${blocked}`
+                : "This agent's access does not include real-time chat",
+            ),
+          );
+        }
       }
 
       socket.user = user;

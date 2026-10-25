@@ -291,6 +291,35 @@ describe("REST call naming", () => {
     );
     assert.equal(describeRestCall("GET", "/api/auth/me").forbidden, false);
   });
+
+  test("agents cannot mint companion, SDK or other keys", () => {
+    assert.equal(
+      describeRestCall("POST", `/api/companion/devices/${id}/regenerate`)
+        .forbidden,
+      true,
+    );
+    assert.equal(
+      describeRestCall("POST", "/api/auth/companion-keys").forbidden,
+      true,
+    );
+    assert.equal(
+      describeRestCall("POST", "/api/sdk-integrations").forbidden,
+      true,
+    );
+    assert.equal(
+      describeRestCall("POST", `/api/sdk-integrations/${id}/regenerate-key`)
+        .forbidden,
+      true,
+    );
+    assert.equal(
+      describeRestCall("POST", `/api/sdk-integrations/${id}/guides`).forbidden,
+      false,
+    );
+    assert.equal(
+      describeRestCall("GET", `/api/companion/devices`).forbidden,
+      false,
+    );
+  });
 });
 
 describe("Prompt checks", () => {
@@ -326,11 +355,24 @@ describe("Off-hours rule", () => {
     at(9 + (i % 9), 1 + (i % 20)),
   );
 
+  const hoursOf = (dates: Date[]) => dates.map((d) => d.getUTCHours());
+
   test("flags an hour the agent has never worked", () => {
-    assert.deepEqual(unusualHours(workdays, [at(10, 22), at(3, 22)]), [3]);
+    assert.deepEqual(
+      unusualHours(hoursOf(workdays), workdays.length, [at(10, 22), at(3, 22)]),
+      [3],
+    );
+  });
+
+  test("a one-hour shift (daylight saving) is not unusual", () => {
+    // History covers 09:00-17:59; 18:00 and 08:00 are next to it.
+    assert.deepEqual(
+      unusualHours(hoursOf(workdays), workdays.length, [at(18, 22), at(8, 22)]),
+      [],
+    );
   });
 
   test("stays quiet without enough history", () => {
-    assert.deepEqual(unusualHours(workdays.slice(0, 10), [at(3, 22)]), []);
+    assert.deepEqual(unusualHours(hoursOf(workdays), 10, [at(3, 22)]), []);
   });
 });

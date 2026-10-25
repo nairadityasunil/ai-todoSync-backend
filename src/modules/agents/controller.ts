@@ -120,6 +120,62 @@ const loadManageableAgent = async (
   return agent;
 };
 
+interface AgentAccess {
+  agent: IAgentDocument;
+  /** The user the agent acts for (never true for workspace AI providers). */
+  isOwner: boolean;
+  /** Owner or admin of the agent's workspace. */
+  isAdmin: boolean;
+}
+
+/**
+ * An agent plus the caller's standing on it. Owners manage their own agents;
+ * workspace admins can always narrow, suspend or revoke, and what an admin
+ * locks only an admin can lift. AI provider agents belong to the workspace.
+ */
+const loadAgentAccess = async (
+  req: AuthenticatedRequest,
+  userId: string,
+): Promise<AgentAccess> => {
+  const agent = await loadManageableAgent(req, userId);
+  const admin = await adminWorkspaces(userId);
+  const isAdmin =
+    agent.workspaceId != null &&
+    admin.some((id) => id.equals(agent.workspaceId as Types.ObjectId));
+  const isOwner =
+    agent.kind !== "ai_provider" && agent.ownerUserId.toString() === userId;
+  if (!isOwner && !isAdmin) {
+    throw new AppError(
+      403,
+      "Only workspace owners and admins can manage this agent",
+      "FORBIDDEN",
+    );
+  }
+  return { agent, isOwner, isAdmin };
+};
+
+const sameIds = (ids: unknown[]): string[] => ids.map(String).sort();
+
+/** True when `next` grants nothing that `current` did not. */
+const isNarrowing = (
+  current: { scopes: string[]; projectIds: unknown[]; expiresAt?: Date | null },
+  next: { scopes?: string[]; projectIds?: string[]; expiresAt?: Date | null },
+): boolean => {
+  if (next.scopes && next.scopes.some((s) => !current.scopes.includes(s)))
+    return false;
+  if (next.projectIds) {
+    const was = sameIds(current.projectIds);
+    // [] means every project: widening unless it already was.
+    if (next.projectIds.length === 0 && was.length > 0) return false;
+    if (was.length > 0 && next.projectIds.some((id) => !was.includes(id)))
+      return false;
+  }
+  if (next.expiresAt !== undefined && current.expiresAt) {
+    if (!next.expiresAt || next.expiresAt > current.expiresAt) return false;
+  }
+  return true;
+};
+
 export const serializeAgent = (agent: IAgentDocument) => {
   const plain = agent.toObject
     ? agent.toObject()
@@ -251,8 +307,16 @@ class AgentController {
       ...(await visibleAgentsFilter(userId)),
     };
     const workspaceId = str(req.query.workspaceId);
+    // One workspace, plus the caller's own agents that belong to none.
     if (workspaceId && Types.ObjectId.isValid(workspaceId))
-      filter.workspaceId = new Types.ObjectId(workspaceId);
+      filter.$and = [
+        {
+          $or: [
+            { workspaceId: new Types.ObjectId(workspaceId) },
+            { workspaceId: null, ownerUserId: new Types.ObjectId(userId) },
+          ],
+        },
+      ];
     const kind = str(req.query.kind);
     if (kind) filter.kind = kind;
     const status = str(req.query.status);
@@ -320,31 +384,65 @@ class AgentController {
 
   public update = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
-    const agent = await loadManageableAgent(req, userId);
+    const { agent, isOwner, isAdmin } = await loadAgentAccess(req, userId);
+    if (agent.status === "revoked")
+      throw new AppError(409, "This agent was revoked", "CONFLICT");
     const body = (req.body ?? {}) as Record<string, unknown>;
-    if (body.name !== undefined) {
-      const name = str(body.name);
-      if (!name) throw new AppError(400, "Name is required", "BAD_REQUEST");
-      agent.name = name.slice(0, 120);
-    }
+    const next: {
+      scopes?: string[];
+      projectIds?: string[];
+      expiresAt?: Date | null;
+    } = {};
     if (body.scopes !== undefined) {
-      const canAdmin = await agentService.isWorkspaceAdminAnywhere(userId);
+      const canAdmin = await agentService.isWorkspaceAdminAnywhere(
+        agent.ownerUserId.toString(),
+      );
       let scopes = sanitizeScopes(body.scopes, STANDARD_AGENT_SCOPES);
       if (!canAdmin)
         scopes = scopes.filter((scope) => scope !== "workspace:admin");
-      agent.scopes = scopes;
+      next.scopes = scopes;
     }
     if (body.projectIds !== undefined) {
-      agent.projectIds = Array.isArray(body.projectIds)
-        ? body.projectIds.map(String).filter((id) => Types.ObjectId.isValid(id))
+      next.projectIds = Array.isArray(body.projectIds)
+        ? [
+            ...new Set(
+              body.projectIds
+                .map(String)
+                .filter((id) => Types.ObjectId.isValid(id)),
+            ),
+          ]
         : [];
     }
     if (body.expiresAt !== undefined) {
       const expiresAt = body.expiresAt ? parseDate(body.expiresAt) : null;
       if (body.expiresAt && !expiresAt)
         throw new AppError(400, "expiresAt must be a date", "BAD_REQUEST");
-      agent.expiresAt = expiresAt ?? null;
+      next.expiresAt = expiresAt ?? null;
     }
+
+    // An admin changing someone else's agent may only take access away, and
+    // locks it so the owner cannot hand it back.
+    const actingAsAdmin = !isOwner;
+    const ownerLocked = isOwner && !isAdmin && agent.adminLocked;
+    if ((actingAsAdmin || ownerLocked) && !isNarrowing(agent, next)) {
+      throw new AppError(
+        403,
+        actingAsAdmin
+          ? "Admins can only reduce another member's agent access"
+          : "A workspace admin restricted this agent; you can only reduce its access",
+        "FORBIDDEN",
+      );
+    }
+
+    if (body.name !== undefined) {
+      const name = str(body.name);
+      if (!name) throw new AppError(400, "Name is required", "BAD_REQUEST");
+      agent.name = name.slice(0, 120);
+    }
+    if (next.scopes) agent.scopes = next.scopes as IAgentDocument["scopes"];
+    if (next.projectIds) agent.projectIds = next.projectIds;
+    if (next.expiresAt !== undefined) agent.expiresAt = next.expiresAt;
+    if (actingAsAdmin && Object.keys(next).length > 0) agent.adminLocked = true;
     await agent.save();
     agentService.invalidate(agent._id.toString());
     await recomputeRisk(agent);
@@ -353,7 +451,22 @@ class AgentController {
 
   public rotate = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
-    const agent = await loadManageableAgent(req, userId);
+    const { agent, isOwner } = await loadAgentAccess(req, userId);
+    // A new secret authenticates as the owner, so only the owner may get one.
+    if (!isOwner) {
+      throw new AppError(
+        403,
+        "Only the key's owner can rotate it. Admins can suspend or revoke it.",
+        "FORBIDDEN",
+      );
+    }
+    if (agent.status !== "active") {
+      throw new AppError(
+        409,
+        `This agent is ${agent.status}; resume it before rotating its key`,
+        "CONFLICT",
+      );
+    }
     const key = await agentService.rotateKey(agent);
     res.json({
       success: true,
@@ -369,14 +482,23 @@ class AgentController {
     status: "active" | "suspended" | "revoked",
   ) => {
     const userId = userIdOf(req);
-    const agent = await loadManageableAgent(req, userId);
+    const { agent, isAdmin } = await loadAgentAccess(req, userId);
     if (agent.status === "revoked")
       throw new AppError(409, "This agent was revoked", "CONFLICT");
+    if (status === "active" && agent.statusSetByAdmin && !isAdmin) {
+      throw new AppError(
+        403,
+        "A workspace admin suspended this agent; only an admin can resume it",
+        "FORBIDDEN",
+      );
+    }
     agent.status = status;
+    agent.statusSetByAdmin = status === "active" ? false : isAdmin;
     agent.statusReason =
       status === "active"
         ? null
-        : (str((req.body as Record<string, unknown>)?.reason) ?? null);
+        : (str((req.body as Record<string, unknown>)?.reason)?.slice(0, 300) ??
+          null);
     if (status === "revoked" && agent.kind === "api_key") agent.keyHash = null;
     await agent.save();
     agentService.invalidate(agent._id.toString());
@@ -399,7 +521,13 @@ class AgentController {
       str((req.body as Record<string, unknown>)?.reason) ?? "Emergency stop";
     const result = await AgentModel.updateMany(
       { workspaceId, status: "active" },
-      { $set: { status: "suspended", statusReason: reason } },
+      {
+        $set: {
+          status: "suspended",
+          statusReason: reason.slice(0, 300),
+          statusSetByAdmin: true,
+        },
+      },
     );
     agentService.invalidate();
     invalidateProviderAgents();
@@ -576,12 +704,10 @@ class AgentController {
       updatedBy: userId,
     });
     invalidatePolicies(workspaceId.toString());
-    res
-      .status(201)
-      .json({
-        success: true,
-        data: { ...policy.toObject(), id: policy._id.toString() },
-      });
+    res.status(201).json({
+      success: true,
+      data: { ...policy.toObject(), id: policy._id.toString() },
+    });
   };
 
   private loadPolicy = async (req: AuthenticatedRequest, userId: string) => {

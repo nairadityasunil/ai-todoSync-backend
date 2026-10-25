@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import env from "../../../config/env.js";
 import type { IUserDocument } from "../../auth/models/user.model.js";
 import {
   extractApiKey,
@@ -30,6 +31,19 @@ const getBearerToken = (authHeader: string | undefined): string | undefined => {
 
 const headerValue = (value: string | string[] | undefined): string | null =>
   typeof value === "string" && value.trim() ? value.trim() : null;
+
+const trimSlash = (origin: string): string => origin.replace(/\/$/, "");
+const PORTAL_ORIGINS = new Set(
+  [env.FRONTEND_BASE_URL, ...(env.ALLOWED_ORIGINS ?? [])]
+    .filter(Boolean)
+    .map(trimSlash),
+);
+
+/** Requests from the portal's own pages carry one of its configured origins. */
+const isPortalOrigin = (origin: string | string[] | undefined): boolean => {
+  const value = headerValue(origin);
+  return value !== null && PORTAL_ORIGINS.has(trimSlash(value));
+};
 
 /**
  * MCP authentication middleware.
@@ -64,9 +78,10 @@ export const mcpAuthMiddleware = async (
       const clientName = headerValue(req.headers["x-mcp-client"]);
       if (sessionAgent) {
         agent = sessionAgent;
-      } else if (!clientName && headerValue(req.headers.origin)) {
+      } else if (!clientName && isPortalOrigin(req.headers.origin)) {
         // The portal itself (a person in a browser), e.g. browsing the tool
-        // manifest in Settings: not an agent.
+        // manifest in Settings: not an agent. Any other caller registers as
+        // an MCP client and is governed.
         personScopes = (await agentService.isWorkspaceAdminAnywhere(
           jwtAuth.user._id.toString(),
         ))
