@@ -7,6 +7,7 @@ import {
   type PolicyLike,
 } from "./policy-engine.js";
 import { redactInput, maskText } from "./redaction.js";
+import { unusualHours } from "./alert-rules.js";
 import { checkPrompt, hasBlockingFindings } from "./prompt-checks.js";
 import { describeRestCall } from "./rest-guard.js";
 import { scoreAgent } from "./risk.js";
@@ -315,5 +316,21 @@ describe("Prompt checks", () => {
       parameters: { maxTokens: 400 },
     });
     assert.deepEqual(findings, []);
+  });
+});
+
+describe("Off-hours rule", () => {
+  const at = (hour: number, day = 1) =>
+    new Date(Date.UTC(2026, 9, day, hour, 15));
+  const workdays = Array.from({ length: 60 }, (_, i) =>
+    at(9 + (i % 9), 1 + (i % 20)),
+  );
+
+  test("flags an hour the agent has never worked", () => {
+    assert.deepEqual(unusualHours(workdays, [at(10, 22), at(3, 22)]), [3]);
+  });
+
+  test("stays quiet without enough history", () => {
+    assert.deepEqual(unusualHours(workdays.slice(0, 10), [at(3, 22)]), []);
   });
 });

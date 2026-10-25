@@ -14,6 +14,7 @@ import {
   AgentPolicyModel,
   type IAgentDocument,
 } from "./model.js";
+import { unusualHours } from "./alert-rules.js";
 import { FRAMEWORKS, scoreAgent } from "./risk.js";
 
 const DAY = 86400000;
@@ -282,6 +283,50 @@ export async function detectAlerts(now = new Date()): Promise<number> {
             title: `${agent.name} used ${action} for the first time`,
             detail: "New behaviour from an existing agent.",
             dedupeKey: `new_tool:${agentId}:${action}`,
+          }),
+        );
+      }
+    }
+
+    // Off hours: changes at an hour of day this agent has not worked in 30 days.
+    if (hasHistory) {
+      const changes = {
+        agentId: row._id,
+        risk: { $ne: "read" },
+        outcome: "allowed",
+      };
+      const [history, recent] = await Promise.all([
+        AgentActivityModel.find({
+          ...changes,
+          createdAt: { $gte: new Date(now.getTime() - 30 * DAY), $lt: since },
+        })
+          .select("createdAt -_id")
+          .sort({ createdAt: -1 })
+          .limit(5000)
+          .lean(),
+        AgentActivityModel.find({
+          ...changes,
+          createdAt: { $gte: since, $lte: now },
+        })
+          .select("createdAt -_id")
+          .lean(),
+      ]);
+      const hours = unusualHours(
+        history.map((r) => r.createdAt),
+        recent.map((r) => r.createdAt),
+      );
+      if (hours.length > 0) {
+        const label = hours
+          .map((h) => `${String(h).padStart(2, "0")}:00`)
+          .join(", ");
+        raised += Number(
+          await raiseAlert({
+            ...base,
+            type: "off_hours",
+            severity: "warning",
+            title: `${agent.name} made changes at an unusual hour`,
+            detail: `Changes at ${label} UTC, an hour this agent has not worked in the last 30 days.`,
+            dedupeKey: `off_hours:${agentId}:${Math.floor(now.getTime() / DAY)}`,
           }),
         );
       }
