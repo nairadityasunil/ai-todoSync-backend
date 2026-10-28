@@ -7,6 +7,8 @@ export interface IWorkspaceSettings {
   aiDataMasking?: boolean;
   /** Scripts and automated browsers must use an agent key, not a person's login. */
   requireAgentKeys?: boolean;
+  /** Suspend agents unused for this many days (0: never). */
+  inactiveAgentDays?: number;
 }
 
 export interface IWorkspace {

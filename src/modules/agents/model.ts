@@ -58,6 +58,9 @@ export interface IAgent {
   adminLocked: boolean;
   expiresAt?: Date | null;
   lastSeenAt?: Date | null;
+  /** Last time its owner (or an admin) confirmed it is still needed. */
+  reviewedAt?: Date | null;
+  reviewedBy?: Types.ObjectId | string | null;
   callCount: number;
   riskScore: number;
   riskLevel: AgentRiskLevel;
@@ -122,6 +125,8 @@ const agentSchema = new Schema<IAgentDocument>(
     adminLocked: { type: Boolean, default: false },
     expiresAt: { type: Date, default: null },
     lastSeenAt: { type: Date, default: null },
+    reviewedAt: { type: Date, default: null },
+    reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     callCount: { type: Number, default: 0 },
     riskScore: { type: Number, default: 0 },
     riskLevel: {

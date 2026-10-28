@@ -3,7 +3,11 @@ import cron from "node-cron";
 import logger from "../../lib/logger.js";
 import { runExclusive } from "../../utils/job-lock.js";
 import approvalService from "./approval.service.js";
-import { detectAlerts, recomputeAllRisk } from "./governance.service.js";
+import {
+  detectAlerts,
+  enforceAgentHygiene,
+  recomputeAllRisk,
+} from "./governance.service.js";
 
 const ALERTS_CRON = "*/5 * * * *";
 const RISK_CRON = "17 3 * * *";
@@ -30,5 +34,12 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
       expiredApprovals: await approvalService.expireStale(),
     })),
   ),
-  cron.schedule(RISK_CRON, run("agent-risk", 3_000_000, recomputeAllRisk)),
+  // Hygiene first, so suspended agents are scored as such.
+  cron.schedule(
+    RISK_CRON,
+    run("agent-risk", 3_000_000, async () => ({
+      hygiene: await enforceAgentHygiene(),
+      scored: await recomputeAllRisk(),
+    })),
+  ),
 ];

@@ -35,6 +35,12 @@ import {
 import { evaluatePolicies, RISK_ORDER } from "./policy-engine.js";
 import { POLICY_TEMPLATES } from "./policy-templates.js";
 import { checkPrompt } from "./prompt-checks.js";
+import {
+  INACTIVE_AGENT_DAY_OPTIONS,
+  isReviewDue,
+  normalizeInactiveDays,
+  reviewDueAt,
+} from "./hygiene.js";
 import { undoActivity } from "./undo.service.js";
 
 /* ------------------------------------------------------------------ */
@@ -185,7 +191,13 @@ export const serializeAgent = (agent: IAgentDocument) => {
     __v: _v,
     ...rest
   } = plain as Record<string, unknown>;
-  return { ...rest, id: agent._id.toString() };
+  const dueAt = reviewDueAt(agent);
+  return {
+    ...rest,
+    id: agent._id.toString(),
+    reviewDueAt: dueAt?.toISOString() ?? null,
+    reviewDue: isReviewDue(agent),
+  };
 };
 
 const parseDate = (value: unknown): Date | undefined => {
@@ -483,6 +495,19 @@ class AgentController {
     });
   };
 
+  /** The owner or an admin confirms the agent still needs its access. */
+  public review = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const { agent } = await loadAgentAccess(req, userId);
+    if (agent.status === "revoked")
+      throw new AppError(409, "This agent was revoked", "CONFLICT");
+    agent.reviewedAt = new Date();
+    agent.reviewedBy = new Types.ObjectId(userId);
+    await agent.save();
+    await recomputeRisk(agent);
+    res.json({ success: true, data: serializeAgent(agent) });
+  };
+
   /**
    * Gives an unregistered agent its own key and retires the detected one, so
    * the script moves off the person's login. Only the person can do this:
@@ -552,6 +577,11 @@ class AgentController {
     }
     agent.status = status;
     agent.statusSetByAdmin = status === "active" ? false : isAdmin;
+    if (status === "active") {
+      // Bringing it back is a decision that it is still needed.
+      agent.reviewedAt = new Date();
+      agent.reviewedBy = new Types.ObjectId(userId);
+    }
     agent.statusReason =
       status === "active"
         ? null
@@ -1003,6 +1033,10 @@ class AgentController {
         workspaceId: workspaceId.toString(),
         aiDataMasking: Boolean(workspace?.settings?.aiDataMasking),
         requireAgentKeys: Boolean(workspace?.settings?.requireAgentKeys),
+        inactiveAgentDays: normalizeInactiveDays(
+          workspace?.settings?.inactiveAgentDays,
+        ),
+        inactiveAgentDayOptions: INACTIVE_AGENT_DAY_OPTIONS,
         activityRetentionDays: 90,
       },
     });
@@ -1018,6 +1052,26 @@ class AgentController {
         { $set: { "settings.aiDataMasking": body.aiDataMasking } },
       );
       invalidateMaskingSetting(workspaceId.toString());
+    }
+    if (body.inactiveAgentDays !== undefined) {
+      if (
+        !(INACTIVE_AGENT_DAY_OPTIONS as readonly number[]).includes(
+          Number(body.inactiveAgentDays),
+        )
+      )
+        throw new AppError(
+          400,
+          `inactiveAgentDays must be one of ${INACTIVE_AGENT_DAY_OPTIONS.join(", ")}`,
+          "BAD_REQUEST",
+        );
+      await WorkspaceModel.updateOne(
+        { _id: workspaceId },
+        {
+          $set: {
+            "settings.inactiveAgentDays": Number(body.inactiveAgentDays),
+          },
+        },
+      );
     }
     if (typeof body.requireAgentKeys === "boolean") {
       await WorkspaceModel.updateOne(

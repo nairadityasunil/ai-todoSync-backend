@@ -1,4 +1,5 @@
 import type { McpScope } from "../mcp/registry/tool-types.js";
+import { isReviewDue } from "./hygiene.js";
 import type { AgentKind, AgentRiskLevel, IAgentRiskFactor } from "./model.js";
 
 /**
@@ -28,6 +29,7 @@ export interface RiskInput {
   expiresAt?: Date | null;
   createdAt?: Date | null;
   lastSeenAt?: Date | null;
+  reviewedAt?: Date | null;
   ownerIsMember: boolean;
   openCriticalAlerts: number;
   openWarningAlerts: number;
@@ -124,6 +126,22 @@ export function scoreAgent(input: RiskInput): RiskResult {
   ) {
     add("stale", "Unused for 30 days or never used", 5, [
       FRAMEWORKS.NIST_MANAGE,
+    ]);
+  }
+  if (
+    isReviewDue(
+      {
+        kind: input.kind,
+        status: "active",
+        createdAt: input.createdAt,
+        reviewedAt: input.reviewedAt,
+      },
+      now,
+    )
+  ) {
+    add("review_overdue", "Access not confirmed in the last 90 days", 5, [
+      FRAMEWORKS.ISO_ACCESS,
+      FRAMEWORKS.NIST_GOVERN,
     ]);
   }
   if (input.openCriticalAlerts > 0) {

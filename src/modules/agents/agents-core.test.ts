@@ -9,6 +9,12 @@ import {
 import { redactInput, maskText } from "./redaction.js";
 import { unusualHours } from "./alert-rules.js";
 import { classifyClient, detectionFingerprint } from "./detection.js";
+import {
+  hygieneAction,
+  isReviewDue,
+  normalizeInactiveDays,
+  type HygieneSubject,
+} from "./hygiene.js";
 import { checkPrompt, hasBlockingFindings } from "./prompt-checks.js";
 import { describeRestCall } from "./rest-guard.js";
 import { scoreAgent } from "./risk.js";
@@ -447,5 +453,97 @@ describe("Shadow AI detection", () => {
     });
     assert.ok(result.factors.some((f) => f.code === "unregistered"));
     assert.ok(result.score >= 50, `score ${result.score}`);
+  });
+});
+
+describe("Credential hygiene", () => {
+  const now = new Date("2026-10-28T03:00:00Z");
+  const daysAgo = (n: number) => new Date(now.getTime() - n * 86400000);
+  const agent = (overrides: Partial<HygieneSubject> = {}): HygieneSubject => ({
+    kind: "api_key",
+    status: "active",
+    createdAt: daysAgo(200),
+    lastSeenAt: daysAgo(1),
+    reviewedAt: null,
+    ...overrides,
+  });
+
+  test("an agent whose owner left is suspended, whatever its activity", () => {
+    assert.equal(
+      hygieneAction(agent(), { ownerIsMember: false, inactiveDays: 0, now }),
+      "orphaned",
+    );
+    // ...unless an admin confirmed it recently.
+    assert.equal(
+      hygieneAction(agent({ reviewedAt: daysAgo(3) }), {
+        ownerIsMember: false,
+        inactiveDays: 0,
+        now,
+      }),
+      null,
+    );
+  });
+
+  test("unused agents are suspended only past the workspace limit", () => {
+    const idle = agent({ lastSeenAt: daysAgo(61) });
+    assert.equal(
+      hygieneAction(idle, { ownerIsMember: true, inactiveDays: 60, now }),
+      "inactive",
+    );
+    assert.equal(
+      hygieneAction(idle, { ownerIsMember: true, inactiveDays: 90, now }),
+      null,
+    );
+    assert.equal(
+      hygieneAction(idle, { ownerIsMember: true, inactiveDays: 0, now }),
+      null,
+      "0 turns it off",
+    );
+    // Never used: counted from creation; resuming restarts the clock.
+    assert.equal(
+      hygieneAction(agent({ lastSeenAt: null }), {
+        ownerIsMember: true,
+        inactiveDays: 60,
+        now,
+      }),
+      "inactive",
+    );
+    assert.equal(
+      hygieneAction(agent({ lastSeenAt: null, reviewedAt: daysAgo(2) }), {
+        ownerIsMember: true,
+        inactiveDays: 60,
+        now,
+      }),
+      null,
+    );
+  });
+
+  test("AI providers and suspended agents are left alone", () => {
+    const input = { ownerIsMember: false, inactiveDays: 30, now };
+    assert.equal(hygieneAction(agent({ kind: "ai_provider" }), input), null);
+    assert.equal(hygieneAction(agent({ status: "suspended" }), input), null);
+  });
+
+  test("access reviews fall due 90 days after creation or the last review", () => {
+    assert.equal(isReviewDue(agent({ createdAt: daysAgo(91) }), now), true);
+    assert.equal(
+      isReviewDue(
+        agent({ createdAt: daysAgo(91), reviewedAt: daysAgo(10) }),
+        now,
+      ),
+      false,
+    );
+    assert.equal(isReviewDue(agent({ createdAt: daysAgo(30) }), now), false);
+    assert.equal(
+      isReviewDue(agent({ createdAt: daysAgo(400), status: "revoked" }), now),
+      false,
+    );
+  });
+
+  test("only offered inactivity limits are accepted", () => {
+    assert.equal(normalizeInactiveDays(30), 30);
+    assert.equal(normalizeInactiveDays(0), 0);
+    assert.equal(normalizeInactiveDays(45), 60);
+    assert.equal(normalizeInactiveDays(undefined), 60);
   });
 });

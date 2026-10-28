@@ -5,6 +5,12 @@ import PromptExecutionLogModel from "../prompt/models/prompt-execution-log.model
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import WorkspaceModel from "../workspace/models/workspace.model.js";
 import { raiseAlert } from "./activity.service.js";
+import agentService from "./agent.service.js";
+import {
+  hygieneAction,
+  isReviewDue,
+  normalizeInactiveDays,
+} from "./hygiene.js";
 import {
   AGENT_ACTIVITY_RETENTION_DAYS,
   AgentActivityModel,
@@ -71,6 +77,7 @@ export async function recomputeRisk(
     expiresAt: agent.expiresAt,
     createdAt: agent.createdAt,
     lastSeenAt: agent.lastSeenAt,
+    reviewedAt: agent.reviewedAt,
     ownerIsMember: Boolean(ownerMembership),
     openCriticalAlerts: criticalAlerts,
     openWarningAlerts: warningAlerts,
@@ -128,6 +135,123 @@ export async function recomputeAllRisk(): Promise<number> {
     }
   }
   return count;
+}
+
+/* ------------------------------------------------------------------ */
+/* Credential hygiene                                                  */
+/* ------------------------------------------------------------------ */
+
+const HYGIENE_BATCH = 500;
+
+/**
+ * Suspends agents whose owner left their workspace (only an admin can
+ * resume those) and agents unused for longer than the workspace allows.
+ * Runs nightly; works through active agents in batches.
+ */
+export async function enforceAgentHygiene(
+  now = new Date(),
+): Promise<{ orphaned: number; inactive: number }> {
+  const counts = { orphaned: 0, inactive: 0 };
+  const inactiveDaysByWorkspace = new Map<string, number>();
+  let lastId: Types.ObjectId | null = null;
+
+  for (;;) {
+    const batch: IAgentDocument[] = await AgentModel.find({
+      status: "active",
+      kind: { $ne: "ai_provider" },
+      ...(lastId ? { _id: { $gt: lastId } } : {}),
+    })
+      .sort({ _id: 1 })
+      .limit(HYGIENE_BATCH);
+    if (batch.length === 0) break;
+    lastId = batch[batch.length - 1]._id as Types.ObjectId;
+
+    const workspaceIds = [
+      ...new Set(
+        batch
+          .map((agent) => agent.workspaceId?.toString())
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const missing = workspaceIds.filter(
+      (id) => !inactiveDaysByWorkspace.has(id),
+    );
+    if (missing.length) {
+      const workspaces = await WorkspaceModel.find({ _id: { $in: missing } })
+        .select("settings.inactiveAgentDays")
+        .lean();
+      for (const id of missing) {
+        const workspace = workspaces.find((w) => w._id.toString() === id);
+        inactiveDaysByWorkspace.set(
+          id,
+          normalizeInactiveDays(
+            workspace?.settings?.inactiveAgentDays ?? undefined,
+          ),
+        );
+      }
+    }
+    const members = await WorkspaceMemberModel.find({
+      workspaceId: { $in: workspaceIds.map(oid) },
+      userId: {
+        $in: [...new Set(batch.map((a) => a.ownerUserId.toString()))].map(oid),
+      },
+    })
+      .select("workspaceId userId")
+      .lean();
+    const membership = new Set(
+      members.map((m) => `${m.workspaceId.toString()}:${m.userId.toString()}`),
+    );
+
+    for (const agent of batch) {
+      const workspaceId = agent.workspaceId?.toString() ?? null;
+      const action = hygieneAction(agent, {
+        ownerIsMember:
+          !workspaceId ||
+          membership.has(`${workspaceId}:${agent.ownerUserId.toString()}`),
+        inactiveDays: workspaceId
+          ? (inactiveDaysByWorkspace.get(workspaceId) ?? 0)
+          : 0,
+        now,
+      });
+      if (!action) continue;
+      const days = workspaceId ? inactiveDaysByWorkspace.get(workspaceId) : 0;
+      const reason =
+        action === "orphaned"
+          ? "Its owner is no longer a member of the workspace"
+          : `Not used for ${days} days`;
+      const updated = await AgentModel.updateOne(
+        { _id: agent._id, status: "active" },
+        {
+          $set: {
+            status: "suspended",
+            statusReason: reason,
+            // Only an admin may bring back an agent whose owner has left.
+            statusSetByAdmin: action === "orphaned",
+          },
+        },
+      );
+      if (updated.modifiedCount === 0) continue;
+      counts[action] += 1;
+      agentService.invalidate(agent._id.toString());
+      await raiseAlert({
+        workspaceId,
+        agentId: agent._id.toString(),
+        type: action === "orphaned" ? "orphaned_agent" : "inactive_agent",
+        severity: action === "orphaned" ? "warning" : "info",
+        title:
+          action === "orphaned"
+            ? `${agent.name} suspended: its owner left the workspace`
+            : `${agent.name} suspended after ${days} days unused`,
+        detail:
+          action === "orphaned"
+            ? "An admin can reassign the work and revoke it, or resume it if it is still needed."
+            : "Its owner can resume it from Agent Governance if it is still needed.",
+        dedupeKey: `${action}_agent:${agent._id}:${Math.floor(now.getTime() / DAY)}`,
+      });
+    }
+    if (batch.length < HYGIENE_BATCH) break;
+  }
+  return counts;
 }
 
 /* ------------------------------------------------------------------ */
@@ -568,6 +692,10 @@ export async function complianceReport(workspaceId: string) {
   );
   const aiProviders = active.filter((agent) => agent.kind === "ai_provider");
   const unregistered = active.filter((agent) => agent.kind === "detected");
+  const reviewOverdue = agents.filter(
+    (agent) => agent.status !== "revoked" && isReviewDue(agent),
+  );
+  const reviewable = agents.filter((agent) => agent.status !== "revoked");
   const masking = Boolean(workspace?.settings?.aiDataMasking);
 
   const pick = (ok: boolean, partial: boolean): ControlStatus =>
@@ -597,6 +725,22 @@ export async function complianceReport(workspaceId: string) {
         : "No scripts or automated browsers are using personal logins.",
       recommendation: unregistered.length
         ? 'Replace each with its own agent key, or block it. Turn on "Require agent keys" to stop new ones.'
+        : null,
+    },
+    {
+      id: "access_reviews",
+      framework: FRAMEWORKS.ISO_ACCESS,
+      title: "Agent access is reviewed at least every 90 days",
+      status: pick(
+        reviewOverdue.length === 0,
+        reviewOverdue.length <= Math.max(1, reviewable.length * 0.2),
+      ),
+      evidence: `${reviewable.length - reviewOverdue.length} of ${reviewable.length} agent(s) confirmed in the last 90 days; unused agents are suspended after ${
+        normalizeInactiveDays(workspace?.settings?.inactiveAgentDays) ||
+        "never (off)"
+      }${normalizeInactiveDays(workspace?.settings?.inactiveAgentDays) ? " days" : ""}.`,
+      recommendation: reviewOverdue.length
+        ? "Ask owners to confirm or suspend the agents listed under Access reviews."
         : null,
     },
     {

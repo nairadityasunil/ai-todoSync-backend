@@ -8,6 +8,8 @@ export interface IWorkspaceSettings {
   aiDataMasking?: boolean;
   /** Scripts and automated browsers must use an agent key, not a person's login. */
   requireAgentKeys?: boolean;
+  /** Suspend agents unused for this many days (0: never). */
+  inactiveAgentDays?: number;
 }
 
 export interface IWorkspace {
@@ -44,6 +46,7 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
       allowGuestInvites: { type: Boolean, default: true },
       aiDataMasking: { type: Boolean, default: false },
       requireAgentKeys: { type: Boolean, default: false },
+      inactiveAgentDays: { type: Number, default: 60 },
     },
   },
   { timestamps: true },
