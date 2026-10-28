@@ -567,6 +567,7 @@ export async function complianceReport(workspaceId: string) {
     (agent) => agent.riskLevel === "high" || agent.riskLevel === "critical",
   );
   const aiProviders = active.filter((agent) => agent.kind === "ai_provider");
+  const unregistered = active.filter((agent) => agent.kind === "detected");
   const masking = Boolean(workspace?.settings?.aiDataMasking);
 
   const pick = (ok: boolean, partial: boolean): ControlStatus =>
@@ -581,6 +582,21 @@ export async function complianceReport(workspaceId: string) {
       evidence: `${active.length} active agent(s); ${orphaned.length} without a current workspace member as owner.`,
       recommendation: orphaned.length
         ? "Reassign or revoke agents whose owners have left."
+        : null,
+    },
+    {
+      id: "shadow_ai",
+      framework: FRAMEWORKS.NIST_GOVERN,
+      title: "No unregistered agents act with a person's login",
+      status: pick(unregistered.length === 0, false),
+      evidence: unregistered.length
+        ? `${unregistered.length} script(s) or automated browser(s) found using personal logins: ${unregistered
+            .slice(0, 5)
+            .map((agent) => agent.name)
+            .join(", ")}.`
+        : "No scripts or automated browsers are using personal logins.",
+      recommendation: unregistered.length
+        ? 'Replace each with its own agent key, or block it. Turn on "Require agent keys" to stop new ones.'
         : null,
     },
     {

@@ -10,6 +10,7 @@ import agentService, {
 } from "../modules/agents/agent.service.js";
 import approvalService from "../modules/agents/approval.service.js";
 import type { IAgentDocument } from "../modules/agents/model.js";
+import { classifyClient } from "../modules/agents/detection.js";
 import { withRequestContext } from "../modules/agents/request-context.js";
 import { guardAgentRequest } from "../modules/agents/rest-guard.js";
 import { findActiveDeviceSessionById } from "../modules/auth/repositories/device-session.repository.js";
@@ -152,7 +153,35 @@ const respondAgentBlocked = (
   res.status(403).json({
     error: "agent_blocked",
     code: "AGENT_BLOCKED",
-    message: `Agent "${agent.name}" is ${reason}.`,
+    message:
+      agent.kind === "detected"
+        ? `${agent.name} can no longer use a personal login (${reason}). Create an agent key in Agent Governance and use it instead.`
+        : `Agent "${agent.name}" is ${reason}.`,
+  });
+};
+
+/**
+ * A script or automated browser behind a person's login becomes a "detected"
+ * agent, so it is inventoried, logged and governed instead of passing as the
+ * person. Browsers in the portal are left alone.
+ */
+const detectAgent = async (
+  req: Request,
+  user: IUserDocument,
+  session: IDeviceSessionDocument,
+): Promise<IAgentDocument | null> => {
+  const detection = classifyClient({
+    userAgent: getHeaderValue(req.headers["user-agent"]),
+    origin: getHeaderValue(req.headers.origin),
+    referer: getHeaderValue(req.headers.referer),
+    secFetchMode: getHeaderValue(req.headers["sec-fetch-mode"]),
+    secFetchSite: getHeaderValue(req.headers["sec-fetch-site"]),
+  });
+  if (!detection) return null;
+  return agentService.registerDetected(user, {
+    ...detection,
+    userAgent: getHeaderValue(req.headers["user-agent"]) ?? null,
+    sessionId: session._id.toString(),
   });
 };
 
@@ -238,7 +267,9 @@ const authMiddleware = async (
       req.companionDevice = companionDevice;
     }
     const context = contextFor(req, user._id.toString());
-    const agent = await resolveSessionAgent(user, session);
+    const agent =
+      (await resolveSessionAgent(user, session)) ??
+      (await detectAgent(req, user, session));
     if (!agent) {
       withRequestContext(context, () => next());
       return;
@@ -246,6 +277,17 @@ const authMiddleware = async (
     const blocked = agentBlockReason(agent);
     if (blocked) {
       respondAgentBlocked(res, agent, blocked);
+      return;
+    }
+    if (
+      agent.kind === "detected" &&
+      (await agentService.requiresAgentKeys(agent.workspaceId))
+    ) {
+      res.status(403).json({
+        error: "agent_key_required",
+        code: "AGENT_KEY_REQUIRED",
+        message: `This workspace requires an agent key for automated access. ${agent.name} was detected using a personal login: create an agent key in Agent Governance and use it instead.`,
+      });
       return;
     }
     req.agent = agent;
@@ -267,13 +309,11 @@ const authMiddleware = async (
     resolved = await agentService.resolveApiKey(apiKey);
   } catch (error) {
     if (error instanceof AgentAccessError) {
-      res
-        .status(403)
-        .json({
-          error: "agent_blocked",
-          code: error.code,
-          message: error.message,
-        });
+      res.status(403).json({
+        error: "agent_blocked",
+        code: error.code,
+        message: error.message,
+      });
       return;
     }
     throw error;

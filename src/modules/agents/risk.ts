@@ -69,6 +69,14 @@ export function scoreAgent(input: RiskInput): RiskResult {
       [FRAMEWORKS.OWASP_SENSITIVE_DATA, FRAMEWORKS.EU_SECURITY],
     );
   }
+  if (input.kind === "detected") {
+    add(
+      "unregistered",
+      "Unregistered: runs with a person's login instead of its own key",
+      30,
+      [FRAMEWORKS.NIST_GOVERN, FRAMEWORKS.ISO_ACCESS, FRAMEWORKS.EU_LOGGING],
+    );
+  }
   if (input.scopes.includes("workspace:admin")) {
     add("admin_scope", "Can administer the workspace", 25, [
       FRAMEWORKS.OWASP_EXCESSIVE_AGENCY,

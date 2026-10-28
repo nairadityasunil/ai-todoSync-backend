@@ -31,6 +31,16 @@ export const POLICY_TEMPLATES: Array<{
     match: { agentKinds: ["chatgpt"], minRisk: "write" },
   },
   {
+    id: "read-only-unregistered",
+    name: "Unregistered agents are read-only",
+    description:
+      "Scripts and automated browsers using a person's login can read but not change anything until they get an agent key.",
+    effect: "deny",
+    mode: "enforce",
+    priority: 160,
+    match: { agentKinds: ["detected"], minRisk: "write" },
+  },
+  {
     id: "no-after-hours-changes",
     name: "No changes outside business hours",
     description:

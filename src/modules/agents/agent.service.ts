@@ -10,6 +10,9 @@ import {
   type McpScope,
 } from "../mcp/registry/tool-types.js";
 import { findMembershipsByUser } from "../workspace/repositories/workspace-member.repository.js";
+import WorkspaceModel from "../workspace/models/workspace.model.js";
+import { raiseAlert } from "./activity.service.js";
+import { detectionFingerprint, type Detection } from "./detection.js";
 import { AgentModel, type AgentKind, type IAgentDocument } from "./model.js";
 
 export const ALL_AGENT_SCOPES: McpScope[] = [
@@ -100,6 +103,8 @@ class AgentService {
   private agentCache = new Map<string, { agent: IAgentDocument; at: number }>();
   /** Short-lived yes/no lookups (admin rights, blocked sessions). */
   private flagCache = new Map<string, { value: boolean; at: number }>();
+  /** Detected agents already announced by this process. */
+  private announced = new Set<string>();
   private pendingTouches = new Map<string, number>();
   private touchTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -355,6 +360,7 @@ class AgentService {
     deviceId?: string | null;
     clientName?: string | null;
     userAgent?: string | null;
+    detectionSignals?: string[];
   }): Promise<IAgentDocument> {
     const ownerUserId = input.user._id;
     const cacheKey = `fp:${ownerUserId.toString()}:${input.kind}:${input.fingerprint}`;
@@ -382,6 +388,7 @@ class AgentService {
     deviceId?: string | null;
     clientName?: string | null;
     userAgent?: string | null;
+    detectionSignals?: string[];
   }): Promise<IAgentDocument> {
     const ownerUserId = input.user._id;
     const existing = await AgentModel.findOne({
@@ -416,6 +423,7 @@ class AgentService {
         userAgent: input.userAgent ?? null,
         sessionId: input.sessionId ?? null,
         deviceId: input.deviceId ?? null,
+        detectionSignals: input.detectionSignals ?? [],
         scopes: input.scopes,
         projectIds: [],
       });
@@ -505,6 +513,69 @@ class AgentService {
       name: deviceName || "Companion device",
       deviceId,
       scopes: STANDARD_AGENT_SCOPES,
+    });
+  }
+
+  /**
+   * A script or automated browser using a person's own login. It acts with
+   * the person's access, so it gets the person's scopes; governance then
+   * applies to it like to any agent, and the first sighting raises an alert.
+   */
+  public async registerDetected(
+    user: IUserDocument,
+    info: Detection & { userAgent?: string | null; sessionId?: string | null },
+  ): Promise<IAgentDocument> {
+    const ownerUserId = user._id.toString();
+    const canAdmin = await this.isWorkspaceAdminAnywhere(ownerUserId);
+    const agent = await this.upsertByFingerprint({
+      user,
+      kind: "detected",
+      fingerprint: detectionFingerprint(info.family),
+      name: info.family,
+      clientName: info.family,
+      userAgent: info.userAgent?.slice(0, 300) ?? null,
+      sessionId: info.sessionId ?? null,
+      scopes: canAdmin ? ALL_AGENT_SCOPES : STANDARD_AGENT_SCOPES,
+      detectionSignals: info.signals,
+    });
+    const agentId = agent._id.toString();
+    if (!this.announced.has(agentId)) {
+      if (this.announced.size > 10_000) this.announced.clear();
+      this.announced.add(agentId);
+      await raiseAlert({
+        workspaceId: agent.workspaceId?.toString() ?? null,
+        agentId,
+        type: "unregistered_agent",
+        severity: "warning",
+        title: `Unregistered agent: ${agent.name}`,
+        detail: `${user.name || user.email} is running ${agent.name} with their own login instead of an agent key. Replace it with an agent key or block it.`,
+        dedupeKey: `unregistered_agent:${agentId}`,
+      })
+        // Score it now rather than at the nightly run, so it shows as risky.
+        .then(async () => {
+          const { recomputeRisk } = await import("./governance.service.js");
+          await recomputeRisk(agent);
+        })
+        .catch((error) =>
+          logger.warn("Could not raise unregistered agent alert", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+    }
+    return agent;
+  }
+
+  /** Whether a workspace makes scripts use agent keys instead of logins. */
+  public async requiresAgentKeys(
+    workspaceId: string | Types.ObjectId | null | undefined,
+  ): Promise<boolean> {
+    if (!workspaceId) return false;
+    const id = workspaceId.toString();
+    return this.cachedFlag(`require-keys:${id}`, async () => {
+      const workspace = await WorkspaceModel.findById(id)
+        .select("settings.requireAgentKeys")
+        .lean();
+      return Boolean(workspace?.settings?.requireAgentKeys);
     });
   }
 

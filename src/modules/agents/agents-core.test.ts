@@ -8,6 +8,7 @@ import {
 } from "./policy-engine.js";
 import { redactInput, maskText } from "./redaction.js";
 import { unusualHours } from "./alert-rules.js";
+import { classifyClient, detectionFingerprint } from "./detection.js";
 import { checkPrompt, hasBlockingFindings } from "./prompt-checks.js";
 import { describeRestCall } from "./rest-guard.js";
 import { scoreAgent } from "./risk.js";
@@ -374,5 +375,77 @@ describe("Off-hours rule", () => {
 
   test("stays quiet without enough history", () => {
     assert.deepEqual(unusualHours(hoursOf(workdays), 10, [at(3, 22)]), []);
+  });
+});
+
+describe("Shadow AI detection", () => {
+  const chrome =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+  test("a person in the portal is not an agent", () => {
+    assert.equal(
+      classifyClient({
+        userAgent: chrome,
+        origin: "https://app.example.com",
+        secFetchMode: "cors",
+        secFetchSite: "same-site",
+      }),
+      null,
+    );
+    // Same-origin requests may omit Origin but still carry fetch metadata.
+    assert.equal(
+      classifyClient({ userAgent: chrome, secFetchMode: "cors" }),
+      null,
+    );
+  });
+
+  test("names HTTP libraries, AI frameworks and headless browsers", () => {
+    const family = (userAgent: string) => classifyClient({ userAgent })?.family;
+    assert.equal(family("python-requests/2.32.3"), "python-requests");
+    assert.equal(family("node"), "Node.js");
+    assert.equal(family("curl/8.5.0"), "curl");
+    assert.equal(family("LangChain/0.3 python-httpx/0.27"), "LangChain");
+    assert.equal(family("OpenAI/Python 1.40.0"), "OpenAI SDK");
+    const headless = classifyClient({
+      userAgent: chrome.replace("Chrome/", "HeadlessChrome/"),
+      origin: "https://app.example.com",
+      secFetchMode: "cors",
+    });
+    assert.equal(headless?.family, "Headless Chrome");
+    assert.deepEqual(headless?.signals, ["headless_browser"]);
+  });
+
+  test("unknown clients and copied browser user agents are flagged", () => {
+    assert.deepEqual(classifyClient({ userAgent: "AcmeSync/2.1 (+bot)" }), {
+      family: "AcmeSync",
+      signals: ["not_a_browser"],
+    });
+    assert.deepEqual(classifyClient({ userAgent: chrome })?.signals, [
+      "browser_without_fetch_metadata",
+    ]);
+    assert.deepEqual(classifyClient({})?.signals, ["no_user_agent"]);
+  });
+
+  test("one fingerprint per client family", () => {
+    assert.equal(
+      detectionFingerprint("Headless Chrome"),
+      "detected:headless-chrome",
+    );
+  });
+
+  test("an unregistered agent scores as at least medium risk", () => {
+    const result = scoreAgent({
+      kind: "detected",
+      scopes: ["work:read", "work:write"],
+      projectIds: [],
+      legacy: false,
+      ownerIsMember: true,
+      openCriticalAlerts: 0,
+      openWarningAlerts: 0,
+      blockedLast7d: 0,
+      workspaceHasEnforcedPolicies: true,
+    });
+    assert.ok(result.factors.some((f) => f.code === "unregistered"));
+    assert.ok(result.score >= 50, `score ${result.score}`);
   });
 });

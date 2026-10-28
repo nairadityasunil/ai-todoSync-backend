@@ -54,6 +54,7 @@ class AgentRoutes implements Routes {
     this.router.patch("/:agentId", c.update);
     this.router.get("/:agentId/activity", c.activity);
     this.router.post("/:agentId/rotate", c.rotate);
+    this.router.post("/:agentId/replace-with-key", c.replaceWithKey);
     this.router.post("/:agentId/suspend", c.suspend);
     this.router.post("/:agentId/resume", c.resume);
     this.router.post("/:agentId/revoke", c.revoke);

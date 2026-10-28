@@ -212,9 +212,14 @@ const sanitizeMatch = (raw: unknown): IPolicyMatch => {
   const ids = (value: unknown) =>
     list(value)?.filter((id) => Types.ObjectId.isValid(id));
   const kinds = list(match.agentKinds)?.filter((kind) =>
-    ["api_key", "mcp_client", "chatgpt", "companion", "ai_provider"].includes(
-      kind,
-    ),
+    [
+      "api_key",
+      "mcp_client",
+      "chatgpt",
+      "companion",
+      "ai_provider",
+      "detected",
+    ].includes(kind),
   );
   const window = match.timeWindow as Record<string, unknown> | undefined;
   const hour = (value: unknown, fallback: number) => {
@@ -460,6 +465,8 @@ class AgentController {
         "FORBIDDEN",
       );
     }
+    if (agent.kind !== "api_key")
+      throw new AppError(400, "Only agent keys can be rotated", "BAD_REQUEST");
     if (agent.status !== "active") {
       throw new AppError(
         409,
@@ -473,6 +480,57 @@ class AgentController {
       message:
         "The old key stopped working. Copy the new one now: it will not be shown again.",
       data: { agent: serializeAgent(agent), key },
+    });
+  };
+
+  /**
+   * Gives an unregistered agent its own key and retires the detected one, so
+   * the script moves off the person's login. Only the person can do this:
+   * the new key acts for them.
+   */
+  public replaceWithKey = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const { agent, isOwner } = await loadAgentAccess(req, userId);
+    if (agent.kind !== "detected")
+      throw new AppError(
+        400,
+        "Only unregistered agents can be replaced with a key",
+        "BAD_REQUEST",
+      );
+    if (!isOwner)
+      throw new AppError(
+        403,
+        "Only the person whose login it uses can create its key. Admins can block it.",
+        "FORBIDDEN",
+      );
+    if (agent.status === "revoked")
+      throw new AppError(409, "This agent was already retired", "CONFLICT");
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const { agent: replacement, key } = await agentService.createApiKey({
+      ownerUserId: userId,
+      workspaceId: agent.workspaceId?.toString() ?? null,
+      name: str(body.name) ?? agent.name,
+      scopes: body.scopes ?? agent.scopes,
+      projectIds: body.projectIds ?? agent.projectIds.map(String),
+      expiresAt:
+        body.expiresAt !== undefined
+          ? body.expiresAt
+          : new Date(Date.now() + 90 * 86400000).toISOString(),
+    });
+    agent.status = "revoked";
+    agent.statusReason = `Replaced by the agent key "${replacement.name}"`;
+    agent.replacedByAgentId = replacement._id;
+    await agent.save();
+    agentService.invalidate(agent._id.toString());
+    await AgentAlertModel.updateMany(
+      { agentId: agent._id, acknowledgedAt: null },
+      { $set: { acknowledgedAt: new Date(), acknowledgedBy: userId } },
+    );
+    await recomputeRisk(replacement);
+    res.status(201).json({
+      success: true,
+      message: "Copy this key now: it will not be shown again.",
+      data: { agent: serializeAgent(replacement), key },
     });
   };
 
@@ -944,6 +1002,7 @@ class AgentController {
       data: {
         workspaceId: workspaceId.toString(),
         aiDataMasking: Boolean(workspace?.settings?.aiDataMasking),
+        requireAgentKeys: Boolean(workspace?.settings?.requireAgentKeys),
         activityRetentionDays: 90,
       },
     });
@@ -959,6 +1018,13 @@ class AgentController {
         { $set: { "settings.aiDataMasking": body.aiDataMasking } },
       );
       invalidateMaskingSetting(workspaceId.toString());
+    }
+    if (typeof body.requireAgentKeys === "boolean") {
+      await WorkspaceModel.updateOne(
+        { _id: workspaceId },
+        { $set: { "settings.requireAgentKeys": body.requireAgentKeys } },
+      );
+      agentService.invalidate();
     }
     return this.getSettings(req, res);
   };

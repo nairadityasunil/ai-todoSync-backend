@@ -5,6 +5,8 @@ export interface IWorkspaceSettings {
   allowGuestInvites?: boolean;
   /** Mask personal data and secrets before prompts go to AI providers. */
   aiDataMasking?: boolean;
+  /** Scripts and automated browsers must use an agent key, not a person's login. */
+  requireAgentKeys?: boolean;
 }
 
 export interface IWorkspace {

@@ -6,6 +6,8 @@ export interface IWorkspaceSettings {
   allowGuestInvites?: boolean;
   /** Mask personal data and secrets before prompts go to AI providers. */
   aiDataMasking?: boolean;
+  /** Scripts and automated browsers must use an agent key, not a person's login. */
+  requireAgentKeys?: boolean;
 }
 
 export interface IWorkspace {
@@ -41,6 +43,7 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
       defaultProjectRole: { type: String, default: "MEMBER" },
       allowGuestInvites: { type: Boolean, default: true },
       aiDataMasking: { type: Boolean, default: false },
+      requireAgentKeys: { type: Boolean, default: false },
     },
   },
   { timestamps: true },

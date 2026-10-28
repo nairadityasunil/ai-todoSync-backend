@@ -15,7 +15,9 @@ export type AgentKind =
   | "mcp_client"
   | "chatgpt"
   | "companion"
-  | "ai_provider";
+  | "ai_provider"
+  /** A script or automated browser found using a person's own login. */
+  | "detected";
 export type AgentStatus = "active" | "suspended" | "revoked";
 export type AgentRiskLevel = "low" | "medium" | "high" | "critical";
 
@@ -35,6 +37,10 @@ export interface IAgent {
   fingerprint?: string | null;
   clientName?: string | null;
   userAgent?: string | null;
+  /** Why a "detected" agent was judged automated (see detection.ts). */
+  detectionSignals: string[];
+  /** The agent key that replaced this detected agent. */
+  replacedByAgentId?: Types.ObjectId | string | null;
   /** sha256 of the API key; only for kind api_key. */
   keyHash?: string | null;
   keyPrefix?: string | null;
@@ -83,13 +89,22 @@ const agentSchema = new Schema<IAgentDocument>(
     ownerUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     kind: {
       type: String,
-      enum: ["api_key", "mcp_client", "chatgpt", "companion", "ai_provider"],
+      enum: [
+        "api_key",
+        "mcp_client",
+        "chatgpt",
+        "companion",
+        "ai_provider",
+        "detected",
+      ],
       required: true,
     },
     name: { type: String, required: true, trim: true, maxlength: 120 },
     fingerprint: { type: String, default: null },
     clientName: { type: String, default: null },
     userAgent: { type: String, default: null },
+    detectionSignals: { type: [String], default: [] },
+    replacedByAgentId: { type: Schema.Types.ObjectId, default: null },
     keyHash: { type: String, default: null },
     keyPrefix: { type: String, default: null },
     sessionId: { type: Schema.Types.ObjectId, default: null },
