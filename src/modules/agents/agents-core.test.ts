@@ -8,6 +8,13 @@ import {
 } from "./policy-engine.js";
 import { redactInput, maskText } from "./redaction.js";
 import { unusualHours } from "./alert-rules.js";
+import {
+  budgetStatus,
+  monthKey,
+  normalizeBudget,
+  parseMonth,
+  reachedThresholds,
+} from "./budget.js";
 import { classifyClient, detectionFingerprint } from "./detection.js";
 import {
   hygieneAction,
@@ -545,5 +552,41 @@ describe("Credential hygiene", () => {
     assert.equal(normalizeInactiveDays(0), 0);
     assert.equal(normalizeInactiveDays(45), 60);
     assert.equal(normalizeInactiveDays(undefined), 60);
+  });
+});
+
+describe("AI budgets", () => {
+  test("budget levels and the no-limit case", () => {
+    assert.deepEqual(budgetStatus(50, 100), { percent: 50, level: "ok" });
+    assert.equal(budgetStatus(80, 100).level, "warning");
+    assert.equal(budgetStatus(120, 100).level, "exceeded");
+    assert.deepEqual(budgetStatus(5000, 0), {
+      percent: null,
+      level: "unlimited",
+    });
+  });
+
+  test("alerts at 80% and 100%", () => {
+    assert.deepEqual(reachedThresholds(79.99, 100), []);
+    assert.deepEqual(reachedThresholds(80, 100), [80]);
+    assert.deepEqual(reachedThresholds(100, 100), [80, 100]);
+    assert.deepEqual(reachedThresholds(1e6, 0), []);
+  });
+
+  test("months are calendar months in UTC", () => {
+    assert.equal(monthKey(new Date("2026-10-31T23:30:00-05:00")), "2026-11");
+    const october = parseMonth("2026-10");
+    assert.equal(october?.from.toISOString(), "2026-10-01T00:00:00.000Z");
+    assert.equal(october?.to.toISOString(), "2026-11-01T00:00:00.000Z");
+    assert.equal(parseMonth("2026-13"), null);
+    assert.equal(parseMonth("October"), null);
+  });
+
+  test("budget settings accept 0 (no limit) up to the maximum", () => {
+    assert.equal(normalizeBudget("250.456"), 250.46);
+    assert.equal(normalizeBudget(0), 0);
+    assert.equal(normalizeBudget(-1), null);
+    assert.equal(normalizeBudget("lots"), null);
+    assert.equal(normalizeBudget(2e6), null);
   });
 });

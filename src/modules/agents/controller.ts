@@ -36,6 +36,13 @@ import { evaluatePolicies, RISK_ORDER } from "./policy-engine.js";
 import { POLICY_TEMPLATES } from "./policy-templates.js";
 import { checkPrompt } from "./prompt-checks.js";
 import {
+  monthStart,
+  normalizeBudget,
+  parseMonth,
+  MAX_MONTHLY_AI_BUDGET_USD,
+} from "./budget.js";
+import costService from "./cost.service.js";
+import {
   INACTIVE_AGENT_DAY_OPTIONS,
   isReviewDue,
   normalizeInactiveDays,
@@ -1021,6 +1028,29 @@ class AgentController {
     res.json({ success: true, data: report });
   };
 
+  /** AI spend for a month (default: this one) by provider, agent, person and project. */
+  public costs = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const range = req.query.month
+      ? parseMonth(req.query.month)
+      : (() => {
+          const from = monthStart();
+          return {
+            from,
+            to: new Date(
+              Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1),
+            ),
+          };
+        })();
+    if (!range)
+      throw new AppError(400, "month must look like 2026-10", "BAD_REQUEST");
+    res.json({
+      success: true,
+      data: await costService.report(workspaceId.toString(), range),
+    });
+  };
+
   public getSettings = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);
@@ -1037,6 +1067,12 @@ class AgentController {
           workspace?.settings?.inactiveAgentDays,
         ),
         inactiveAgentDayOptions: INACTIVE_AGENT_DAY_OPTIONS,
+        ...(await costService
+          .budgetSettings(workspaceId.toString())
+          .then(({ budgetUsd, hardStop }) => ({
+            aiMonthlyBudgetUsd: budgetUsd,
+            aiBudgetHardStop: hardStop,
+          }))),
         activityRetentionDays: 90,
       },
     });
@@ -1072,6 +1108,27 @@ class AgentController {
           },
         },
       );
+    }
+    if (body.aiMonthlyBudgetUsd !== undefined) {
+      const budget = normalizeBudget(body.aiMonthlyBudgetUsd);
+      if (budget === null)
+        throw new AppError(
+          400,
+          `aiMonthlyBudgetUsd must be between 0 (no limit) and ${MAX_MONTHLY_AI_BUDGET_USD}`,
+          "BAD_REQUEST",
+        );
+      await WorkspaceModel.updateOne(
+        { _id: workspaceId },
+        { $set: { "settings.aiMonthlyBudgetUsd": budget } },
+      );
+      costService.invalidate(workspaceId.toString());
+    }
+    if (typeof body.aiBudgetHardStop === "boolean") {
+      await WorkspaceModel.updateOne(
+        { _id: workspaceId },
+        { $set: { "settings.aiBudgetHardStop": body.aiBudgetHardStop } },
+      );
+      costService.invalidate(workspaceId.toString());
     }
     if (typeof body.requireAgentKeys === "boolean") {
       await WorkspaceModel.updateOne(

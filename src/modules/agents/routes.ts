@@ -45,6 +45,7 @@ class AgentRoutes implements Routes {
     this.router.post("/alerts/:alertId/acknowledge", c.acknowledgeAlert);
 
     this.router.get("/compliance", c.compliance);
+    this.router.get("/costs", c.costs);
     this.router.get("/settings", c.getSettings);
     this.router.patch("/settings", c.updateSettings);
     this.router.post("/prompt-checks", c.promptChecks);

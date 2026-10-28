@@ -9,6 +9,10 @@ export interface IWorkspaceSettings {
   requireAgentKeys?: boolean;
   /** Suspend agents unused for this many days (0: never). */
   inactiveAgentDays?: number;
+  /** Monthly AI budget in USD (UTC month); 0 means no limit. */
+  aiMonthlyBudgetUsd?: number;
+  /** Refuse AI calls once the budget is used up (otherwise only alert). */
+  aiBudgetHardStop?: boolean;
 }
 
 export interface IWorkspace {
