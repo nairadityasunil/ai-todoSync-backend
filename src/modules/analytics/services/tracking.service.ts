@@ -4,6 +4,7 @@ import AnalyticsLogModel, {
   IAnalyticsLogDocument,
 } from "../../../modules/analytics/models/analytics-log.model.js";
 import AnalyticsUserModel from "../models/analytics-user.model.js";
+import { classifyTraffic } from "../traffic.js";
 import logger from "../../../lib/logger.js";
 import {
   NormalizedTrackingEvent,
@@ -14,7 +15,35 @@ import {
 
 type JsonRecord = Record<string, unknown>;
 
+/**
+ * Classifies the client behind an event. The browser's own report (sent by
+ * the SDK in context) wins over the request header, so server-side tracking
+ * calls made for a visitor keep the visitor's browser.
+ */
+const trafficOf = (
+  payload: Record<string, unknown>,
+  client?: TrackingClient,
+) => {
+  const context = (payload.context ?? {}) as {
+    userAgent?: unknown;
+    automation?: { webdriver?: unknown };
+  };
+  return classifyTraffic({
+    userAgent:
+      typeof context.userAgent === "string"
+        ? context.userAgent
+        : (client?.userAgent ?? null),
+    webdriver: context.automation?.webdriver === true,
+  });
+};
+
+/** What the HTTP request says about the client (for traffic classification). */
+export interface TrackingClient {
+  userAgent?: string | null;
+}
+
 interface SingleTrackInput {
+  client?: TrackingClient;
   apiKeyId: string;
   sdkIntegrationId?: string;
   eventName: string;
@@ -112,6 +141,7 @@ class TrackingService {
     apiKeyId: string,
     eventRef: string,
     sdkIntegrationId?: string,
+    client?: TrackingClient,
   ) {
     return {
       eventId: event.eventId || this.generateEventId(),
@@ -120,7 +150,7 @@ class TrackingService {
       sdkIntegrationId: sdkIntegrationId ?? apiKeyId,
       userIdentifier: event.userIdentifier,
       sessionId: event.sessionId,
-      payload: event.payload,
+      payload: { ...event.payload, traffic: trafficOf(event.payload, client) },
     };
   }
 
@@ -174,6 +204,7 @@ class TrackingService {
           input.apiKeyId,
           event._id.toString(),
           input.sdkIntegrationId,
+          input.client,
         ),
       );
     } catch (error) {
@@ -189,6 +220,7 @@ class TrackingService {
     apiKeyId: string,
     body: unknown,
     sdkIntegrationId?: string,
+    client?: TrackingClient,
   ): Promise<BatchResult> {
     const rawEvents = validateBatchBody(body);
     const normalizedEvents = rawEvents.map((event, index) =>
@@ -238,6 +270,7 @@ class TrackingService {
           apiKeyId,
           eventRefByName.get(event.eventName) as string,
           sdkIntegrationId,
+          client,
         ),
       },
     }));
@@ -332,9 +365,11 @@ class TrackingService {
       sessionId?: string;
       eventId?: string;
     },
+    client?: TrackingClient,
   ): Promise<IAnalyticsLogDocument | null> {
     return this.trackSingle({
       apiKeyId,
+      client,
       eventName: "page",
       userIdentifier: input.userIdentifier,
       sessionId: input.sessionId,

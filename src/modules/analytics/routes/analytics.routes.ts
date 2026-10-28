@@ -112,6 +112,12 @@ class AnalyticsRoutes implements Routes {
       analyticsDataController.getScopedAllLogs,
     );
     this.router.get(
+      "/sdk-integrations/:sdkIntegrationId/ai-traffic",
+      authMiddleware,
+      requireSdkIntegrationAccess,
+      analyticsDataController.getAiTraffic,
+    );
+    this.router.get(
       "/sdk-integrations/:sdkIntegrationId/users",
       authMiddleware,
       requireSdkIntegrationAccess,
