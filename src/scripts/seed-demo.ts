@@ -5,7 +5,8 @@
  *
  * Creates (or reuses) one account and fills its workspace with agents of
  * every kind, an unregistered script, policies, activity, alerts, a held
- * approval, a month of AI spend and an SDK integration with AI traffic.
+ * approval, a month of AI spend, vendors with an assessment and evidence,
+ * and an SDK integration with AI traffic.
  * Safe to run again: earlier demo data is replaced, other data is left alone.
  *
  * DEMO_EMAIL / DEMO_PASSWORD choose the account (default qa@example.com /
@@ -36,6 +37,10 @@ import {
   AgentModel,
   AgentPolicyModel,
 } from "../modules/agents/model.js";
+import { VENDOR_CATALOG, unknownVendor } from "../modules/vendors/catalog.js";
+import evidenceService from "../modules/vendors/evidence.service.js";
+import { VendorEvidenceModel } from "../modules/vendors/model.js";
+import vendorService from "../modules/vendors/service.js";
 
 const EMAIL = process.env.DEMO_EMAIL ?? "qa@example.com";
 const PASSWORD = process.env.DEMO_PASSWORD ?? "Password123!";
@@ -392,6 +397,78 @@ async function main() {
   for (const agent of await AgentModel.find({ workspaceId }))
     await recomputeRisk(agent);
 
+  // --- Vendors ---
+  // OpenAI and Anthropic come from the agents above; OpenAI is approved
+  // with a completed assessment and a SOC 2 report, Anthropic waits for
+  // review, and a hand-added analytics vendor is restricted.
+  await vendorService.syncWorkspace(workspaceId);
+  const { vendor: openai } = await vendorService.ensureVendor(
+    workspaceId,
+    VENDOR_CATALOG.openai,
+    "ai_provider",
+  );
+  Object.assign(openai, {
+    purpose: "Model provider for project AI and summaries",
+    dataLocation: "United States",
+    includeInSubprocessors: true,
+    ownerUserId: user._id,
+    dpaExpiresAt: new Date(Date.now() + 20 * DAY),
+    contractRenewalAt: new Date(Date.now() + 75 * DAY),
+  });
+  await openai.save();
+  await vendorService.saveAssessment(
+    openai,
+    {
+      trains_on_data: "no",
+      retention: "30_days",
+      data_location: "United States",
+      certifications: "soc2_iso",
+      encryption: "yes",
+      sso_mfa: "yes",
+      incident_notice: "72h",
+      dpa_signed: "yes",
+    },
+    true,
+    userId,
+  );
+  if (openai.status !== "approved")
+    await vendorService.setStatus(openai, "approved", userId, null);
+  const demoReport = "Demo SOC 2 Type II report.pdf";
+  for (const old of await VendorEvidenceModel.find({
+    vendorId: openai._id,
+    name: demoReport,
+  }))
+    await evidenceService.remove(old);
+  await evidenceService.upload({
+    vendor: openai,
+    userId,
+    body: Buffer.from(
+      "%PDF-1.4\n% Demo evidence for local testing only\n%%EOF\n",
+    ),
+    contentType: "application/pdf",
+    fileName: demoReport,
+    kind: "soc2",
+    expiresAt: new Date(Date.now() + 200 * DAY),
+  });
+  await vendorService.recomputeRisk(openai);
+  const { vendor: acme } = await vendorService.ensureVendor(
+    workspaceId,
+    {
+      ...unknownVendor("Acme Analytics", "observability"),
+      website: "https://acme.example",
+    },
+    "manual",
+  );
+  if (acme.status !== "restricted")
+    await vendorService.setStatus(
+      acme,
+      "restricted",
+      userId,
+      "No DPA yet; read-only until signed",
+    );
+  // Reminders (DPA expiring within 30 days) and fresh scores.
+  await vendorService.nightly();
+
   console.log(`
 Demo data is ready.
 
@@ -401,6 +478,8 @@ Demo data is ready.
 
   Agent Governance: 5 agents incl. an unregistered python-requests script,
   2 enforced policies, a held approval, alerts, ~3 weeks of AI spend.
+  Vendors: OpenAI approved (assessed, SOC 2 on file, DPA expiring soon),
+  Anthropic under review, Acme Analytics restricted.
   SDK integration "Demo shop": AI traffic from ChatGPT, Claude, Perplexity.
   Nightly sync key (shown once): ${nightly.key}${sdkKey ? `\n  Demo shop SDK key (shown once): ${sdkKey}` : ""}
 `);
