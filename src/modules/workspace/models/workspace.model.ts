@@ -6,6 +6,16 @@ export interface IWorkspaceSettings {
   allowGuestInvites?: boolean;
   /** Mask personal data and secrets before prompts go to AI providers. */
   aiDataMasking?: boolean;
+  /** Scripts and automated browsers must use an agent key, not a person's login. */
+  requireAgentKeys?: boolean;
+  /** Suspend agents unused for this many days (0: never). */
+  inactiveAgentDays?: number;
+  /** Monthly AI budget in USD (UTC month); 0 means no limit. */
+  aiMonthlyBudgetUsd?: number;
+  /** Refuse AI calls once the budget is used up (otherwise only alert). */
+  aiBudgetHardStop?: boolean;
+  /** Third parties under review are read-only until approved. */
+  approvedVendorsOnly?: boolean;
 }
 
 export interface IWorkspace {
@@ -41,6 +51,11 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
       defaultProjectRole: { type: String, default: "MEMBER" },
       allowGuestInvites: { type: Boolean, default: true },
       aiDataMasking: { type: Boolean, default: false },
+      requireAgentKeys: { type: Boolean, default: false },
+      inactiveAgentDays: { type: Number, default: 60 },
+      aiMonthlyBudgetUsd: { type: Number, default: 100 },
+      aiBudgetHardStop: { type: Boolean, default: true },
+      approvedVendorsOnly: { type: Boolean, default: false },
     },
   },
   { timestamps: true },

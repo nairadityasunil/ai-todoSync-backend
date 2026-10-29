@@ -19,6 +19,7 @@
     "check:branch": "tsx src/scripts/checks/branchCheck.ts",
     "check:all": "node dist/scripts/checks/allCustomChecks.js",
     "seed:semantic-scenarios": "tsx src/scripts/seedSemanticOperationalScenarios.ts",
+    "seed:demo": "tsx src/scripts/seed-demo.ts",
     "test:engagement": "npx tsx --test src/modules/**/*.test.ts",
     "test:sdk-integrations": "npx tsx --test src/modules/sdk-integrations/sdk-integrations.test.ts",
     "test:sdk-api": "npx tsx src/scripts/test-sdk-integration-api.ts",

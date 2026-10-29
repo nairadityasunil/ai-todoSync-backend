@@ -3,6 +3,13 @@ import logger from "../../../lib/logger.js";
 import trackingService from "../services/tracking.service.js";
 import { TrackingValidationError } from "../validators/tracking.validator.js";
 
+const clientOf = (req: Request) => ({
+  userAgent:
+    typeof req.headers["user-agent"] === "string"
+      ? req.headers["user-agent"]
+      : null,
+});
+
 class TrackingController {
   private handleError(res: Response, error: unknown, message: string) {
     if (error instanceof TrackingValidationError) {
@@ -34,6 +41,7 @@ class TrackingController {
       logger.info("Tracking single event", { apiKeyId, eventName, sessionId });
 
       const log = await trackingService.trackSingle({
+        client: clientOf(req),
         apiKeyId,
         sdkIntegrationId,
         eventName: eventName ?? "",
@@ -80,6 +88,7 @@ class TrackingController {
       }
 
       const log = await trackingService.trackSingle({
+        client: clientOf(req),
         apiKeyId,
         userIdentifier,
         eventName,
@@ -111,6 +120,7 @@ class TrackingController {
         apiKeyId,
         req.body,
         sdkIntegrationId,
+        clientOf(req),
       );
       return res.status(200).json({ success: true, ...result });
     } catch (error) {
@@ -198,14 +208,18 @@ class TrackingController {
         return res.status(400).json({ error: "url is required" });
       }
 
-      const log = await trackingService.page(apiKeyId, {
-        url,
-        title,
-        referrer,
-        userIdentifier: userId,
-        sessionId,
-        eventId,
-      });
+      const log = await trackingService.page(
+        apiKeyId,
+        {
+          url,
+          title,
+          referrer,
+          userIdentifier: userId,
+          sessionId,
+          eventId,
+        },
+        clientOf(req),
+      );
 
       return res.status(200).json({ success: true, logId: log?._id ?? null });
     } catch (error) {

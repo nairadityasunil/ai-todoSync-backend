@@ -76,6 +76,10 @@ async function providerAgent(
       },
       { upsert: true, new: true },
     ));
+  if (agent && !agent.vendorId) {
+    const { default: vendorService } = await import("../vendors/service.js");
+    await vendorService.linkAgent(agent as IAgentDocument);
+  }
   providerCache.set(key, { agent: agent as IAgentDocument, at: Date.now() });
   return agent as IAgentDocument;
 }
@@ -180,9 +184,13 @@ export async function governAiCall(input: {
         ...guardInput,
         outcome: "blocked",
         policy: decision.policy,
-        statusCode: 403,
+        statusCode:
+          decision.effect === "deny" && decision.retryAfterSec ? 429 : 403,
       });
-      throw new HttpError(403, reason);
+      throw new HttpError(
+        decision.effect === "deny" && decision.retryAfterSec ? 429 : 403,
+        reason,
+      );
     }
     activityService.record({
       ...guardInput,

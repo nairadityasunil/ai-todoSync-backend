@@ -17,6 +17,8 @@ import type {
 import { HttpError } from "../../../shared/errors/http-error.js";
 import logger from "../../../lib/logger.js";
 import { governAiCall } from "../../agents/ai-governance.js";
+import { currentAgent } from "../../agents/activity.service.js";
+import costService from "../../agents/cost.service.js";
 
 export interface LlmExecutionPayload {
   workspaceId: string;
@@ -70,6 +72,8 @@ export class LlmExecutionService {
   ): Promise<LlmExecutionResult> {
     const requestId = `req_${randomUUID().slice(0, 12)}`;
     const startTime = Date.now();
+    // Who is spending: the agent behind this request, if any.
+    const agentId = currentAgent()?.id ?? null;
 
     // 1. Budget check
     await costControlService.assertWorkspaceBudget(payload.workspaceId);
@@ -170,6 +174,7 @@ export class LlmExecutionService {
         workspaceId: payload.workspaceId,
         projectId: payload.projectId || null,
         userId: payload.userId,
+        agentId,
         promptId: payload.promptId || null,
         promptVersion: executedVersionNumber || null,
         isProduction: payload.isProduction || false,
@@ -189,6 +194,11 @@ export class LlmExecutionService {
         status: "success",
       }).catch((err) => {
         logger.error("Failed to persist execution log", { err });
+      });
+      void costService.recordSpend({
+        workspaceId: String(payload.workspaceId),
+        costUsd: cost.totalCost,
+        providerAgentId: governed.agent?._id.toString() ?? null,
       });
 
       // 8. Record Canary Metrics
@@ -223,6 +233,7 @@ export class LlmExecutionService {
         workspaceId: payload.workspaceId,
         projectId: payload.projectId || null,
         userId: payload.userId,
+        agentId,
         promptId: payload.promptId || null,
         promptVersion: executedVersionNumber || null,
         isProduction: payload.isProduction || false,

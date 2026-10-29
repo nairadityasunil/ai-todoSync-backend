@@ -8,6 +8,22 @@ import {
 } from "./policy-engine.js";
 import { redactInput, maskText } from "./redaction.js";
 import { unusualHours } from "./alert-rules.js";
+import {
+  budgetStatus,
+  monthKey,
+  normalizeBudget,
+  parseMonth,
+  reachedThresholds,
+} from "./budget.js";
+import { classifyClient, detectionFingerprint } from "./detection.js";
+import { decide, normalizeRateLimit } from "./rate-limit.js";
+import { suggestReach } from "./reach.js";
+import {
+  hygieneAction,
+  isReviewDue,
+  normalizeInactiveDays,
+  type HygieneSubject,
+} from "./hygiene.js";
 import { checkPrompt, hasBlockingFindings } from "./prompt-checks.js";
 import { describeRestCall } from "./rest-guard.js";
 import { scoreAgent } from "./risk.js";
@@ -374,5 +390,290 @@ describe("Off-hours rule", () => {
 
   test("stays quiet without enough history", () => {
     assert.deepEqual(unusualHours(hoursOf(workdays), 10, [at(3, 22)]), []);
+  });
+});
+
+describe("Shadow AI detection", () => {
+  const chrome =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
+  test("a person in the portal is not an agent", () => {
+    assert.equal(
+      classifyClient({
+        userAgent: chrome,
+        origin: "https://app.example.com",
+        secFetchMode: "cors",
+        secFetchSite: "same-site",
+      }),
+      null,
+    );
+    // Same-origin requests may omit Origin but still carry fetch metadata.
+    assert.equal(
+      classifyClient({ userAgent: chrome, secFetchMode: "cors" }),
+      null,
+    );
+  });
+
+  test("names HTTP libraries, AI frameworks and headless browsers", () => {
+    const family = (userAgent: string) => classifyClient({ userAgent })?.family;
+    assert.equal(family("python-requests/2.32.3"), "python-requests");
+    assert.equal(family("node"), "Node.js");
+    assert.equal(family("curl/8.5.0"), "curl");
+    assert.equal(family("LangChain/0.3 python-httpx/0.27"), "LangChain");
+    assert.equal(family("OpenAI/Python 1.40.0"), "OpenAI SDK");
+    const headless = classifyClient({
+      userAgent: chrome.replace("Chrome/", "HeadlessChrome/"),
+      origin: "https://app.example.com",
+      secFetchMode: "cors",
+    });
+    assert.equal(headless?.family, "Headless Chrome");
+    assert.deepEqual(headless?.signals, ["headless_browser"]);
+  });
+
+  test("unknown clients and copied browser user agents are flagged", () => {
+    assert.deepEqual(classifyClient({ userAgent: "AcmeSync/2.1 (+bot)" }), {
+      family: "AcmeSync",
+      signals: ["not_a_browser"],
+    });
+    assert.deepEqual(classifyClient({ userAgent: chrome })?.signals, [
+      "browser_without_fetch_metadata",
+    ]);
+    assert.deepEqual(classifyClient({})?.signals, ["no_user_agent"]);
+  });
+
+  test("one fingerprint per client family", () => {
+    assert.equal(
+      detectionFingerprint("Headless Chrome"),
+      "detected:headless-chrome",
+    );
+  });
+
+  test("an unregistered agent scores as at least medium risk", () => {
+    const result = scoreAgent({
+      kind: "detected",
+      scopes: ["work:read", "work:write"],
+      projectIds: [],
+      legacy: false,
+      ownerIsMember: true,
+      openCriticalAlerts: 0,
+      openWarningAlerts: 0,
+      blockedLast7d: 0,
+      workspaceHasEnforcedPolicies: true,
+    });
+    assert.ok(result.factors.some((f) => f.code === "unregistered"));
+    assert.ok(result.score >= 50, `score ${result.score}`);
+  });
+});
+
+describe("Credential hygiene", () => {
+  const now = new Date("2026-10-28T03:00:00Z");
+  const daysAgo = (n: number) => new Date(now.getTime() - n * 86400000);
+  const agent = (overrides: Partial<HygieneSubject> = {}): HygieneSubject => ({
+    kind: "api_key",
+    status: "active",
+    createdAt: daysAgo(200),
+    lastSeenAt: daysAgo(1),
+    reviewedAt: null,
+    ...overrides,
+  });
+
+  test("an agent whose owner left is suspended, whatever its activity", () => {
+    assert.equal(
+      hygieneAction(agent(), { ownerIsMember: false, inactiveDays: 0, now }),
+      "orphaned",
+    );
+    // ...unless an admin confirmed it recently.
+    assert.equal(
+      hygieneAction(agent({ reviewedAt: daysAgo(3) }), {
+        ownerIsMember: false,
+        inactiveDays: 0,
+        now,
+      }),
+      null,
+    );
+  });
+
+  test("unused agents are suspended only past the workspace limit", () => {
+    const idle = agent({ lastSeenAt: daysAgo(61) });
+    assert.equal(
+      hygieneAction(idle, { ownerIsMember: true, inactiveDays: 60, now }),
+      "inactive",
+    );
+    assert.equal(
+      hygieneAction(idle, { ownerIsMember: true, inactiveDays: 90, now }),
+      null,
+    );
+    assert.equal(
+      hygieneAction(idle, { ownerIsMember: true, inactiveDays: 0, now }),
+      null,
+      "0 turns it off",
+    );
+    // Never used: counted from creation; resuming restarts the clock.
+    assert.equal(
+      hygieneAction(agent({ lastSeenAt: null }), {
+        ownerIsMember: true,
+        inactiveDays: 60,
+        now,
+      }),
+      "inactive",
+    );
+    assert.equal(
+      hygieneAction(agent({ lastSeenAt: null, reviewedAt: daysAgo(2) }), {
+        ownerIsMember: true,
+        inactiveDays: 60,
+        now,
+      }),
+      null,
+    );
+  });
+
+  test("AI providers and suspended agents are left alone", () => {
+    const input = { ownerIsMember: false, inactiveDays: 30, now };
+    assert.equal(hygieneAction(agent({ kind: "ai_provider" }), input), null);
+    assert.equal(hygieneAction(agent({ status: "suspended" }), input), null);
+  });
+
+  test("access reviews fall due 90 days after creation or the last review", () => {
+    assert.equal(isReviewDue(agent({ createdAt: daysAgo(91) }), now), true);
+    assert.equal(
+      isReviewDue(
+        agent({ createdAt: daysAgo(91), reviewedAt: daysAgo(10) }),
+        now,
+      ),
+      false,
+    );
+    assert.equal(isReviewDue(agent({ createdAt: daysAgo(30) }), now), false);
+    assert.equal(
+      isReviewDue(agent({ createdAt: daysAgo(400), status: "revoked" }), now),
+      false,
+    );
+  });
+
+  test("only offered inactivity limits are accepted", () => {
+    assert.equal(normalizeInactiveDays(30), 30);
+    assert.equal(normalizeInactiveDays(0), 0);
+    assert.equal(normalizeInactiveDays(45), 60);
+    assert.equal(normalizeInactiveDays(undefined), 60);
+  });
+});
+
+describe("AI budgets", () => {
+  test("budget levels and the no-limit case", () => {
+    assert.deepEqual(budgetStatus(50, 100), { percent: 50, level: "ok" });
+    assert.equal(budgetStatus(80, 100).level, "warning");
+    assert.equal(budgetStatus(120, 100).level, "exceeded");
+    assert.deepEqual(budgetStatus(5000, 0), {
+      percent: null,
+      level: "unlimited",
+    });
+  });
+
+  test("alerts at 80% and 100%", () => {
+    assert.deepEqual(reachedThresholds(79.99, 100), []);
+    assert.deepEqual(reachedThresholds(80, 100), [80]);
+    assert.deepEqual(reachedThresholds(100, 100), [80, 100]);
+    assert.deepEqual(reachedThresholds(1e6, 0), []);
+  });
+
+  test("months are calendar months in UTC", () => {
+    assert.equal(monthKey(new Date("2026-10-31T23:30:00-05:00")), "2026-11");
+    const october = parseMonth("2026-10");
+    assert.equal(october?.from.toISOString(), "2026-10-01T00:00:00.000Z");
+    assert.equal(october?.to.toISOString(), "2026-11-01T00:00:00.000Z");
+    assert.equal(parseMonth("2026-13"), null);
+    assert.equal(parseMonth("October"), null);
+  });
+
+  test("budget settings accept 0 (no limit) up to the maximum", () => {
+    assert.equal(normalizeBudget("250.456"), 250.46);
+    assert.equal(normalizeBudget(0), 0);
+    assert.equal(normalizeBudget(-1), null);
+    assert.equal(normalizeBudget("lots"), null);
+    assert.equal(normalizeBudget(2e6), null);
+  });
+});
+
+describe("Per-agent rate limits", () => {
+  const minute = Date.UTC(2026, 9, 29, 10, 0, 0);
+  test("calls up to the limit pass; the next waits for the minute", () => {
+    assert.equal(decide(60, 60, minute + 15_000).allowed, true);
+    const over = decide(61, 60, minute + 15_000);
+    assert.equal(over.allowed, false);
+    assert.equal(over.retryAfterSec, 45);
+  });
+
+  test("limits are whole numbers; empty or 0 means none", () => {
+    assert.equal(normalizeRateLimit(120), 120);
+    assert.equal(normalizeRateLimit(null), null);
+    assert.equal(normalizeRateLimit(0), null);
+    assert.equal(normalizeRateLimit(1.5), undefined);
+    assert.equal(normalizeRateLimit(-3), undefined);
+    assert.equal(normalizeRateLimit(1e9), undefined);
+  });
+});
+
+describe("Reach map", () => {
+  const used = (entries: Array<[string, number]>) => new Map(entries);
+
+  test("unused write scopes are removable; read scopes never are", () => {
+    const result = suggestReach({
+      scopes: ["work:read", "work:write", "ai:execute", "prompt:read"],
+      projectIds: [],
+      usedScopes: used([["work:write", 12]]),
+      usedProjects: new Map(),
+    });
+    assert.deepEqual(result.removableScopes, ["ai:execute"]);
+    assert.deepEqual(result.suggestion?.scopes, [
+      "work:read",
+      "work:write",
+      "prompt:read",
+    ]);
+  });
+
+  test("an all-projects agent is narrowed to the projects it changed", () => {
+    const result = suggestReach({
+      scopes: ["work:read", "work:write"],
+      projectIds: [],
+      usedScopes: used([["work:write", 3]]),
+      usedProjects: new Map([
+        ["p2", 2],
+        ["p1", 1],
+      ]),
+    });
+    assert.deepEqual(result.suggestion?.projectIds, ["p1", "p2"]);
+  });
+
+  test("changes outside any project keep it unrestricted", () => {
+    const result = suggestReach({
+      scopes: ["work:read", "work:write"],
+      projectIds: [],
+      usedScopes: used([["work:write", 3]]),
+      usedProjects: new Map<string | null, number>([
+        ["p1", 1],
+        [null, 2],
+      ]),
+    });
+    assert.equal(result.suggestion, null);
+  });
+
+  test("allowed projects it never changed are dropped; nothing to do is null", () => {
+    assert.deepEqual(
+      suggestReach({
+        scopes: ["work:read", "work:write"],
+        projectIds: ["p1", "p2"],
+        usedScopes: used([["work:write", 1]]),
+        usedProjects: new Map([["p1", 1]]),
+      }).suggestion?.projectIds,
+      ["p1"],
+    );
+    assert.equal(
+      suggestReach({
+        scopes: ["work:read", "work:write"],
+        projectIds: ["p1"],
+        usedScopes: used([["work:write", 1]]),
+        usedProjects: new Map([["p1", 1]]),
+      }).suggestion,
+      null,
+    );
   });
 });

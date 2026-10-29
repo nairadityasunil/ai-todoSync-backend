@@ -40,6 +40,9 @@ analyticsLogSchema.index(
   },
 );
 
+// Per-integration time ranges (traffic reports, recent logs).
+analyticsLogSchema.index({ sdkIntegrationId: 1, createdAt: -1 });
+
 // Sparse index for event-name-seen queries (replaces AnalyticsEventRegistry)
 analyticsLogSchema.index(
   { eventName: 1, sdkIntegrationId: 1 },

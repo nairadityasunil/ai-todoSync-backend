@@ -1,6 +1,5 @@
-import PromptExecutionLogModel from "../../prompt/models/prompt-execution-log.model.js";
+import costService from "../../agents/cost.service.js";
 import type { ILlmModel } from "../models/llm-model.model.js";
-import { HttpError } from "../../../shared/errors/http-error.js";
 
 export interface CostCalculationResult {
   inputCost: number;
@@ -40,39 +39,11 @@ export class CostControlService {
   }
 
   /**
-   * Verify workspace monthly budget has not been exceeded.
-   * Default budget limit: $100.00 USD per workspace per month (configurable).
+   * Refuses the call when the workspace's monthly AI budget (set in Agent
+   * Governance → Costs) is used up and its hard stop is on.
    */
-  public async assertWorkspaceBudget(
-    workspaceId: string,
-    monthlyBudgetLimitUsd = 100.0,
-  ): Promise<void> {
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-    const result = await PromptExecutionLogModel.aggregate([
-      {
-        $match: {
-          workspaceId,
-          createdAt: { $gte: startOfMonth },
-          status: "success",
-        },
-      },
-      {
-        $group: {
-          _id: null,
-          totalSpent: { $sum: "$totalCost" },
-        },
-      },
-    ]);
-
-    const totalSpent = result[0]?.totalSpent || 0;
-    if (totalSpent >= monthlyBudgetLimitUsd) {
-      throw new HttpError(
-        429,
-        `Workspace monthly AI execution budget ($${monthlyBudgetLimitUsd.toFixed(2)}) has been exceeded. Total spent this month: $${totalSpent.toFixed(2)}.`,
-      );
-    }
+  public async assertWorkspaceBudget(workspaceId: string): Promise<void> {
+    await costService.assertWithinBudget(workspaceId);
   }
 }
 

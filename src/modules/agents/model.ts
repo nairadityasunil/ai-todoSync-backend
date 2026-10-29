@@ -15,7 +15,9 @@ export type AgentKind =
   | "mcp_client"
   | "chatgpt"
   | "companion"
-  | "ai_provider";
+  | "ai_provider"
+  /** A script or automated browser found using a person's own login. */
+  | "detected";
 export type AgentStatus = "active" | "suspended" | "revoked";
 export type AgentRiskLevel = "low" | "medium" | "high" | "critical";
 
@@ -35,6 +37,12 @@ export interface IAgent {
   fingerprint?: string | null;
   clientName?: string | null;
   userAgent?: string | null;
+  /** Why a "detected" agent was judged automated (see detection.ts). */
+  detectionSignals: string[];
+  /** The third party behind it (see vendors module); null for the workspace's own. */
+  vendorId?: Types.ObjectId | string | null;
+  /** The agent key that replaced this detected agent. */
+  replacedByAgentId?: Types.ObjectId | string | null;
   /** sha256 of the API key; only for kind api_key. */
   keyHash?: string | null;
   keyPrefix?: string | null;
@@ -51,7 +59,12 @@ export interface IAgent {
   /** Permissions were narrowed by an admin: the owner may only narrow further. */
   adminLocked: boolean;
   expiresAt?: Date | null;
+  /** Calls allowed per minute across REST, MCP and AI; null for no limit. */
+  rateLimitPerMinute?: number | null;
   lastSeenAt?: Date | null;
+  /** Last time its owner (or an admin) confirmed it is still needed. */
+  reviewedAt?: Date | null;
+  reviewedBy?: Types.ObjectId | string | null;
   callCount: number;
   riskScore: number;
   riskLevel: AgentRiskLevel;
@@ -83,13 +96,23 @@ const agentSchema = new Schema<IAgentDocument>(
     ownerUserId: { type: Schema.Types.ObjectId, ref: "User", required: true },
     kind: {
       type: String,
-      enum: ["api_key", "mcp_client", "chatgpt", "companion", "ai_provider"],
+      enum: [
+        "api_key",
+        "mcp_client",
+        "chatgpt",
+        "companion",
+        "ai_provider",
+        "detected",
+      ],
       required: true,
     },
     name: { type: String, required: true, trim: true, maxlength: 120 },
     fingerprint: { type: String, default: null },
     clientName: { type: String, default: null },
     userAgent: { type: String, default: null },
+    detectionSignals: { type: [String], default: [] },
+    replacedByAgentId: { type: Schema.Types.ObjectId, default: null },
+    vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
     keyHash: { type: String, default: null },
     keyPrefix: { type: String, default: null },
     sessionId: { type: Schema.Types.ObjectId, default: null },
@@ -106,7 +129,10 @@ const agentSchema = new Schema<IAgentDocument>(
     statusSetByAdmin: { type: Boolean, default: false },
     adminLocked: { type: Boolean, default: false },
     expiresAt: { type: Date, default: null },
+    rateLimitPerMinute: { type: Number, default: null },
     lastSeenAt: { type: Date, default: null },
+    reviewedAt: { type: Date, default: null },
+    reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     callCount: { type: Number, default: 0 },
     riskScore: { type: Number, default: 0 },
     riskLevel: {
@@ -143,6 +169,7 @@ agentSchema.index(
 agentSchema.index({ workspaceId: 1, status: 1 });
 agentSchema.index({ sessionId: 1 }, { sparse: true });
 agentSchema.index({ deviceId: 1 }, { sparse: true });
+agentSchema.index({ vendorId: 1 }, { sparse: true });
 
 export const AgentModel = mongoose.model<IAgentDocument>("Agent", agentSchema);
 
@@ -416,7 +443,10 @@ export type AgentAlertType =
 
 export interface IAgentAlert {
   workspaceId?: Types.ObjectId | string | null;
-  agentId: Types.ObjectId | string;
+  /** The agent it concerns; null for vendor-level alerts. */
+  agentId?: Types.ObjectId | string | null;
+  /** The third party it concerns, for vendor alerts. */
+  vendorId?: Types.ObjectId | string | null;
   type: AgentAlertType;
   severity: AgentAlertSeverity;
   title: string;
@@ -433,7 +463,8 @@ export interface IAgentAlertDocument extends IAgentAlert, Document {}
 const agentAlertSchema = new Schema<IAgentAlertDocument>(
   {
     workspaceId: { type: Schema.Types.ObjectId, default: null },
-    agentId: { type: Schema.Types.ObjectId, ref: "Agent", required: true },
+    agentId: { type: Schema.Types.ObjectId, ref: "Agent", default: null },
+    vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
     type: { type: String, required: true },
     severity: {
       type: String,
@@ -491,4 +522,84 @@ mcpConfirmationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 export const McpConfirmationModel = mongoose.model<IMcpConfirmationDocument>(
   "McpConfirmation",
   mcpConfirmationSchema,
+);
+
+/* ------------------------------------------------------------------ */
+/* Webhooks: governance events to Slack, SIEM tools and other systems  */
+/* ------------------------------------------------------------------ */
+
+export type WebhookFormat = "json" | "slack";
+export type WebhookEvent =
+  | "alert.raised"
+  | "approval.requested"
+  | "approval.decided"
+  | "activity.blocked";
+
+export const WEBHOOK_EVENTS: WebhookEvent[] = [
+  "alert.raised",
+  "approval.requested",
+  "approval.decided",
+  "activity.blocked",
+];
+
+export interface IAgentWebhook {
+  workspaceId: Types.ObjectId | string;
+  name: string;
+  url: string;
+  format: WebhookFormat;
+  events: WebhookEvent[];
+  /** Alerts below this severity are not sent. */
+  minSeverity: "info" | "warning" | "critical";
+  /** Signing secret, encrypted at rest. */
+  secret: string;
+  /** The service it delivers to, when it is a known third party. */
+  vendorId?: Types.ObjectId | string | null;
+  enabled: boolean;
+  /** Turned off after repeated failures; the reason is kept. */
+  disabledReason?: string | null;
+  consecutiveFailures: number;
+  lastDeliveryAt?: Date | null;
+  lastStatus?: number | null;
+  lastError?: string | null;
+  createdBy: Types.ObjectId | string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAgentWebhookDocument extends IAgentWebhook, Document {}
+
+const agentWebhookSchema = new Schema<IAgentWebhookDocument>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true, maxlength: 80 },
+    url: { type: String, required: true, maxlength: 2000 },
+    format: { type: String, enum: ["json", "slack"], default: "json" },
+    events: [{ type: String, enum: WEBHOOK_EVENTS }],
+    minSeverity: {
+      type: String,
+      enum: ["info", "warning", "critical"],
+      default: "warning",
+    },
+    secret: { type: String, required: true },
+    vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
+    enabled: { type: Boolean, default: true },
+    disabledReason: { type: String, default: null },
+    consecutiveFailures: { type: Number, default: 0 },
+    lastDeliveryAt: { type: Date, default: null },
+    lastStatus: { type: Number, default: null },
+    lastError: { type: String, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+  },
+  { timestamps: true },
+);
+
+agentWebhookSchema.index({ workspaceId: 1, enabled: 1 });
+
+export const AgentWebhookModel = mongoose.model<IAgentWebhookDocument>(
+  "AgentWebhook",
+  agentWebhookSchema,
 );

@@ -4,7 +4,7 @@ import logger from "../../lib/logger.js";
 import EpicModel from "../epic/models/epic.model.js";
 import type { RiskLevel } from "../mcp/registry/tool-types.js";
 import TaskModel from "../task/models/task.model.js";
-import activityService from "./activity.service.js";
+import activityService, { raiseAlert } from "./activity.service.js";
 import {
   AgentApprovalModel,
   AgentPolicyModel,
@@ -17,7 +17,10 @@ import {
   riskRank,
   type PolicyLike,
 } from "./policy-engine.js";
+import { consume } from "./rate-limit.js";
 import { redactInput } from "./redaction.js";
+import webhookService from "./webhooks.service.js";
+import vendorService from "../vendors/service.js";
 
 /**
  * Single decision point for everything an agent does, over MCP or REST:
@@ -56,6 +59,8 @@ export type AuthorizeResult =
       advisory: PolicyLike[];
       projectId: string | null;
       reason: string;
+      /** Set when the agent is over its rate limit (respond 429). */
+      retryAfterSec?: number;
     }
   | {
       effect: "require_approval";
@@ -152,6 +157,33 @@ export async function authorize(
 ): Promise<AuthorizeResult> {
   const { agent } = input;
   const workspaceId = agent.workspaceId ? agent.workspaceId.toString() : null;
+
+  // Rate limit first: an agent over its limit gets nothing else evaluated.
+  if (agent.rateLimitPerMinute) {
+    const rate = await consume(agent._id.toString(), agent.rateLimitPerMinute);
+    if (!rate.allowed) {
+      // Alert on the first call over the limit; at most once an hour.
+      if (rate.count === agent.rateLimitPerMinute + 1) {
+        void raiseAlert({
+          workspaceId,
+          agentId: agent._id.toString(),
+          type: "rate_limited",
+          severity: "warning",
+          title: `${agent.name} hit its rate limit`,
+          detail: `More than ${agent.rateLimitPerMinute} calls in a minute; further calls were refused until the minute ended.`,
+          dedupeKey: `rate_limited:${agent._id}:${Math.floor(Date.now() / 3600_000)}`,
+        }).catch(() => undefined);
+      }
+      return {
+        effect: "deny",
+        policy: null,
+        advisory: [],
+        projectId: input.projectId ?? null,
+        reason: `Rate limit reached: ${agent.rateLimitPerMinute} calls per minute. Try again in ${rate.retryAfterSec}s.`,
+        retryAfterSec: rate.retryAfterSec,
+      };
+    }
+  }
   const resolved: ProjectResolution = input.resolvedProjects
     ? input.resolvedProjects
     : input.projectId !== undefined
@@ -162,6 +194,18 @@ export async function authorize(
           epicId: input.input.epicId,
         });
   const { projectId } = resolved;
+
+  // Third-party status: blocked or restricted vendors limit their agents.
+  const vendorDecision = await vendorService.decide(agent, input.risk);
+  if (vendorDecision) {
+    return {
+      effect: "deny",
+      policy: null,
+      advisory: [],
+      projectId: input.projectId ?? null,
+      reason: vendorDecision.deny,
+    };
+  }
 
   // Project allowlist: a scoped agent can only change its own projects, and
   // every project a call touches must be one of them.
@@ -248,6 +292,22 @@ export async function authorize(
     policyName: policy.name,
     status: "pending",
     expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
+  });
+  webhookService.emit({
+    type: "approval.requested",
+    workspaceId,
+    summary: `${agent.name} wants to run ${input.action}: approval needed under policy "${policy.name}"`,
+    data: {
+      approvalId: approval._id.toString(),
+      agentId: agent._id.toString(),
+      agentName: agent.name,
+      action: input.action,
+      risk: input.risk,
+      policy: policy.name,
+      projectId,
+      expiresAt: approval.expiresAt,
+      input: approval.inputPreview,
+    },
   });
   logger.info("Agent action held for approval", {
     agentId: agent._id.toString(),

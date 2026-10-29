@@ -6,6 +6,8 @@ export interface IPromptExecutionLog {
   workspaceId: Types.ObjectId | string;
   projectId?: Types.ObjectId | string | null;
   userId: Types.ObjectId | string;
+  /** The agent that made the call; null when a person did, in the portal. */
+  agentId?: Types.ObjectId | string | null;
   promptId?: Types.ObjectId | string | null;
   promptVersion?: number | null;
   isProduction?: boolean;
@@ -52,6 +54,7 @@ const promptExecutionLogSchema = new Schema<IPromptExecutionLogDocument>(
       required: true,
       index: true,
     },
+    agentId: { type: Schema.Types.ObjectId, ref: "Agent", default: null },
     promptId: {
       type: Schema.Types.ObjectId,
       ref: "PromptLibrary",

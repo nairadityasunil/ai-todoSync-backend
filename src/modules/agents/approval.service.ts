@@ -11,6 +11,7 @@ import ProjectMemberModel from "../project/models/project-member.model.js";
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import activityService, { runAsAgent } from "./activity.service.js";
 import { agentBlockReason, hashKey } from "./agent.service.js";
+import webhookService from "./webhooks.service.js";
 import {
   AgentApprovalModel,
   AgentModel,
@@ -291,7 +292,34 @@ class AgentApprovalService {
         "CONFLICT",
       );
     }
+    // Approved requests are reported once they have run (see finish).
+    if (status === "rejected") this.emitDecided(claimed, "rejected");
     return claimed;
+  }
+
+  private emitDecided(
+    approval: IAgentApprovalDocument,
+    status: "rejected" | "executed" | "failed",
+    error?: string | null,
+  ): void {
+    webhookService.emit({
+      type: "approval.decided",
+      workspaceId: approval.workspaceId?.toString() ?? null,
+      summary:
+        status === "rejected"
+          ? `Request to run ${approval.action} was rejected`
+          : status === "executed"
+            ? `Request to run ${approval.action} was approved and ran`
+            : `Request to run ${approval.action} was approved but failed: ${error ?? "unknown error"}`,
+      data: {
+        approvalId: approval._id.toString(),
+        agentId: approval.agentId.toString(),
+        action: approval.action,
+        status,
+        decidedBy: approval.decidedBy?.toString() ?? null,
+        error: error ?? null,
+      },
+    });
   }
 
   private async finish(
@@ -311,6 +339,7 @@ class AgentApprovalService {
         },
       },
     );
+    this.emitDecided(approval, status, error);
   }
 
   private async runTool(

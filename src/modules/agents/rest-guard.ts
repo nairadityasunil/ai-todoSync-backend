@@ -53,6 +53,8 @@ const isForbiddenForAgents = (
 ): boolean => {
   if (domain === "agent")
     return !(method === "GET" && segments[0] === "approvals");
+  // Vendor approval is for people: an agent must not approve its own vendor.
+  if (domain === "vendor") return true;
   if (method === "GET" || method === "HEAD") return false;
   // Anything that signs in, pairs a device or mints a key: an agent must not
   // be able to turn itself into a broader credential.
@@ -65,6 +67,17 @@ const isForbiddenForAgents = (
   }
   return false;
 };
+
+/** The scope a call in this domain at this risk needs (reads need work:read). */
+export function scopeFor(domain: string, risk: RiskLevel): McpScope {
+  if (risk === "read") return "work:read";
+  if (domain === "workspace") return "workspace:admin";
+  if (["ai", "ai_planning", "ai_planner"].includes(domain)) return "ai:execute";
+  if (domain === "prompt" || domain === "prompt_library") return "prompt:write";
+  if (["chat", "comment", "note", "document"].includes(domain))
+    return "collaboration:write";
+  return "work:write";
+}
 
 export function describeRestCall(method: string, path: string): RestAction {
   const segments = path
@@ -112,17 +125,7 @@ export function describeRestCall(method: string, path: string): RestAction {
     if (domain === "auth" || domain === "agent") risk = "security_critical";
   }
 
-  let scope: McpScope = "work:read";
-  if (risk !== "read") {
-    if (domain === "workspace") scope = "workspace:admin";
-    else if (["ai", "ai_planning", "ai_planner"].includes(domain))
-      scope = "ai:execute";
-    else if (domain === "prompt" || domain === "prompt_library")
-      scope = "prompt:write";
-    else if (["chat", "comment", "note", "document"].includes(domain))
-      scope = "collaboration:write";
-    else scope = "work:write";
-  }
+  const scope = scopeFor(domain, risk);
 
   const refs: RestAction["refs"] = {};
   rest.forEach((segment, index) => {
@@ -211,6 +214,16 @@ export async function guardAgentRequest(
   };
   const decision = await authorize(guardInput);
 
+  if (decision.effect === "deny" && decision.retryAfterSec) {
+    recordDecision(guardInput, decision, { statusCode: 429 });
+    res.setHeader("Retry-After", String(decision.retryAfterSec));
+    res.status(429).json({
+      error: "rate_limited",
+      message: decision.reason,
+      retryAfterSec: decision.retryAfterSec,
+    });
+    return;
+  }
   if (decision.effect === "deny") {
     recordDecision(guardInput, decision, { statusCode: 403 });
     res.status(403).json({

@@ -5,6 +5,7 @@ import AnalyticsLogModel from "../models/analytics-log.model.js";
 import AnalyticsUserModel from "../models/analytics-user.model.js";
 import SdkIntegrationModel from "../../sdk-integrations/model.js";
 import logger from "../../../lib/logger.js";
+import aiTrafficService from "../services/ai-traffic.service.js";
 import { escapeRegex } from "../../../utils/escape-regex.js";
 
 class AnalyticsDataController {
@@ -627,6 +628,28 @@ class AnalyticsDataController {
   /**
    * GET /api/sdk-integrations/:sdkIntegrationId/users
    */
+  /** GET /sdk-integrations/:id/ai-traffic?days=30: AI agent, automated and crawler traffic. */
+  public getAiTraffic = async (req: Request, res: Response) => {
+    try {
+      const sdkIntegrationId =
+        req.sdkIntegration?._id?.toString() ?? req.params.sdkIntegrationId;
+      res
+        .status(200)
+        .json(
+          await aiTrafficService.report(
+            String(sdkIntegrationId),
+            Number(req.query.days) || 30,
+          ),
+        );
+    } catch (error) {
+      logger.error(
+        "AI traffic report error",
+        error instanceof Error ? error : undefined,
+      );
+      res.status(500).json({ error: "Failed to load AI traffic" });
+    }
+  };
+
   public getScopedUsers = async (req: Request, res: Response) => {
     try {
       const sdkIntegrationId =

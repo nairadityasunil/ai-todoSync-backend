@@ -5,6 +5,13 @@ import PromptExecutionLogModel from "../prompt/models/prompt-execution-log.model
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import WorkspaceModel from "../workspace/models/workspace.model.js";
 import { raiseAlert } from "./activity.service.js";
+import { VendorEvidenceModel, VendorModel } from "../vendors/model.js";
+import agentService from "./agent.service.js";
+import {
+  hygieneAction,
+  isReviewDue,
+  normalizeInactiveDays,
+} from "./hygiene.js";
 import {
   AGENT_ACTIVITY_RETENTION_DAYS,
   AgentActivityModel,
@@ -71,6 +78,7 @@ export async function recomputeRisk(
     expiresAt: agent.expiresAt,
     createdAt: agent.createdAt,
     lastSeenAt: agent.lastSeenAt,
+    reviewedAt: agent.reviewedAt,
     ownerIsMember: Boolean(ownerMembership),
     openCriticalAlerts: criticalAlerts,
     openWarningAlerts: warningAlerts,
@@ -128,6 +136,123 @@ export async function recomputeAllRisk(): Promise<number> {
     }
   }
   return count;
+}
+
+/* ------------------------------------------------------------------ */
+/* Credential hygiene                                                  */
+/* ------------------------------------------------------------------ */
+
+const HYGIENE_BATCH = 500;
+
+/**
+ * Suspends agents whose owner left their workspace (only an admin can
+ * resume those) and agents unused for longer than the workspace allows.
+ * Runs nightly; works through active agents in batches.
+ */
+export async function enforceAgentHygiene(
+  now = new Date(),
+): Promise<{ orphaned: number; inactive: number }> {
+  const counts = { orphaned: 0, inactive: 0 };
+  const inactiveDaysByWorkspace = new Map<string, number>();
+  let lastId: Types.ObjectId | null = null;
+
+  for (;;) {
+    const batch: IAgentDocument[] = await AgentModel.find({
+      status: "active",
+      kind: { $ne: "ai_provider" },
+      ...(lastId ? { _id: { $gt: lastId } } : {}),
+    })
+      .sort({ _id: 1 })
+      .limit(HYGIENE_BATCH);
+    if (batch.length === 0) break;
+    lastId = batch[batch.length - 1]._id as Types.ObjectId;
+
+    const workspaceIds = [
+      ...new Set(
+        batch
+          .map((agent) => agent.workspaceId?.toString())
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const missing = workspaceIds.filter(
+      (id) => !inactiveDaysByWorkspace.has(id),
+    );
+    if (missing.length) {
+      const workspaces = await WorkspaceModel.find({ _id: { $in: missing } })
+        .select("settings.inactiveAgentDays")
+        .lean();
+      for (const id of missing) {
+        const workspace = workspaces.find((w) => w._id.toString() === id);
+        inactiveDaysByWorkspace.set(
+          id,
+          normalizeInactiveDays(
+            workspace?.settings?.inactiveAgentDays ?? undefined,
+          ),
+        );
+      }
+    }
+    const members = await WorkspaceMemberModel.find({
+      workspaceId: { $in: workspaceIds.map(oid) },
+      userId: {
+        $in: [...new Set(batch.map((a) => a.ownerUserId.toString()))].map(oid),
+      },
+    })
+      .select("workspaceId userId")
+      .lean();
+    const membership = new Set(
+      members.map((m) => `${m.workspaceId.toString()}:${m.userId.toString()}`),
+    );
+
+    for (const agent of batch) {
+      const workspaceId = agent.workspaceId?.toString() ?? null;
+      const action = hygieneAction(agent, {
+        ownerIsMember:
+          !workspaceId ||
+          membership.has(`${workspaceId}:${agent.ownerUserId.toString()}`),
+        inactiveDays: workspaceId
+          ? (inactiveDaysByWorkspace.get(workspaceId) ?? 0)
+          : 0,
+        now,
+      });
+      if (!action) continue;
+      const days = workspaceId ? inactiveDaysByWorkspace.get(workspaceId) : 0;
+      const reason =
+        action === "orphaned"
+          ? "Its owner is no longer a member of the workspace"
+          : `Not used for ${days} days`;
+      const updated = await AgentModel.updateOne(
+        { _id: agent._id, status: "active" },
+        {
+          $set: {
+            status: "suspended",
+            statusReason: reason,
+            // Only an admin may bring back an agent whose owner has left.
+            statusSetByAdmin: action === "orphaned",
+          },
+        },
+      );
+      if (updated.modifiedCount === 0) continue;
+      counts[action] += 1;
+      agentService.invalidate(agent._id.toString());
+      await raiseAlert({
+        workspaceId,
+        agentId: agent._id.toString(),
+        type: action === "orphaned" ? "orphaned_agent" : "inactive_agent",
+        severity: action === "orphaned" ? "warning" : "info",
+        title:
+          action === "orphaned"
+            ? `${agent.name} suspended: its owner left the workspace`
+            : `${agent.name} suspended after ${days} days unused`,
+        detail:
+          action === "orphaned"
+            ? "An admin can reassign the work and revoke it, or resume it if it is still needed."
+            : "Its owner can resume it from Agent Governance if it is still needed.",
+        dedupeKey: `${action}_agent:${agent._id}:${Math.floor(now.getTime() / DAY)}`,
+      });
+    }
+    if (batch.length < HYGIENE_BATCH) break;
+  }
+  return counts;
 }
 
 /* ------------------------------------------------------------------ */
@@ -520,7 +645,7 @@ export async function complianceReport(workspaceId: string) {
     WorkspaceModel.findById(ws).select("name settings").lean(),
     AgentModel.find({ workspaceId: ws, status: { $ne: "revoked" } })
       .select(
-        "name kind scopes projectIds legacy expiresAt riskLevel status ownerUserId",
+        "name kind scopes projectIds legacy expiresAt riskLevel status ownerUserId vendorId",
       )
       .lean(),
     AgentPolicyModel.countDocuments({
@@ -567,6 +692,45 @@ export async function complianceReport(workspaceId: string) {
     (agent) => agent.riskLevel === "high" || agent.riskLevel === "critical",
   );
   const aiProviders = active.filter((agent) => agent.kind === "ai_provider");
+  const unregistered = active.filter((agent) => agent.kind === "detected");
+  const vendors = await VendorModel.find({ workspaceId: ws })
+    .select("name status tier assessmentCompletedAt nextReviewAt")
+    .lean();
+  const vendorsInUse = new Set(
+    active.filter((a) => a.vendorId).map((a) => String(a.vendorId)),
+  );
+  const unapprovedInUse = vendors.filter(
+    (v) => vendorsInUse.has(v._id.toString()) && v.status !== "approved",
+  );
+  const approvedVendors = vendors.filter((v) => v.status === "approved");
+  const unassessed = approvedVendors.filter(
+    (v) =>
+      !v.assessmentCompletedAt ||
+      (v.nextReviewAt && new Date(v.nextReviewAt).getTime() < Date.now()),
+  );
+  const certified = new Set(
+    (
+      await VendorEvidenceModel.find({
+        vendorId: {
+          $in: vendors.filter((v) => v.tier === 1).map((v) => v._id),
+        },
+        kind: { $in: ["soc2", "iso27001", "iso42001"] },
+        $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+      })
+        .select("vendorId")
+        .lean()
+    ).map((e) => e.vendorId.toString()),
+  );
+  const tierOneUncertified = vendors.filter(
+    (v) =>
+      v.tier === 1 &&
+      v.status !== "blocked" &&
+      !certified.has(v._id.toString()),
+  );
+  const reviewOverdue = agents.filter(
+    (agent) => agent.status !== "revoked" && isReviewDue(agent),
+  );
+  const reviewable = agents.filter((agent) => agent.status !== "revoked");
   const masking = Boolean(workspace?.settings?.aiDataMasking);
 
   const pick = (ok: boolean, partial: boolean): ControlStatus =>
@@ -581,6 +745,77 @@ export async function complianceReport(workspaceId: string) {
       evidence: `${active.length} active agent(s); ${orphaned.length} without a current workspace member as owner.`,
       recommendation: orphaned.length
         ? "Reassign or revoke agents whose owners have left."
+        : null,
+    },
+    {
+      id: "shadow_ai",
+      framework: FRAMEWORKS.NIST_GOVERN,
+      title: "No unregistered agents act with a person's login",
+      status: pick(unregistered.length === 0, false),
+      evidence: unregistered.length
+        ? `${unregistered.length} script(s) or automated browser(s) found using personal logins: ${unregistered
+            .slice(0, 5)
+            .map((agent) => agent.name)
+            .join(", ")}.`
+        : "No scripts or automated browsers are using personal logins.",
+      recommendation: unregistered.length
+        ? 'Replace each with its own agent key, or block it. Turn on "Require agent keys" to stop new ones.'
+        : null,
+    },
+    {
+      id: "access_reviews",
+      framework: FRAMEWORKS.ISO_ACCESS,
+      title: "Agent access is reviewed at least every 90 days",
+      status: pick(
+        reviewOverdue.length === 0,
+        reviewOverdue.length <= Math.max(1, reviewable.length * 0.2),
+      ),
+      evidence: `${reviewable.length - reviewOverdue.length} of ${reviewable.length} agent(s) confirmed in the last 90 days; unused agents are suspended after ${
+        normalizeInactiveDays(workspace?.settings?.inactiveAgentDays) ||
+        "never (off)"
+      }${normalizeInactiveDays(workspace?.settings?.inactiveAgentDays) ? " days" : ""}.`,
+      recommendation: reviewOverdue.length
+        ? "Ask owners to confirm or suspend the agents listed under Access reviews."
+        : null,
+    },
+    {
+      id: "vendors_approved",
+      framework: "ISO/IEC 27001 A.5.19",
+      title: "Every third party in use is approved",
+      status: pick(unapprovedInUse.length === 0, unapprovedInUse.length <= 1),
+      evidence: unapprovedInUse.length
+        ? `${unapprovedInUse.length} vendor(s) in use without approval: ${unapprovedInUse
+            .slice(0, 5)
+            .map((v) => v.name)
+            .join(", ")}.`
+        : `${vendors.length} vendor(s) on the register; all in use are approved.`,
+      recommendation: unapprovedInUse.length
+        ? "Review them under Vendors: approve, restrict or block each."
+        : null,
+    },
+    {
+      id: "vendors_assessed",
+      framework: "NIST CSF 2.0 GV.SC",
+      title: "Approved third parties are assessed on schedule",
+      status: pick(
+        unassessed.length === 0,
+        unassessed.length <= Math.max(1, approvedVendors.length * 0.2),
+      ),
+      evidence: `${approvedVendors.length - unassessed.length} of ${approvedVendors.length} approved vendor(s) have a current assessment.`,
+      recommendation: unassessed.length
+        ? "Complete or renew the due-diligence questionnaire for each."
+        : null,
+    },
+    {
+      id: "vendors_evidence",
+      framework: "ISO/IEC 27001 A.5.22",
+      title: "Critical third parties have current security evidence",
+      status: pick(tierOneUncertified.length === 0, false),
+      evidence: tierOneUncertified.length
+        ? `${tierOneUncertified.length} tier 1 vendor(s) without a current SOC 2 or ISO certificate on file.`
+        : "Every tier 1 vendor has a current SOC 2 or ISO certificate on file.",
+      recommendation: tierOneUncertified.length
+        ? "Upload each one's current report under Vendors → Evidence."
         : null,
     },
     {
