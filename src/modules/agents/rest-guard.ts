@@ -53,6 +53,8 @@ const isForbiddenForAgents = (
 ): boolean => {
   if (domain === "agent")
     return !(method === "GET" && segments[0] === "approvals");
+  // Vendor approval is for people: an agent must not approve its own vendor.
+  if (domain === "vendor") return true;
   if (method === "GET" || method === "HEAD") return false;
   // Anything that signs in, pairs a device or mints a key: an agent must not
   // be able to turn itself into a broader credential.

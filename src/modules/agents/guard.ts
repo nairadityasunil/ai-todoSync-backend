@@ -20,6 +20,7 @@ import {
 import { consume } from "./rate-limit.js";
 import { redactInput } from "./redaction.js";
 import webhookService from "./webhooks.service.js";
+import vendorService from "../vendors/service.js";
 
 /**
  * Single decision point for everything an agent does, over MCP or REST:
@@ -193,6 +194,18 @@ export async function authorize(
           epicId: input.input.epicId,
         });
   const { projectId } = resolved;
+
+  // Third-party status: blocked or restricted vendors limit their agents.
+  const vendorDecision = await vendorService.decide(agent, input.risk);
+  if (vendorDecision) {
+    return {
+      effect: "deny",
+      policy: null,
+      advisory: [],
+      projectId: input.projectId ?? null,
+      reason: vendorDecision.deny,
+    };
+  }
 
   // Project allowlist: a scoped agent can only change its own projects, and
   // every project a call touches must be one of them.

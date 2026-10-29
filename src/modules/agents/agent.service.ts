@@ -413,7 +413,7 @@ class AgentService {
       return existing;
     }
     try {
-      return await AgentModel.create({
+      const created = await AgentModel.create({
         workspaceId: await this.defaultWorkspaceId(ownerUserId.toString()),
         ownerUserId,
         kind: input.kind,
@@ -427,6 +427,10 @@ class AgentService {
         scopes: input.scopes,
         projectIds: [],
       });
+      // Third-party discovery: link it to the company behind it.
+      const { default: vendorService } = await import("../vendors/service.js");
+      await vendorService.linkAgent(created);
+      return created;
     } catch (error) {
       const raced = await AgentModel.findOne({
         ownerUserId,

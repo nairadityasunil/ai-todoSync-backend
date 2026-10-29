@@ -39,6 +39,8 @@ export interface IAgent {
   userAgent?: string | null;
   /** Why a "detected" agent was judged automated (see detection.ts). */
   detectionSignals: string[];
+  /** The third party behind it (see vendors module); null for the workspace's own. */
+  vendorId?: Types.ObjectId | string | null;
   /** The agent key that replaced this detected agent. */
   replacedByAgentId?: Types.ObjectId | string | null;
   /** sha256 of the API key; only for kind api_key. */
@@ -110,6 +112,7 @@ const agentSchema = new Schema<IAgentDocument>(
     userAgent: { type: String, default: null },
     detectionSignals: { type: [String], default: [] },
     replacedByAgentId: { type: Schema.Types.ObjectId, default: null },
+    vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
     keyHash: { type: String, default: null },
     keyPrefix: { type: String, default: null },
     sessionId: { type: Schema.Types.ObjectId, default: null },
@@ -166,6 +169,7 @@ agentSchema.index(
 agentSchema.index({ workspaceId: 1, status: 1 });
 agentSchema.index({ sessionId: 1 }, { sparse: true });
 agentSchema.index({ deviceId: 1 }, { sparse: true });
+agentSchema.index({ vendorId: 1 }, { sparse: true });
 
 export const AgentModel = mongoose.model<IAgentDocument>("Agent", agentSchema);
 
@@ -439,7 +443,10 @@ export type AgentAlertType =
 
 export interface IAgentAlert {
   workspaceId?: Types.ObjectId | string | null;
-  agentId: Types.ObjectId | string;
+  /** The agent it concerns; null for vendor-level alerts. */
+  agentId?: Types.ObjectId | string | null;
+  /** The third party it concerns, for vendor alerts. */
+  vendorId?: Types.ObjectId | string | null;
   type: AgentAlertType;
   severity: AgentAlertSeverity;
   title: string;
@@ -456,7 +463,8 @@ export interface IAgentAlertDocument extends IAgentAlert, Document {}
 const agentAlertSchema = new Schema<IAgentAlertDocument>(
   {
     workspaceId: { type: Schema.Types.ObjectId, default: null },
-    agentId: { type: Schema.Types.ObjectId, ref: "Agent", required: true },
+    agentId: { type: Schema.Types.ObjectId, ref: "Agent", default: null },
+    vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
     type: { type: String, required: true },
     severity: {
       type: String,
@@ -544,6 +552,8 @@ export interface IAgentWebhook {
   minSeverity: "info" | "warning" | "critical";
   /** Signing secret, encrypted at rest. */
   secret: string;
+  /** The service it delivers to, when it is a known third party. */
+  vendorId?: Types.ObjectId | string | null;
   enabled: boolean;
   /** Turned off after repeated failures; the reason is kept. */
   disabledReason?: string | null;
@@ -575,6 +585,7 @@ const agentWebhookSchema = new Schema<IAgentWebhookDocument>(
       default: "warning",
     },
     secret: { type: String, required: true },
+    vendorId: { type: Schema.Types.ObjectId, ref: "Vendor", default: null },
     enabled: { type: Boolean, default: true },
     disabledReason: { type: String, default: null },
     consecutiveFailures: { type: Number, default: 0 },

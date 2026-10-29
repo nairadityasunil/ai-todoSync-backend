@@ -5,6 +5,7 @@ import PromptExecutionLogModel from "../prompt/models/prompt-execution-log.model
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import WorkspaceModel from "../workspace/models/workspace.model.js";
 import { raiseAlert } from "./activity.service.js";
+import { VendorEvidenceModel, VendorModel } from "../vendors/model.js";
 import agentService from "./agent.service.js";
 import {
   hygieneAction,
@@ -644,7 +645,7 @@ export async function complianceReport(workspaceId: string) {
     WorkspaceModel.findById(ws).select("name settings").lean(),
     AgentModel.find({ workspaceId: ws, status: { $ne: "revoked" } })
       .select(
-        "name kind scopes projectIds legacy expiresAt riskLevel status ownerUserId",
+        "name kind scopes projectIds legacy expiresAt riskLevel status ownerUserId vendorId",
       )
       .lean(),
     AgentPolicyModel.countDocuments({
@@ -692,6 +693,40 @@ export async function complianceReport(workspaceId: string) {
   );
   const aiProviders = active.filter((agent) => agent.kind === "ai_provider");
   const unregistered = active.filter((agent) => agent.kind === "detected");
+  const vendors = await VendorModel.find({ workspaceId: ws })
+    .select("name status tier assessmentCompletedAt nextReviewAt")
+    .lean();
+  const vendorsInUse = new Set(
+    active.filter((a) => a.vendorId).map((a) => String(a.vendorId)),
+  );
+  const unapprovedInUse = vendors.filter(
+    (v) => vendorsInUse.has(v._id.toString()) && v.status !== "approved",
+  );
+  const approvedVendors = vendors.filter((v) => v.status === "approved");
+  const unassessed = approvedVendors.filter(
+    (v) =>
+      !v.assessmentCompletedAt ||
+      (v.nextReviewAt && new Date(v.nextReviewAt).getTime() < Date.now()),
+  );
+  const certified = new Set(
+    (
+      await VendorEvidenceModel.find({
+        vendorId: {
+          $in: vendors.filter((v) => v.tier === 1).map((v) => v._id),
+        },
+        kind: { $in: ["soc2", "iso27001", "iso42001"] },
+        $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+      })
+        .select("vendorId")
+        .lean()
+    ).map((e) => e.vendorId.toString()),
+  );
+  const tierOneUncertified = vendors.filter(
+    (v) =>
+      v.tier === 1 &&
+      v.status !== "blocked" &&
+      !certified.has(v._id.toString()),
+  );
   const reviewOverdue = agents.filter(
     (agent) => agent.status !== "revoked" && isReviewDue(agent),
   );
@@ -741,6 +776,46 @@ export async function complianceReport(workspaceId: string) {
       }${normalizeInactiveDays(workspace?.settings?.inactiveAgentDays) ? " days" : ""}.`,
       recommendation: reviewOverdue.length
         ? "Ask owners to confirm or suspend the agents listed under Access reviews."
+        : null,
+    },
+    {
+      id: "vendors_approved",
+      framework: "ISO/IEC 27001 A.5.19",
+      title: "Every third party in use is approved",
+      status: pick(unapprovedInUse.length === 0, unapprovedInUse.length <= 1),
+      evidence: unapprovedInUse.length
+        ? `${unapprovedInUse.length} vendor(s) in use without approval: ${unapprovedInUse
+            .slice(0, 5)
+            .map((v) => v.name)
+            .join(", ")}.`
+        : `${vendors.length} vendor(s) on the register; all in use are approved.`,
+      recommendation: unapprovedInUse.length
+        ? "Review them under Vendors: approve, restrict or block each."
+        : null,
+    },
+    {
+      id: "vendors_assessed",
+      framework: "NIST CSF 2.0 GV.SC",
+      title: "Approved third parties are assessed on schedule",
+      status: pick(
+        unassessed.length === 0,
+        unassessed.length <= Math.max(1, approvedVendors.length * 0.2),
+      ),
+      evidence: `${approvedVendors.length - unassessed.length} of ${approvedVendors.length} approved vendor(s) have a current assessment.`,
+      recommendation: unassessed.length
+        ? "Complete or renew the due-diligence questionnaire for each."
+        : null,
+    },
+    {
+      id: "vendors_evidence",
+      framework: "ISO/IEC 27001 A.5.22",
+      title: "Critical third parties have current security evidence",
+      status: pick(tierOneUncertified.length === 0, false),
+      evidence: tierOneUncertified.length
+        ? `${tierOneUncertified.length} tier 1 vendor(s) without a current SOC 2 or ISO certificate on file.`
+        : "Every tier 1 vendor has a current SOC 2 or ISO certificate on file.",
+      recommendation: tierOneUncertified.length
+        ? "Upload each one's current report under Vendors → Evidence."
         : null,
     },
     {

@@ -125,7 +125,9 @@ class AgentActivityService {
 /** Inserts an alert once per dedupe key. Returns true when it was new. */
 export async function raiseAlert(alert: {
   workspaceId: string | null;
-  agentId: string;
+  /** Omitted for vendor-level alerts. */
+  agentId?: string | null;
+  vendorId?: string | null;
   type: string;
   severity: "info" | "warning" | "critical";
   title: string;

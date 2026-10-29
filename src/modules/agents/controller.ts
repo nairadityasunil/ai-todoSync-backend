@@ -16,7 +16,7 @@ import agentService, {
   sanitizeScopes,
   STANDARD_AGENT_SCOPES,
 } from "./agent.service.js";
-import approvalService, { approverScope } from "./approval.service.js";
+import approvalService from "./approval.service.js";
 import {
   agentUsage,
   complianceReport,
@@ -47,8 +47,10 @@ import {
 } from "./budget.js";
 import costService from "./cost.service.js";
 import { reachReport } from "./reach.js";
+import vendorService from "../vendors/service.js";
 import webhookService, { newWebhookSecret } from "./webhooks.service.js";
 import { encrypt } from "../../utils/encryption.js";
+import { csvCell } from "../../utils/csv.js";
 import { assertSafeUrl, UnsafeUrlError } from "../../utils/safe-http.js";
 import { MAX_RATE_LIMIT_PER_MINUTE, normalizeRateLimit } from "./rate-limit.js";
 import {
@@ -59,65 +61,14 @@ import {
 } from "./hygiene.js";
 import { undoActivity } from "./undo.service.js";
 
-/* ------------------------------------------------------------------ */
-/* Helpers                                                             */
-/* ------------------------------------------------------------------ */
-
-const userIdOf = (req: AuthenticatedRequest): string => {
-  const id = req.user?._id?.toString();
-  if (!id) throw new AppError(401, "Authentication required", "AUTH_REQUIRED");
-  return id;
-};
-
-const str = (value: unknown): string | undefined =>
-  typeof value === "string" && value.trim() ? value.trim() : undefined;
-
-const param = (req: AuthenticatedRequest, name: string): string => {
-  const value = (req.params as Record<string, string | undefined>)[name];
-  if (!value || !Types.ObjectId.isValid(value))
-    throw new AppError(404, "Not found", "NOT_FOUND");
-  return value;
-};
-
-/** Workspaces the user administers (OWNER/ADMIN). */
-const adminWorkspaces = async (userId: string): Promise<Types.ObjectId[]> =>
-  (await approverScope(userId)).workspaceIds;
-
-/** The workspace a request is about: ?workspaceId, else the first one the user administers. */
-const workspaceFor = async (
-  req: AuthenticatedRequest,
-  userId: string,
-): Promise<Types.ObjectId | null> => {
-  const requested =
-    str(req.query.workspaceId) ??
-    str((req.body as Record<string, unknown>)?.workspaceId);
-  const admin = await adminWorkspaces(userId);
-  if (requested) {
-    const match = admin.find((id) => id.toString() === requested);
-    if (!match)
-      throw new AppError(
-        403,
-        "Only workspace owners and admins can do this",
-        "FORBIDDEN",
-      );
-    return match;
-  }
-  return admin[0] ?? null;
-};
-
-const requireWorkspace = async (
-  req: AuthenticatedRequest,
-  userId: string,
-): Promise<Types.ObjectId> => {
-  const workspaceId = await workspaceFor(req, userId);
-  if (!workspaceId)
-    throw new AppError(
-      403,
-      "Only workspace owners and admins can do this",
-      "FORBIDDEN",
-    );
-  return workspaceId;
-};
+import {
+  adminWorkspaces,
+  param,
+  requireWorkspace,
+  str,
+  userIdOf,
+  workspaceFor,
+} from "./http.js";
 
 /** Agents the user owns, plus every agent in workspaces they administer. */
 const visibleAgentsFilter = async (userId: string) => {
@@ -767,11 +718,7 @@ class AgentController {
         "approvalId",
         "error",
       ];
-      const escape = (value: unknown) => {
-        const text = value == null ? "" : String(value);
-        const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
-        return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
-      };
+      const escape = csvCell;
       const lines = rows.map((row) => {
         const agent = row.agentId as unknown as {
           name?: string;
@@ -1191,6 +1138,7 @@ class AgentController {
       secret: encrypt(secret),
       createdBy: userId,
     });
+    await vendorService.linkWebhook(hook);
     webhookService.invalidate(workspaceId.toString());
     res.status(201).json({
       success: true,
@@ -1220,6 +1168,7 @@ class AgentController {
       hook.secret = encrypt(secret);
     }
     await hook.save();
+    if (body.url !== undefined) await vendorService.linkWebhook(hook);
     webhookService.invalidate(hook.workspaceId.toString());
     res.json({
       success: true,
@@ -1254,6 +1203,7 @@ class AgentController {
         workspaceId: workspaceId.toString(),
         aiDataMasking: Boolean(workspace?.settings?.aiDataMasking),
         requireAgentKeys: Boolean(workspace?.settings?.requireAgentKeys),
+        approvedVendorsOnly: Boolean(workspace?.settings?.approvedVendorsOnly),
         inactiveAgentDays: normalizeInactiveDays(
           workspace?.settings?.inactiveAgentDays,
         ),
@@ -1320,6 +1270,13 @@ class AgentController {
         { $set: { "settings.aiBudgetHardStop": body.aiBudgetHardStop } },
       );
       costService.invalidate(workspaceId.toString());
+    }
+    if (typeof body.approvedVendorsOnly === "boolean") {
+      await WorkspaceModel.updateOne(
+        { _id: workspaceId },
+        { $set: { "settings.approvedVendorsOnly": body.approvedVendorsOnly } },
+      );
+      vendorService.invalidate();
     }
     if (typeof body.requireAgentKeys === "boolean") {
       await WorkspaceModel.updateOne(

@@ -14,6 +14,8 @@ export interface IWorkspaceSettings {
   aiMonthlyBudgetUsd?: number;
   /** Refuse AI calls once the budget is used up (otherwise only alert). */
   aiBudgetHardStop?: boolean;
+  /** Third parties under review are read-only until approved. */
+  approvedVendorsOnly?: boolean;
 }
 
 export interface IWorkspace {
@@ -53,6 +55,7 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
       inactiveAgentDays: { type: Number, default: 60 },
       aiMonthlyBudgetUsd: { type: Number, default: 100 },
       aiBudgetHardStop: { type: Boolean, default: true },
+      approvedVendorsOnly: { type: Boolean, default: false },
     },
   },
   { timestamps: true },

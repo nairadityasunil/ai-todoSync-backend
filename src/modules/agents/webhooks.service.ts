@@ -166,6 +166,12 @@ class WebhookService {
   }
 
   private async deliver(hook: IAgentWebhookDocument, event: GovernanceEvent) {
+    // Nothing goes to a destination whose company is blocked.
+    if (hook.vendorId) {
+      const { default: vendorService } = await import("../vendors/service.js");
+      const vendor = await vendorService.statusOf(hook.vendorId.toString());
+      if (vendor?.status === "blocked") return;
+    }
     let lastError = "";
     let lastStatus: number | null = null;
     for (let i = 0; i <= RETRY_DELAYS_MS.length; i += 1) {

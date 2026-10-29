@@ -3,6 +3,7 @@ import cron from "node-cron";
 import logger from "../../lib/logger.js";
 import { runExclusive } from "../../utils/job-lock.js";
 import approvalService from "./approval.service.js";
+import vendorService from "../vendors/service.js";
 import {
   detectAlerts,
   enforceAgentHygiene,
@@ -40,6 +41,7 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
     run("agent-risk", 3_000_000, async () => ({
       hygiene: await enforceAgentHygiene(),
       scored: await recomputeAllRisk(),
+      vendors: await vendorService.nightly(),
     })),
   ),
 ];
