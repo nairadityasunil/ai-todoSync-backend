@@ -57,6 +57,8 @@ export interface IAgent {
   /** Permissions were narrowed by an admin: the owner may only narrow further. */
   adminLocked: boolean;
   expiresAt?: Date | null;
+  /** Calls allowed per minute across REST, MCP and AI; null for no limit. */
+  rateLimitPerMinute?: number | null;
   lastSeenAt?: Date | null;
   /** Last time its owner (or an admin) confirmed it is still needed. */
   reviewedAt?: Date | null;
@@ -124,6 +126,7 @@ const agentSchema = new Schema<IAgentDocument>(
     statusSetByAdmin: { type: Boolean, default: false },
     adminLocked: { type: Boolean, default: false },
     expiresAt: { type: Date, default: null },
+    rateLimitPerMinute: { type: Number, default: null },
     lastSeenAt: { type: Date, default: null },
     reviewedAt: { type: Date, default: null },
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
@@ -511,4 +514,81 @@ mcpConfirmationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 export const McpConfirmationModel = mongoose.model<IMcpConfirmationDocument>(
   "McpConfirmation",
   mcpConfirmationSchema,
+);
+
+/* ------------------------------------------------------------------ */
+/* Webhooks: governance events to Slack, SIEM tools and other systems  */
+/* ------------------------------------------------------------------ */
+
+export type WebhookFormat = "json" | "slack";
+export type WebhookEvent =
+  | "alert.raised"
+  | "approval.requested"
+  | "approval.decided"
+  | "activity.blocked";
+
+export const WEBHOOK_EVENTS: WebhookEvent[] = [
+  "alert.raised",
+  "approval.requested",
+  "approval.decided",
+  "activity.blocked",
+];
+
+export interface IAgentWebhook {
+  workspaceId: Types.ObjectId | string;
+  name: string;
+  url: string;
+  format: WebhookFormat;
+  events: WebhookEvent[];
+  /** Alerts below this severity are not sent. */
+  minSeverity: "info" | "warning" | "critical";
+  /** Signing secret, encrypted at rest. */
+  secret: string;
+  enabled: boolean;
+  /** Turned off after repeated failures; the reason is kept. */
+  disabledReason?: string | null;
+  consecutiveFailures: number;
+  lastDeliveryAt?: Date | null;
+  lastStatus?: number | null;
+  lastError?: string | null;
+  createdBy: Types.ObjectId | string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAgentWebhookDocument extends IAgentWebhook, Document {}
+
+const agentWebhookSchema = new Schema<IAgentWebhookDocument>(
+  {
+    workspaceId: {
+      type: Schema.Types.ObjectId,
+      ref: "Workspace",
+      required: true,
+    },
+    name: { type: String, required: true, trim: true, maxlength: 80 },
+    url: { type: String, required: true, maxlength: 2000 },
+    format: { type: String, enum: ["json", "slack"], default: "json" },
+    events: [{ type: String, enum: WEBHOOK_EVENTS }],
+    minSeverity: {
+      type: String,
+      enum: ["info", "warning", "critical"],
+      default: "warning",
+    },
+    secret: { type: String, required: true },
+    enabled: { type: Boolean, default: true },
+    disabledReason: { type: String, default: null },
+    consecutiveFailures: { type: Number, default: 0 },
+    lastDeliveryAt: { type: Date, default: null },
+    lastStatus: { type: Number, default: null },
+    lastError: { type: String, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+  },
+  { timestamps: true },
+);
+
+agentWebhookSchema.index({ workspaceId: 1, enabled: 1 });
+
+export const AgentWebhookModel = mongoose.model<IAgentWebhookDocument>(
+  "AgentWebhook",
+  agentWebhookSchema,
 );

@@ -46,6 +46,11 @@ class AgentRoutes implements Routes {
 
     this.router.get("/compliance", c.compliance);
     this.router.get("/costs", c.costs);
+    this.router.get("/webhooks", c.listWebhooks);
+    this.router.post("/webhooks", c.createWebhook);
+    this.router.patch("/webhooks/:webhookId", c.updateWebhook);
+    this.router.delete("/webhooks/:webhookId", c.deleteWebhook);
+    this.router.post("/webhooks/:webhookId/test", c.testWebhook);
     this.router.get("/settings", c.getSettings);
     this.router.patch("/settings", c.updateSettings);
     this.router.post("/prompt-checks", c.promptChecks);
@@ -57,6 +62,7 @@ class AgentRoutes implements Routes {
     this.router.post("/:agentId/rotate", c.rotate);
     this.router.post("/:agentId/replace-with-key", c.replaceWithKey);
     this.router.post("/:agentId/review", c.review);
+    this.router.get("/:agentId/reach", c.reach);
     this.router.post("/:agentId/suspend", c.suspend);
     this.router.post("/:agentId/resume", c.resume);
     this.router.post("/:agentId/revoke", c.revoke);

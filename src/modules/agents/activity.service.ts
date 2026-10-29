@@ -12,6 +12,7 @@ import {
 } from "./model.js";
 import type { PolicyLike } from "./policy-engine.js";
 import { redactInput } from "./redaction.js";
+import webhookService from "./webhooks.service.js";
 
 /** The agent behind the current request, for code deep in domain services. */
 export interface AgentActor {
@@ -83,6 +84,22 @@ class AgentActivityService {
         undo: entry.outcome === "allowed" && entry.undo ? entry.undo : null,
       });
       if (entry.outcome === "blocked") {
+        webhookService.emit({
+          type: "activity.blocked",
+          workspaceId: entry.agent.workspaceId?.toString() ?? null,
+          summary: `${entry.agent.name} was blocked from ${entry.action}${entry.policy ? ` by policy "${entry.policy.name}"` : ""}`,
+          data: {
+            agentId,
+            agentName: entry.agent.name,
+            agentKind: entry.agent.kind,
+            action: entry.action,
+            risk: entry.risk,
+            channel: entry.channel,
+            policy: entry.policy?.name ?? null,
+            statusCode: entry.statusCode ?? null,
+            projectId: entry.projectId ?? null,
+          },
+        });
         const bucket = Math.floor(Date.now() / HOUR);
         await raiseAlert({
           workspaceId: entry.agent.workspaceId?.toString() ?? null,
@@ -120,7 +137,22 @@ export async function raiseAlert(alert: {
     { $setOnInsert: { ...alert, createdAt: new Date() } },
     { upsert: true },
   );
-  return result.upsertedCount > 0;
+  const raised = result.upsertedCount > 0;
+  if (raised) {
+    webhookService.emit({
+      type: "alert.raised",
+      workspaceId: alert.workspaceId,
+      severity: alert.severity,
+      summary: `${alert.title}. ${alert.detail}`,
+      data: {
+        agentId: alert.agentId,
+        alertType: alert.type,
+        title: alert.title,
+        detail: alert.detail,
+      },
+    });
+  }
+  return raised;
 }
 
 export default new AgentActivityService();

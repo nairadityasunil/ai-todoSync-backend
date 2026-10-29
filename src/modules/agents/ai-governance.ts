@@ -180,9 +180,13 @@ export async function governAiCall(input: {
         ...guardInput,
         outcome: "blocked",
         policy: decision.policy,
-        statusCode: 403,
+        statusCode:
+          decision.effect === "deny" && decision.retryAfterSec ? 429 : 403,
       });
-      throw new HttpError(403, reason);
+      throw new HttpError(
+        decision.effect === "deny" && decision.retryAfterSec ? 429 : 403,
+        reason,
+      );
     }
     activityService.record({
       ...guardInput,

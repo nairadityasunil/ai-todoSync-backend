@@ -97,6 +97,12 @@ export async function callTool(
       input: rawInput,
     };
     decision = await authorize(guardInput);
+    if (decision.effect === "deny" && decision.retryAfterSec) {
+      recordDecision(guardInput, decision, { statusCode: 429 });
+      throw new McpError("rate_limited", decision.reason, {
+        retryAfterSec: decision.retryAfterSec,
+      });
+    }
     if (decision.effect === "deny") {
       recordDecision(guardInput, decision, { statusCode: 403 });
       throw new McpError("forbidden", decision.reason, {

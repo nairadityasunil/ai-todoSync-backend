@@ -16,6 +16,8 @@ import {
   reachedThresholds,
 } from "./budget.js";
 import { classifyClient, detectionFingerprint } from "./detection.js";
+import { decide, normalizeRateLimit } from "./rate-limit.js";
+import { suggestReach } from "./reach.js";
 import {
   hygieneAction,
   isReviewDue,
@@ -588,5 +590,90 @@ describe("AI budgets", () => {
     assert.equal(normalizeBudget(-1), null);
     assert.equal(normalizeBudget("lots"), null);
     assert.equal(normalizeBudget(2e6), null);
+  });
+});
+
+describe("Per-agent rate limits", () => {
+  const minute = Date.UTC(2026, 9, 29, 10, 0, 0);
+  test("calls up to the limit pass; the next waits for the minute", () => {
+    assert.equal(decide(60, 60, minute + 15_000).allowed, true);
+    const over = decide(61, 60, minute + 15_000);
+    assert.equal(over.allowed, false);
+    assert.equal(over.retryAfterSec, 45);
+  });
+
+  test("limits are whole numbers; empty or 0 means none", () => {
+    assert.equal(normalizeRateLimit(120), 120);
+    assert.equal(normalizeRateLimit(null), null);
+    assert.equal(normalizeRateLimit(0), null);
+    assert.equal(normalizeRateLimit(1.5), undefined);
+    assert.equal(normalizeRateLimit(-3), undefined);
+    assert.equal(normalizeRateLimit(1e9), undefined);
+  });
+});
+
+describe("Reach map", () => {
+  const used = (entries: Array<[string, number]>) => new Map(entries);
+
+  test("unused write scopes are removable; read scopes never are", () => {
+    const result = suggestReach({
+      scopes: ["work:read", "work:write", "ai:execute", "prompt:read"],
+      projectIds: [],
+      usedScopes: used([["work:write", 12]]),
+      usedProjects: new Map(),
+    });
+    assert.deepEqual(result.removableScopes, ["ai:execute"]);
+    assert.deepEqual(result.suggestion?.scopes, [
+      "work:read",
+      "work:write",
+      "prompt:read",
+    ]);
+  });
+
+  test("an all-projects agent is narrowed to the projects it changed", () => {
+    const result = suggestReach({
+      scopes: ["work:read", "work:write"],
+      projectIds: [],
+      usedScopes: used([["work:write", 3]]),
+      usedProjects: new Map([
+        ["p2", 2],
+        ["p1", 1],
+      ]),
+    });
+    assert.deepEqual(result.suggestion?.projectIds, ["p1", "p2"]);
+  });
+
+  test("changes outside any project keep it unrestricted", () => {
+    const result = suggestReach({
+      scopes: ["work:read", "work:write"],
+      projectIds: [],
+      usedScopes: used([["work:write", 3]]),
+      usedProjects: new Map<string | null, number>([
+        ["p1", 1],
+        [null, 2],
+      ]),
+    });
+    assert.equal(result.suggestion, null);
+  });
+
+  test("allowed projects it never changed are dropped; nothing to do is null", () => {
+    assert.deepEqual(
+      suggestReach({
+        scopes: ["work:read", "work:write"],
+        projectIds: ["p1", "p2"],
+        usedScopes: used([["work:write", 1]]),
+        usedProjects: new Map([["p1", 1]]),
+      }).suggestion?.projectIds,
+      ["p1"],
+    );
+    assert.equal(
+      suggestReach({
+        scopes: ["work:read", "work:write"],
+        projectIds: ["p1"],
+        usedScopes: used([["work:write", 1]]),
+        usedProjects: new Map([["p1", 1]]),
+      }).suggestion,
+      null,
+    );
   });
 });

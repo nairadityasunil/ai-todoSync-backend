@@ -27,6 +27,10 @@ import { invalidatePolicies, loadPolicies } from "./guard.js";
 import {
   AgentActivityModel,
   AgentAlertModel,
+  AgentWebhookModel,
+  WEBHOOK_EVENTS,
+  type IAgentWebhookDocument,
+  type WebhookEvent,
   AgentModel,
   AgentPolicyModel,
   type IAgentDocument,
@@ -42,6 +46,11 @@ import {
   MAX_MONTHLY_AI_BUDGET_USD,
 } from "./budget.js";
 import costService from "./cost.service.js";
+import { reachReport } from "./reach.js";
+import webhookService, { newWebhookSecret } from "./webhooks.service.js";
+import { encrypt } from "../../utils/encryption.js";
+import { assertSafeUrl, UnsafeUrlError } from "../../utils/safe-http.js";
+import { MAX_RATE_LIMIT_PER_MINUTE, normalizeRateLimit } from "./rate-limit.js";
 import {
   INACTIVE_AGENT_DAY_OPTIONS,
   isReviewDue,
@@ -171,9 +180,27 @@ const sameIds = (ids: unknown[]): string[] => ids.map(String).sort();
 
 /** True when `next` grants nothing that `current` did not. */
 const isNarrowing = (
-  current: { scopes: string[]; projectIds: unknown[]; expiresAt?: Date | null },
-  next: { scopes?: string[]; projectIds?: string[]; expiresAt?: Date | null },
+  current: {
+    scopes: string[];
+    projectIds: unknown[];
+    expiresAt?: Date | null;
+    rateLimitPerMinute?: number | null;
+  },
+  next: {
+    scopes?: string[];
+    projectIds?: string[];
+    expiresAt?: Date | null;
+    rateLimitPerMinute?: number | null;
+  },
 ): boolean => {
+  // Raising or removing a limit gives the agent more room.
+  if (next.rateLimitPerMinute !== undefined && current.rateLimitPerMinute) {
+    if (
+      !next.rateLimitPerMinute ||
+      next.rateLimitPerMinute > current.rateLimitPerMinute
+    )
+      return false;
+  }
   if (next.scopes && next.scopes.some((s) => !current.scopes.includes(s)))
     return false;
   if (next.projectIds) {
@@ -416,7 +443,18 @@ class AgentController {
       scopes?: string[];
       projectIds?: string[];
       expiresAt?: Date | null;
+      rateLimitPerMinute?: number | null;
     } = {};
+    if (body.rateLimitPerMinute !== undefined) {
+      const limit = normalizeRateLimit(body.rateLimitPerMinute);
+      if (limit === undefined)
+        throw new AppError(
+          400,
+          `rateLimitPerMinute must be a whole number from 1 to ${MAX_RATE_LIMIT_PER_MINUTE}, or null for no limit`,
+          "BAD_REQUEST",
+        );
+      next.rateLimitPerMinute = limit;
+    }
     if (body.scopes !== undefined) {
       const canAdmin = await agentService.isWorkspaceAdminAnywhere(
         agent.ownerUserId.toString(),
@@ -446,7 +484,8 @@ class AgentController {
 
     // An admin changing someone else's agent may only take access away, and
     // locks it so the owner cannot hand it back.
-    const actingAsAdmin = !isOwner;
+    // AI providers belong to the workspace: its admins manage them outright.
+    const actingAsAdmin = !isOwner && agent.kind !== "ai_provider";
     const ownerLocked = isOwner && !isAdmin && agent.adminLocked;
     if ((actingAsAdmin || ownerLocked) && !isNarrowing(agent, next)) {
       throw new AppError(
@@ -466,6 +505,8 @@ class AgentController {
     if (next.scopes) agent.scopes = next.scopes as IAgentDocument["scopes"];
     if (next.projectIds) agent.projectIds = next.projectIds;
     if (next.expiresAt !== undefined) agent.expiresAt = next.expiresAt;
+    if (next.rateLimitPerMinute !== undefined)
+      agent.rateLimitPerMinute = next.rateLimitPerMinute;
     if (actingAsAdmin && Object.keys(next).length > 0) agent.adminLocked = true;
     await agent.save();
     agentService.invalidate(agent._id.toString());
@@ -500,6 +541,13 @@ class AgentController {
         "The old key stopped working. Copy the new one now: it will not be shown again.",
       data: { agent: serializeAgent(agent), key },
     });
+  };
+
+  /** What the agent can reach against what it has used, with a narrower fit. */
+  public reach = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const agent = await loadManageableAgent(req, userId);
+    res.json({ success: true, data: await reachReport(agent) });
   };
 
   /** The owner or an admin confirms the agent still needs its access. */
@@ -1049,6 +1097,149 @@ class AgentController {
       success: true,
       data: await costService.report(workspaceId.toString(), range),
     });
+  };
+
+  /* ----------------------------- Webhooks ---------------------------- */
+
+  private webhookBody(body: Record<string, unknown>, partial: boolean) {
+    const out: Record<string, unknown> = {};
+    if (body.name !== undefined || !partial) {
+      const name = str(body.name);
+      if (!name) throw new AppError(400, "Name is required", "BAD_REQUEST");
+      out.name = name.slice(0, 80);
+    }
+    if (body.url !== undefined || !partial) {
+      try {
+        out.url = assertSafeUrl(String(body.url ?? ""), {
+          allowPrivate:
+            process.env.AGENT_WEBHOOKS_ALLOW_PRIVATE === "true" &&
+            process.env.NODE_ENV !== "production",
+        }).toString();
+      } catch (error) {
+        throw new AppError(
+          400,
+          error instanceof UnsafeUrlError ? error.message : "Invalid URL",
+          "BAD_REQUEST",
+        );
+      }
+    }
+    if (body.format !== undefined) {
+      if (!["json", "slack"].includes(String(body.format)))
+        throw new AppError(400, "format must be json or slack", "BAD_REQUEST");
+      out.format = body.format;
+    }
+    if (body.events !== undefined || !partial) {
+      const events = Array.isArray(body.events)
+        ? [...new Set(body.events.map(String))].filter((e) =>
+            WEBHOOK_EVENTS.includes(e as WebhookEvent),
+          )
+        : [];
+      if (events.length === 0)
+        throw new AppError(400, "Pick at least one event", "BAD_REQUEST");
+      out.events = events;
+    }
+    if (body.minSeverity !== undefined) {
+      if (!["info", "warning", "critical"].includes(String(body.minSeverity)))
+        throw new AppError(400, "Invalid minSeverity", "BAD_REQUEST");
+      out.minSeverity = body.minSeverity;
+    }
+    if (typeof body.enabled === "boolean") {
+      out.enabled = body.enabled;
+      if (body.enabled) {
+        out.disabledReason = null;
+        out.consecutiveFailures = 0;
+      }
+    }
+    return out;
+  }
+
+  private serializeWebhook = (hook: IAgentWebhookDocument) => {
+    const {
+      secret: _secret,
+      __v: _v,
+      ...rest
+    } = hook.toObject() as Record<string, unknown>;
+    return { ...rest, id: hook._id.toString() };
+  };
+
+  public listWebhooks = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const hooks = await AgentWebhookModel.find({ workspaceId }).sort({
+      createdAt: 1,
+    });
+    res.json({ success: true, data: hooks.map(this.serializeWebhook) });
+  };
+
+  public createWebhook = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    if ((await AgentWebhookModel.countDocuments({ workspaceId })) >= 20)
+      throw new AppError(
+        400,
+        "A workspace can have up to 20 webhooks",
+        "BAD_REQUEST",
+      );
+    const fields = this.webhookBody(
+      (req.body ?? {}) as Record<string, unknown>,
+      false,
+    );
+    const secret = newWebhookSecret();
+    const hook = await AgentWebhookModel.create({
+      ...fields,
+      workspaceId,
+      secret: encrypt(secret),
+      createdBy: userId,
+    });
+    webhookService.invalidate(workspaceId.toString());
+    res.status(201).json({
+      success: true,
+      message: "Copy the signing secret now: it will not be shown again.",
+      data: { webhook: this.serializeWebhook(hook), secret },
+    });
+  };
+
+  private loadWebhook = async (req: AuthenticatedRequest, userId: string) => {
+    const workspaceId = await requireWorkspace(req, userId);
+    const hook = await AgentWebhookModel.findOne({
+      _id: param(req, "webhookId"),
+      workspaceId,
+    });
+    if (!hook) throw new AppError(404, "Webhook not found", "NOT_FOUND");
+    return hook;
+  };
+
+  public updateWebhook = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const hook = await this.loadWebhook(req, userId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    Object.assign(hook, this.webhookBody(body, true));
+    let secret: string | null = null;
+    if (body.rotateSecret === true) {
+      secret = newWebhookSecret();
+      hook.secret = encrypt(secret);
+    }
+    await hook.save();
+    webhookService.invalidate(hook.workspaceId.toString());
+    res.json({
+      success: true,
+      data: { webhook: this.serializeWebhook(hook), secret },
+    });
+  };
+
+  public deleteWebhook = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const hook = await this.loadWebhook(req, userId);
+    await hook.deleteOne();
+    webhookService.invalidate(hook.workspaceId.toString());
+    res.json({ success: true });
+  };
+
+  public testWebhook = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const hook = await this.loadWebhook(req, userId);
+    const result = await webhookService.test(hook);
+    res.json({ success: true, data: result });
   };
 
   public getSettings = async (req: AuthenticatedRequest, res: Response) => {
