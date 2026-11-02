@@ -1041,6 +1041,7 @@ class AuthService {
       openaiApiKeyConfigured: !!user.openaiApiKey,
       anthropicApiKeyConfigured: !!user.anthropicApiKey,
       geminiApiKeyConfigured: !!user.geminiApiKey,
+      aiPlatformProviders: env.GEMINI_API_KEY ? ["gemini"] : [],
       twoFactorEnabled: user.twoFactorEnabled,
     };
   }

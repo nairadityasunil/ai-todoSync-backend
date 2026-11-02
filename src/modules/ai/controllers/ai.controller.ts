@@ -143,34 +143,29 @@ const resolveAiConfigForUserOrProject = async (
     if (userId && mongoose.Types.ObjectId.isValid(userId)) {
       const userDoc = await UserModel.findById(userId).exec();
       if (userDoc) {
-        if (provider === "openai" && userDoc.openaiApiKey) {
-          apiKey = userDoc.openaiApiKey.trim();
-        } else if (provider === "anthropic" && userDoc.anthropicApiKey) {
-          apiKey = userDoc.anthropicApiKey.trim();
-        } else if (userDoc.geminiApiKey) {
-          apiKey = userDoc.geminiApiKey.trim();
-        } else {
-          apiKey = (
-            userDoc.geminiApiKey ||
-            userDoc.openaiApiKey ||
-            userDoc.anthropicApiKey ||
-            ""
-          ).trim();
-        }
+        // Only the selected provider's key: another provider's key is
+        // always refused and hides the real problem (no key for this one).
+        const own =
+          provider === "openai"
+            ? userDoc.openaiApiKey
+            : provider === "anthropic"
+              ? userDoc.anthropicApiKey
+              : userDoc.geminiApiKey;
+        if (own) apiKey = own.trim();
       }
       // No per-project API key fallback (embedded ai.apiKey is empty string by default)
     }
   }
 
-  // 3. Fallback to env key if database key is unconfigured
-  if (!apiKey && env.GEMINI_API_KEY) {
+  // 3. The server's own key, which is a Gemini key.
+  if (!apiKey && provider === "gemini" && env.GEMINI_API_KEY) {
     apiKey = env.GEMINI_API_KEY.trim();
   }
 
   if (!apiKey) {
     throw new AppError(
       400,
-      `No AI API key found for provider '${provider}' in your database profile or project settings. Please save your API key in Profile/Settings.`,
+      `No API key for ${provider === "openai" ? "OpenAI" : provider === "anthropic" ? "Anthropic" : "Google Gemini"} yet. Add yours to start using AI.`,
       "MISSING_API_KEY",
     );
   }
@@ -259,6 +254,7 @@ export const generateProjectPlan = async (
     const status = error.status || error.statusCode || 500;
     res.status(status).json({
       error: error.message || "An error occurred during AI plan generation",
+      ...(typeof error.code === "string" ? { code: error.code } : {}),
     });
   }
 };
