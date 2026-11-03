@@ -27,6 +27,13 @@ interface GetActivitiesOptions {
   limit?: number;
   page?: number;
   entityType?: EntityType;
+  /** Only these records (e.g. a task and its sub-tasks). */
+  entityIds?: string[];
+  userId?: string;
+  /** "agent": only changes made by an agent; "person": only changes made directly. */
+  actor?: "agent" | "person";
+  since?: Date;
+  until?: Date;
 }
 
 class ActivityLogService {
@@ -197,6 +204,17 @@ class ActivityLogService {
     const filter: Record<string, unknown> = { projectId };
     if (entityType) {
       filter.entityType = entityType;
+    }
+    if (options.entityIds?.length) filter.entityId = { $in: options.entityIds };
+    if (options.userId) filter.userId = options.userId;
+    if (options.actor === "agent") filter["metadata.agent"] = { $exists: true };
+    if (options.actor === "person")
+      filter["metadata.agent"] = { $exists: false };
+    if (options.since || options.until) {
+      filter.createdAt = {
+        ...(options.since ? { $gte: options.since } : {}),
+        ...(options.until ? { $lte: options.until } : {}),
+      };
     }
 
     const [activities, total] = await Promise.all([

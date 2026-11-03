@@ -24,6 +24,18 @@ class ActivityLogController {
         limit: limitStr ? parseInt(limitStr, 10) : 50,
         page: pageStr ? parseInt(pageStr, 10) : 1,
         entityType: entityTypeStr as EntityType | undefined,
+        entityIds:
+          typeof req.query.entityIds === "string"
+            ? req.query.entityIds.split(",").filter(Boolean).slice(0, 200)
+            : undefined,
+        userId:
+          typeof req.query.userId === "string" ? req.query.userId : undefined,
+        actor:
+          req.query.actor === "agent" || req.query.actor === "person"
+            ? req.query.actor
+            : undefined,
+        since: parseDate(req.query.since),
+        until: parseDate(req.query.until),
       });
 
       res.json(result);
@@ -91,3 +103,9 @@ class ActivityLogController {
 
 const activityLogController = new ActivityLogController();
 export default activityLogController;
+
+function parseDate(value: unknown): Date | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}

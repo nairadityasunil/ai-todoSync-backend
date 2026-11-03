@@ -7,6 +7,7 @@ import SdkIntegrationModel from "../../sdk-integrations/model.js";
 import logger from "../../../lib/logger.js";
 import aiTrafficService from "../services/ai-traffic.service.js";
 import { escapeRegex } from "../../../utils/escape-regex.js";
+import { buildEventTrend } from "../trend.js";
 
 class AnalyticsDataController {
   private parsePagination(req: Request) {
@@ -74,6 +75,76 @@ class AnalyticsDataController {
   /**
    * GET /api/events?apiKeyId=
    */
+  /** Daily counts for the last N days (default 14, max 60) and events that jumped in the last 24 hours. */
+  public getEventTrend = async (req: Request, res: Response) => {
+    try {
+      const { apiKeyId, sdkIntegrationId } = req.query;
+      const tenantId = req.user?._id?.toString();
+      let scope: Record<string, unknown>;
+      if (sdkIntegrationId) {
+        const integration = await SdkIntegrationModel.findOne({
+          _id: sdkIntegrationId,
+          tenantId,
+        })
+          .lean()
+          .exec();
+        if (!integration) {
+          return res.status(403).json({ error: "Unauthorized access" });
+        }
+        scope = { sdkIntegrationId: String(sdkIntegrationId) };
+      } else {
+        if (!apiKeyId)
+          return res.status(400).json({ error: "apiKeyId is required" });
+        if (!(await this.verifyKeyOwnership(req, apiKeyId as string))) {
+          return res
+            .status(403)
+            .json({ error: "Unauthorized access to this API key's data" });
+        }
+        scope = { apiKeyId: String(apiKeyId) };
+      }
+      const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 60);
+      const since = new Date(Date.now() - Math.max(days, 8) * 86_400_000);
+      const eventNames = this.parseEventNames(
+        req.query.eventNames ?? req.query["eventNames[]"],
+      );
+
+      const registries = await AnalyticsEventRegistryModel.find(scope)
+        .select("_id eventName")
+        .lean()
+        .exec();
+      const nameByRef = new Map(
+        registries.map((registry) => [
+          String(registry._id),
+          String(registry.eventName),
+        ]),
+      );
+
+      const logs = await AnalyticsLogModel.find({
+        ...scope,
+        createdAt: { $gte: since },
+      })
+        .select("createdAt eventRef eventName")
+        .sort({ createdAt: -1 })
+        .limit(100_000)
+        .lean()
+        .exec();
+
+      const named = logs
+        .map((log) => ({
+          createdAt: log.createdAt,
+          eventName:
+            log.eventName ?? nameByRef.get(String(log.eventRef)) ?? "unknown",
+        }))
+        .filter(
+          (log) => eventNames.length === 0 || eventNames.includes(log.eventName),
+        );
+      return res.json(buildEventTrend(named, { days }));
+    } catch (error) {
+      logger.error("Failed to build event trend", { error });
+      return res.status(500).json({ error: "Failed to load event trend" });
+    }
+  };
+
   public getEvents = async (req: Request, res: Response) => {
     try {
       const { apiKeyId, sdkIntegrationId, eventName, startDate, endDate } =
