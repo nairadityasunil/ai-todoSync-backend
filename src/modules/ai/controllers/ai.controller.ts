@@ -399,7 +399,8 @@ export const confirmProjectPlan = async (
       coreWorkflow: plan.coreWorkflow || [],
       actors: plan.actors || [],
       modules: plan.modules || [],
-      dependencies: plan.dependencies || [],
+      // Plans name dependencies by task index; the stored plan records them by name.
+      dependencies: planDependenciesForRecord(plan),
       risks: plan.risks || [],
       timeline: plan.timeline || {
         totalEngineeringHours: totalEstHours,
@@ -732,3 +733,27 @@ export const chatWithProjectAssistant = async (
       .json({ error: error.message });
   }
 };
+
+/** Converts planner dependencies (task indexes) to the stored plan shape (feature names); drops unusable ones. */
+function planDependenciesForRecord(plan: {
+  tasks?: Array<{ title?: string }>;
+  dependencies?: Array<{
+    taskIndex?: number;
+    dependsOnTaskIndex?: number;
+    sourceFeature?: string;
+    targetFeature?: string;
+    type?: string;
+    description?: string;
+  }>;
+}): Array<{ sourceFeature: string; targetFeature: string; type: "BLOCKING" | "EXTERNAL" | "OPTIONAL"; description?: string }> {
+  const titles = (plan.tasks ?? []).map((task) => task?.title ?? "");
+  return (plan.dependencies ?? [])
+    .map((dep) => {
+      const source = dep.sourceFeature ?? (dep.dependsOnTaskIndex != null ? titles[dep.dependsOnTaskIndex] : undefined);
+      const target = dep.targetFeature ?? (dep.taskIndex != null ? titles[dep.taskIndex] : undefined);
+      const type: "BLOCKING" | "EXTERNAL" | "OPTIONAL" =
+        dep.type === "EXTERNAL" || dep.type === "OPTIONAL" ? dep.type : "BLOCKING";
+      return source && target ? { sourceFeature: source, targetFeature: target, type, description: dep.description } : null;
+    })
+    .filter((dep): dep is NonNullable<typeof dep> => dep !== null);
+}

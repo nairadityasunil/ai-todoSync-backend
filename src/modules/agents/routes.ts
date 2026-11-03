@@ -45,6 +45,9 @@ class AgentRoutes implements Routes {
     this.router.post("/alerts/:alertId/acknowledge", c.acknowledgeAlert);
 
     this.router.get("/compliance", c.compliance);
+    this.router.get("/costs/summary", c.costSummary);
+    this.router.get("/timeline", c.timeline);
+    this.router.get("/timeline/agents", c.timelineAgents);
     this.router.get("/costs", c.costs);
     this.router.get("/webhooks", c.listWebhooks);
     this.router.post("/webhooks", c.createWebhook);

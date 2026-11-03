@@ -61,6 +61,51 @@ class CostService {
     return value;
   }
 
+  /**
+   * AI spend for one piece of work: a project, or this person's calls since a moment (e.g. one AI plan).
+   * Only successful calls count, matching the cost report.
+   */
+  public async summary(input: {
+    workspaceId: string;
+    projectId?: string;
+    userId?: string;
+    since?: Date;
+  }): Promise<{ usd: number; tokens: number; calls: number }> {
+    const match: Record<string, unknown> = {
+      workspaceId: oid(input.workspaceId),
+      status: "success",
+    };
+    if (input.projectId) {
+      match.projectId = Types.ObjectId.isValid(input.projectId)
+        ? { $in: [input.projectId, oid(input.projectId)] }
+        : input.projectId;
+    }
+    if (input.userId) {
+      match.userId = { $in: [input.userId, oid(input.userId)] };
+    }
+    if (input.since) match.createdAt = { $gte: input.since };
+    const [row] = await PromptExecutionLogModel.aggregate<{
+      usd: number;
+      tokens: number;
+      calls: number;
+    }>([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          usd: { $sum: "$totalCost" },
+          tokens: { $sum: "$totalTokens" },
+          calls: { $sum: 1 },
+        },
+      },
+    ]);
+    return {
+      usd: Math.round((row?.usd ?? 0) * 10000) / 10000,
+      tokens: row?.tokens ?? 0,
+      calls: row?.calls ?? 0,
+    };
+  }
+
   /** This month's AI spend in USD (UTC month). */
   public async monthlySpend(workspaceId: string, now = new Date()) {
     const month = monthKey(now);

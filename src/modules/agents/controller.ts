@@ -1,3 +1,5 @@
+import { buildTimeline, timelineAgents, type TimelineKind } from "./timeline.service.js";
+import projectService from "../project/services/project.service.js";
 import type { Response } from "express";
 import { Types } from "mongoose";
 
@@ -1024,6 +1026,75 @@ class AgentController {
   };
 
   /** AI spend for a month (default: this one) by provider, agent, person and project. */
+  /** Spend for a project (?projectId=) or for the caller's own calls since a time (?since=), shown next to the work. */
+  public costSummary = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const projectId = str(req.query.projectId);
+    const sinceRaw = str(req.query.since);
+    const since = sinceRaw ? new Date(sinceRaw) : undefined;
+    if (since && Number.isNaN(since.getTime()))
+      throw new AppError(400, "since must be a date", "BAD_REQUEST");
+    if (!projectId && !since)
+      throw new AppError(400, "Give projectId or since", "BAD_REQUEST");
+    if (projectId) {
+      // Throws 403/404 unless the caller can see the project.
+      await projectService.getProjectAccess(userId, projectId);
+    }
+    res.json({
+      success: true,
+      data: await costService.summary({
+        workspaceId: workspaceId.toString(),
+        projectId: projectId || undefined,
+        // Without a project, only the caller's own calls.
+        userId: projectId ? undefined : userId,
+        since,
+      }),
+    });
+  };
+
+  /** Unified activity: task changes, agent actions, approvals and end-user events, newest first. */
+  public timeline = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const admin = await adminWorkspaces(userId);
+    const all: TimelineKind[] = ["work", "agent", "approval", "event"];
+    const requested = (str(req.query.kinds) ?? "")
+      .split(",")
+      .filter((kind): kind is TimelineKind => (all as string[]).includes(kind));
+    const objectIdOrUndefined = (value: unknown) => {
+      const text = str(value);
+      return text && Types.ObjectId.isValid(text) ? text : undefined;
+    };
+    const items = await buildTimeline({
+      userId,
+      workspaceId: workspaceId.toString(),
+      adminWorkspaceIds: admin,
+      kinds: requested.length ? requested : all,
+      projectId: objectIdOrUndefined(req.query.projectId),
+      personId: objectIdOrUndefined(req.query.userId),
+      agentId: objectIdOrUndefined(req.query.agentId),
+      since: parseDate(req.query.since),
+      until: parseDate(req.query.until),
+      limit: Math.min(Math.max(Number(req.query.limit) || 60, 1), 200),
+    });
+    res.json({ success: true, data: items });
+  };
+
+  /** Agents the caller can filter the timeline by. */
+  public timelineAgents = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    res.json({
+      success: true,
+      data: await timelineAgents({
+        userId,
+        workspaceId: workspaceId.toString(),
+        adminWorkspaceIds: await adminWorkspaces(userId),
+      }),
+    });
+  };
+
   public costs = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);

@@ -1,3 +1,4 @@
+import { stepFunnel } from "./step-funnel.js";
 import { AppError } from "../../utils/app-error.js";
 import engagementRepository from "../engagement/repository.js";
 import type { RuntimeGuideDto } from "../engagement/dtos.js";
@@ -169,7 +170,7 @@ class GuideService {
     sdkIntegrationId: string,
     guideId: string,
   ) {
-    await this.getGuide(tenantId, sdkIntegrationId, guideId);
+    const guide = await this.getGuide(tenantId, sdkIntegrationId, guideId);
     const exposures = await engagementRepository.findExposuresForGuide(
       tenantId,
       guideId,
@@ -194,6 +195,7 @@ class GuideService {
       dismissals: dismissed,
       completionRate: total > 0 ? completed / total : 0,
       dismissalRate: total > 0 ? dismissed / total : 0,
+      steps: stepFunnel(guide.steps ?? [], exposures),
     };
   }
 
