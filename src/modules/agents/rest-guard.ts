@@ -60,15 +60,16 @@ const isPeopleOnlyGovernance = (
   segments: string[],
   method: string,
 ): boolean => {
-  if (method === "GET" || method === "HEAD") return false;
   const path = segments.join("/");
+  // Webhook URLs (a Slack URL is itself a credential) and signing secrets: people only, even to read.
+  if (domain === "agent" && /^webhooks(\/|$)/.test(path)) return true;
+  if (method === "GET" || method === "HEAD") return false;
   if (domain === "agent") {
     return (
       /^approvals\/[^/]+\/(approve|reject|scope-down)$/.test(path) ||
       /^incidents\/[^/]+\/(resume|revoke|resolve|expand|notify)$/.test(path) ||
       path === "keys" ||
-      /^[^/]+\/(rotate|replace-with-key)$/.test(path) ||
-      (path === "webhooks" && method === "POST")
+      /^[^/]+\/(rotate|replace-with-key)$/.test(path)
     );
   }
   if (domain === "vendor") return /^[^/]+\/status$/.test(path);

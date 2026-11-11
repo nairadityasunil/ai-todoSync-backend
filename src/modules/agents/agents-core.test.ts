@@ -306,6 +306,11 @@ describe("REST call naming", () => {
       ["POST", `/api/agents/${id}/rotate`],
       ["POST", `/api/agents/${id}/replace-with-key`],
       ["POST", "/api/agents/webhooks"],
+      // Webhook URLs can be credentials (Slack): not even readable.
+      ["GET", "/api/agents/webhooks"],
+      ["PATCH", `/api/agents/webhooks/${id}`],
+      ["POST", `/api/agents/incidents/${id}/resume`],
+      ["POST", `/api/agents/approvals/${id}/scope-down`],
     ] as const) {
       assert.equal(call(method, path).forbidden, true, path);
     }
