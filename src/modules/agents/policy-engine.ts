@@ -162,3 +162,9 @@ export function evaluatePolicies(
   }
   return { effect: "allow", policy: null, advisory };
 }
+
+/** Database id of a policy, or null for a built-in rule (which has none). */
+export const storedPolicyId = (
+  policy: { id: string } | null | undefined,
+): string | null =>
+  policy && /^[0-9a-f]{24}$/i.test(policy.id) ? policy.id : null;

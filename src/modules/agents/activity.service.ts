@@ -1,3 +1,4 @@
+import { storedPolicyId } from "./policy-engine.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import logger from "../../lib/logger.js";
@@ -74,7 +75,7 @@ class AgentActivityService {
         input: redactInput(entry.input),
         outcome: entry.outcome,
         statusCode: entry.statusCode ?? null,
-        policyId: entry.policy?.id ?? null,
+        policyId: storedPolicyId(entry.policy),
         policyName: entry.policy?.name ?? null,
         advisoryPolicies: (entry.advisory ?? []).map((policy) => policy.name),
         approvalId: entry.approvalId ?? null,

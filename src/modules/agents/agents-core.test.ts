@@ -275,6 +275,42 @@ describe("REST call naming", () => {
     );
   });
 
+  test("agents are governed inside agent governance, not locked out", () => {
+    const id = "6a1f00000000000000000001";
+    const call = (method: string, path: string) => describeRestCall(method, path);
+    // Reading governance is allowed.
+    for (const path of ["/api/agents", "/api/agents/policies", `/api/agents/${id}`, "/api/vendors"]) {
+      assert.equal(call("GET", path).forbidden, false, path);
+      assert.equal(call("GET", path).holdForPerson, false, path);
+    }
+    // Changes are always held for a person.
+    for (const [method, path] of [
+      ["POST", "/api/agents/policies"],
+      ["PATCH", `/api/agents/policies/${id}`],
+      ["POST", `/api/agents/${id}/suspend`],
+      ["POST", "/api/agents/kill-switch"],
+      ["PATCH", "/api/agents/settings"],
+      ["POST", "/api/vendors"],
+    ] as const) {
+      assert.equal(call(method, path).forbidden, false, path);
+      assert.equal(call(method, path).holdForPerson, true, path);
+    }
+    // Dry runs change nothing, so need no hold.
+    assert.equal(call("POST", "/api/agents/policies/test").holdForPerson, false);
+    // People only: deciding approvals, approving vendors, minting credentials.
+    for (const [method, path] of [
+      ["POST", `/api/agents/approvals/${id}/approve`],
+      ["POST", `/api/agents/approvals/${id}/reject`],
+      ["POST", `/api/vendors/${id}/status`],
+      ["POST", "/api/agents/keys"],
+      ["POST", `/api/agents/${id}/rotate`],
+      ["POST", `/api/agents/${id}/replace-with-key`],
+      ["POST", "/api/agents/webhooks"],
+    ] as const) {
+      assert.equal(call(method, path).forbidden, true, path);
+    }
+  });
+
   test("assigns risk, scope and project references", () => {
     const del = describeRestCall("DELETE", `/api/projects/${pid}/epics/${id}`);
     assert.equal(del.risk, "destructive");

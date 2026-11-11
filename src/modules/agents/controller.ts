@@ -301,6 +301,10 @@ class AgentController {
         stats,
         pendingApprovals,
         myAgents: mine,
+        // Set when an agent is looking: its changes here are held for a person.
+        viewerAgent: req.agent
+          ? { id: req.agent._id.toString(), name: req.agent.name, kind: req.agent.kind }
+          : null,
       },
     });
   };

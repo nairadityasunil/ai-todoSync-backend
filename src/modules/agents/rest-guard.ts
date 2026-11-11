@@ -25,6 +25,8 @@ export interface RestAction {
   scope: McpScope;
   /** Agents may never call this endpoint (credential and agent management). */
   forbidden: boolean;
+  /** An agent changing agent governance or vendors: always held for a person. */
+  holdForPerson: boolean;
   refs: { projectId?: string; taskId?: string; epicId?: string };
 }
 
@@ -46,15 +48,44 @@ const VERBS: Record<string, string> = {
 };
 
 /** Endpoints only a person may use. GET /api/agents/approvals/:id stays open so agents can poll. */
+/**
+ * Governance actions only a person may take, even with approval: deciding an
+ * approval (no self-approval), approving a vendor, and anything that mints a
+ * credential (agent keys, key rotation, webhook signing secrets), since the
+ * replayed result would hand the new secret to the agent.
+ */
+const isPeopleOnlyGovernance = (
+  domain: string,
+  segments: string[],
+  method: string,
+): boolean => {
+  if (method === "GET" || method === "HEAD") return false;
+  const path = segments.join("/");
+  if (domain === "agent") {
+    return (
+      /^approvals\/[^/]+\/(approve|reject)$/.test(path) ||
+      path === "keys" ||
+      /^[^/]+\/(rotate|replace-with-key)$/.test(path) ||
+      (path === "webhooks" && method === "POST")
+    );
+  }
+  if (domain === "vendor") return /^[^/]+\/status$/.test(path);
+  return false;
+};
+
+/** Governance calls that only check something (no change), so need no hold. */
+const isGovernanceDryRun = (domain: string, segments: string[]): boolean =>
+  domain === "agent" &&
+  ["policies/test", "prompt-checks"].includes(segments.join("/"));
+
 const isForbiddenForAgents = (
   domain: string,
   segments: string[],
   method: string,
 ): boolean => {
-  if (domain === "agent")
-    return !(method === "GET" && segments[0] === "approvals");
-  // Vendor approval is for people: an agent must not approve its own vendor.
-  if (domain === "vendor") return true;
+  // Agents can read agent governance and ask for changes (held for a person,
+  // see holdForPerson); only these stay with people.
+  if (isPeopleOnlyGovernance(domain, segments, method)) return true;
   if (method === "GET" || method === "HEAD") return false;
   // Anything that signs in, pairs a device or mints a key: an agent must not
   // be able to turn itself into a broader credential.
@@ -142,6 +173,11 @@ export function describeRestCall(method: string, path: string): RestAction {
     risk,
     scope,
     forbidden: isForbiddenForAgents(domain, rest, method),
+    holdForPerson:
+      (domain === "agent" || domain === "vendor") &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !isGovernanceDryRun(domain, rest),
     refs,
   };
 }
@@ -163,10 +199,19 @@ export async function guardAgentRequest(
   const path = req.originalUrl;
   const call = describeRestCall(method, path);
 
-  if (call.forbidden) {
+  const body = (
+    req.body && typeof req.body === "object" ? req.body : {}
+  ) as Record<string, unknown>;
+  // Rotating a webhook's signing secret returns the new secret: people only.
+  const rotatesWebhookSecret =
+    call.domain === "agent" && /\/webhooks\//.test(path) && body.rotateSecret === true;
+  if (call.forbidden || rotatesWebhookSecret) {
     res.status(403).json({
       error: "agent_forbidden",
-      message: "Agents cannot manage credentials, sign-in or agent governance.",
+      message:
+        call.domain === "agent" || call.domain === "vendor"
+          ? "Only a person can decide approvals, approve vendors or create keys and secrets. Ask a workspace admin."
+          : "Agents cannot manage credentials or sign-in.",
     });
     return;
   }
@@ -178,9 +223,6 @@ export async function guardAgentRequest(
     return;
   }
 
-  const body = (
-    req.body && typeof req.body === "object" ? req.body : {}
-  ) as Record<string, unknown>;
   const query = req.query as Record<string, unknown>;
   // Records named in the path are the ones being changed; body and query ids
   // only count when the path names none.
@@ -211,6 +253,7 @@ export async function guardAgentRequest(
     projectId,
     resolvedProjects: resolution,
     request: { method, path },
+    alwaysHold: call.holdForPerson,
   };
   const decision = await authorize(guardInput);
 

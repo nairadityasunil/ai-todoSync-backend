@@ -1,3 +1,4 @@
+import { storedPolicyId } from "./policy-engine.js";
 import { Types } from "mongoose";
 
 import logger from "../../lib/logger.js";
@@ -44,7 +45,23 @@ export interface AuthorizeInput {
   request?: { method: string; path: string } | null;
   /** Calls that cannot wait (interactive AI) are denied instead of held. */
   noHold?: boolean;
+  /**
+   * A person must approve this call even when no policy asks for it (an agent
+   * changing agent governance). Policies can still deny it outright.
+   */
+  alwaysHold?: boolean;
 }
+
+/** The built-in rule behind `alwaysHold`: agents never change governance on their own. */
+export const GOVERNANCE_HOLD_POLICY: PolicyLike = {
+  id: "builtin:governance",
+  name: "Agent changes to governance need a person",
+  effect: "require_approval",
+  mode: "enforce",
+  priority: Number.MAX_SAFE_INTEGER,
+  enabled: true,
+  match: {} as PolicyLike["match"],
+};
 
 export type AuthorizeResult =
   | {
@@ -248,6 +265,10 @@ export async function authorize(
     ).values(),
   ];
 
+  if (decision.effect === "allow" && input.alwaysHold) {
+    decision.effect = "require_approval";
+    decision.policy = GOVERNANCE_HOLD_POLICY;
+  }
   if (decision.effect === "allow") {
     return {
       effect: "allow",
@@ -288,7 +309,7 @@ export async function authorize(
     input: input.input,
     inputPreview: redactInput(input.input),
     request: input.request ?? null,
-    policyId: policy.id,
+    policyId: storedPolicyId(policy),
     policyName: policy.name,
     status: "pending",
     expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
