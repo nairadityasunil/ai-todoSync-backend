@@ -5,6 +5,7 @@ import type { McpScope, RiskLevel } from "../mcp/registry/tool-types.js";
 import { runAsAgent } from "./activity.service.js";
 import {
   authorize,
+  observeThreats,
   recordDecision,
   resolveProjectId,
   type AuthorizeInput,
@@ -63,7 +64,8 @@ const isPeopleOnlyGovernance = (
   const path = segments.join("/");
   if (domain === "agent") {
     return (
-      /^approvals\/[^/]+\/(approve|reject)$/.test(path) ||
+      /^approvals\/[^/]+\/(approve|reject|scope-down)$/.test(path) ||
+      /^incidents\/[^/]+\/(resume|revoke|resolve|expand|notify)$/.test(path) ||
       path === "keys" ||
       /^[^/]+\/(rotate|replace-with-key)$/.test(path) ||
       (path === "webhooks" && method === "POST")
@@ -205,7 +207,10 @@ export async function guardAgentRequest(
   // Rotating a webhook's signing secret returns the new secret: people only.
   const rotatesWebhookSecret =
     call.domain === "agent" && /\/webhooks\//.test(path) && body.rotateSecret === true;
+  const ip = req.ip ?? null;
   if (call.forbidden || rotatesWebhookSecret) {
+    // Trying people-only actions repeatedly is a privilege-escalation signal.
+    observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
     res.status(403).json({
       error: "agent_forbidden",
       message:
@@ -216,6 +221,7 @@ export async function guardAgentRequest(
     return;
   }
   if (!agent.scopes.includes(call.scope)) {
+    observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
     res.status(403).json({
       error: "agent_scope",
       message: `This agent lacks the "${call.scope}" scope needed for ${call.action}.`,
@@ -254,6 +260,7 @@ export async function guardAgentRequest(
     resolvedProjects: resolution,
     request: { method, path },
     alwaysHold: call.holdForPerson,
+    ip,
   };
   const decision = await authorize(guardInput);
 
@@ -283,6 +290,7 @@ export async function guardAgentRequest(
       error: "approval_required",
       message: `${call.action} needs approval under policy "${decision.policy.name}". It runs automatically once a workspace or project admin approves it.`,
       approvalId,
+      recommendation: decision.approval.recommendation ?? null,
       statusUrl: `/api/agents/approvals/${approvalId}`,
       expiresAt: decision.approval.expiresAt,
     });

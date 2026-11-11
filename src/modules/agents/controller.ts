@@ -1,3 +1,7 @@
+import { GovernanceEventModel } from "./model.js";
+import { buildEvidencePack, complianceTrend, scheduleComplianceCheck, snapshotCompliance } from "./compliance.service.js";
+import { normalizeGovernance } from "./hybrid.js";
+import { invalidateGovernanceSettings, logGovernanceEvent } from "./hybrid.service.js";
 import { buildTimeline, timelineAgents, type TimelineKind } from "./timeline.service.js";
 import projectService from "../project/services/project.service.js";
 import type { Response } from "express";
@@ -559,6 +563,7 @@ class AgentController {
     agent.replacedByAgentId = replacement._id;
     await agent.save();
     agentService.invalidate(agent._id.toString());
+    await approvalService.expireForAgents([agent._id]);
     await AgentAlertModel.updateMany(
       { agentId: agent._id, acknowledgedAt: null },
       { $set: { acknowledgedAt: new Date(), acknowledgedBy: userId } },
@@ -587,7 +592,9 @@ class AgentController {
         "FORBIDDEN",
       );
     }
+    const wasSystem = Boolean(agent.suspendedBySystem);
     agent.status = status;
+    agent.suspendedBySystem = false;
     agent.statusSetByAdmin = status === "active" ? false : isAdmin;
     if (status === "active") {
       // Bringing it back is a decision that it is still needed.
@@ -602,7 +609,17 @@ class AgentController {
     if (status === "revoked" && agent.kind === "api_key") agent.keyHash = null;
     await agent.save();
     agentService.invalidate(agent._id.toString());
+    if (status === "revoked") await approvalService.expireForAgents([agent._id]);
     if (agent.kind === "ai_provider") invalidateProviderAgents();
+    await logGovernanceEvent({
+      workspaceId: agent.workspaceId ? String(agent.workspaceId) : null,
+      type: `agent_${status}`,
+      actor: "person",
+      userId,
+      agentId: agent._id.toString(),
+      title: `${status === "active" ? "Resumed" : status === "suspended" ? "Suspended" : "Revoked"} ${agent.name}${wasSystem && status === "active" ? " (overriding the system)" : ""}`,
+      detail: agent.statusReason ?? "",
+    });
     res.json({ success: true, data: serializeAgent(agent) });
   };
 
@@ -800,6 +817,7 @@ class AgentController {
       updatedBy: userId,
     });
     invalidatePolicies(workspaceId.toString());
+    scheduleComplianceCheck(workspaceId.toString(), "policy change");
     res.status(201).json({
       success: true,
       data: { ...policy.toObject(), id: policy._id.toString() },
@@ -828,6 +846,7 @@ class AgentController {
     policy.set({ ...next, updatedBy: userId });
     await policy.save();
     invalidatePolicies(policy.workspaceId.toString());
+    scheduleComplianceCheck(policy.workspaceId.toString(), "policy change");
     res.json({
       success: true,
       data: { ...policy.toObject(), id: policy._id.toString() },
@@ -839,6 +858,7 @@ class AgentController {
     const policy = await this.loadPolicy(req, userId);
     await policy.deleteOne();
     invalidatePolicies(policy.workspaceId.toString());
+    scheduleComplianceCheck(policy.workspaceId.toString(), "policy change");
     res.json({ success: true, data: { deleted: true } });
   };
 
@@ -945,6 +965,13 @@ class AgentController {
     });
   };
 
+  /** Reject and remove the scope the action needed from the agent. */
+  public scopeDown = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const result = await approvalService.scopeDown(param(req, "approvalId"), userId);
+    res.json({ success: true, data: result });
+  };
+
   public reject = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
     const approval = await approvalService.reject(
@@ -1026,7 +1053,32 @@ class AgentController {
         `attachment; filename="agent-governance-report-${report.generatedAt.slice(0, 10)}.json"`,
       );
     }
-    res.json({ success: true, data: report });
+    const [trend, lastPack] = await Promise.all([
+      complianceTrend(workspaceId.toString()),
+      GovernanceEventModel.findOne({ workspaceId, type: "evidence_pack" }).sort({ createdAt: -1 }).select("createdAt title").lean(),
+    ]);
+    res.json({ success: true, data: { ...report, trend, lastEvidencePack: lastPack ? { at: lastPack.createdAt, title: lastPack.title } : null } });
+  };
+
+  /** Runs the checks now (on demand), stores a snapshot and reports drift. */
+  public complianceCheck = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const { report, drifted } = await snapshotCompliance(workspaceId.toString(), "on demand", userId);
+    res.json({ success: true, data: { score: report.score, drifted, trend: await complianceTrend(workspaceId.toString()) } });
+  };
+
+  /** Evidence pack (ZIP) for a date range (?from=&to=, default the last 30 days). */
+  public complianceEvidence = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const to = parseDate(req.query.to) ?? new Date();
+    const from = parseDate(req.query.from) ?? new Date(to.getTime() - 30 * 86_400_000);
+    if (from > to) throw new AppError(400, "from must be before to", "BAD_REQUEST");
+    const pack = await buildEvidencePack(workspaceId.toString(), { from, to }, userId);
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${pack.filename}"`);
+    res.send(pack.zip);
   };
 
   /** AI spend for a month (default: this one) by provider, agent, person and project. */
@@ -1062,7 +1114,7 @@ class AgentController {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);
     const admin = await adminWorkspaces(userId);
-    const all: TimelineKind[] = ["work", "agent", "approval", "event"];
+    const all: TimelineKind[] = ["work", "agent", "approval", "event", "detection", "incident", "system"];
     const requested = (str(req.query.kinds) ?? "")
       .split(",")
       .filter((kind): kind is TimelineKind => (all as string[]).includes(kind));
@@ -1081,6 +1133,11 @@ class AgentController {
       since: parseDate(req.query.since),
       until: parseDate(req.query.until),
       limit: Math.min(Math.max(Number(req.query.limit) || 60, 1), 200),
+      tiers: (str(req.query.tiers) ?? "").split(",").filter((t) => ["low", "medium", "high", "critical"].includes(t)),
+      decidedBy: ["policy", "system", "person"].includes(str(req.query.decidedBy) ?? "")
+        ? (str(req.query.decidedBy) as "policy" | "system" | "person")
+        : undefined,
+      outcome: ["allowed", "blocked", "pending_approval"].includes(str(req.query.outcome) ?? "") ? str(req.query.outcome) : undefined,
     });
     res.json({ success: true, data: items });
   };
@@ -1290,6 +1347,9 @@ class AgentController {
             aiBudgetHardStop: hardStop,
           }))),
         activityRetentionDays: 90,
+        governance: normalizeGovernance(
+          (workspace?.settings as { governance?: unknown } | undefined)?.governance,
+        ),
       },
     });
   };
@@ -1359,6 +1419,24 @@ class AgentController {
         { $set: { "settings.requireAgentKeys": body.requireAgentKeys } },
       );
       agentService.invalidate();
+    }
+    if (body.governance && typeof body.governance === "object") {
+      const current = await WorkspaceModel.findById(workspaceId).select("settings.governance").lean();
+      const merged = normalizeGovernance({
+        ...normalizeGovernance((current?.settings as { governance?: unknown } | undefined)?.governance),
+        ...(body.governance as Record<string, unknown>),
+      });
+      await WorkspaceModel.updateOne({ _id: workspaceId }, { $set: { "settings.governance": merged } });
+      invalidateGovernanceSettings(workspaceId.toString());
+      scheduleComplianceCheck(workspaceId.toString(), "settings change");
+      await logGovernanceEvent({
+        workspaceId: workspaceId.toString(),
+        type: "settings_changed",
+        actor: "person",
+        userId,
+        title: "Governance settings changed",
+        detail: Object.keys(body.governance as object).join(", "),
+      });
     }
     return this.getSettings(req, res);
   };

@@ -56,6 +56,9 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
       aiMonthlyBudgetUsd: { type: Number, default: 100 },
       aiBudgetHardStop: { type: Boolean, default: true },
       approvedVendorsOnly: { type: Boolean, default: false },
+      // Hybrid governance (see agents/hybrid.ts). No defaults here: a missing
+      // block marks a workspace created before hybrid governance.
+      governance: { type: Schema.Types.Mixed, default: undefined },
     },
   },
   { timestamps: true },

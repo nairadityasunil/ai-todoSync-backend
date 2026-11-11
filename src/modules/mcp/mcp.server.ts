@@ -55,6 +55,7 @@ export async function callTool(
   userScopes: McpScope[],
   rawInput: Record<string, unknown>,
   agent?: IAgentDocument | null,
+  ip?: string | null,
 ): Promise<McpToolCallResult> {
   const entry = toolRegistry.getEntry(toolName);
 
@@ -95,6 +96,7 @@ export async function callTool(
       domain: entry.domain,
       risk: entry.risk,
       input: rawInput,
+      ip: ip ?? null,
     };
     decision = await authorize(guardInput);
     if (decision.effect === "deny" && decision.retryAfterSec) {

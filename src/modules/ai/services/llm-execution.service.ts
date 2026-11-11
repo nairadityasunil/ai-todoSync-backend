@@ -16,7 +16,7 @@ import type {
 } from "../adapters/base.adapter.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import logger from "../../../lib/logger.js";
-import { governAiCall } from "../../agents/ai-governance.js";
+import { governAiCall, reportOutputExposure } from "../../agents/ai-governance.js";
 import { currentAgent } from "../../agents/activity.service.js";
 import costService from "../../agents/cost.service.js";
 
@@ -159,6 +159,8 @@ export class LlmExecutionService {
       // 6. Execute LLM call
       const response = await adapter.execute(governed.messages, execOptions);
       const latencyMs = Date.now() - startTime;
+      // DLP: a secret in the model's output is redacted for the caller and alerted.
+      reportOutputExposure(String(payload.workspaceId ?? ""), governed.agent?._id.toString() ?? null, response);
 
       // 6. Calculate Cost
       const cost = costControlService.calculateCost(

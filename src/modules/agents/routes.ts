@@ -3,10 +3,11 @@ import { Router } from "express";
 import type { Routes } from "../../interfaces/routes.interface.js";
 import authMiddleware from "../../middleware/auth.middleware.js";
 import agentController from "./controller.js";
+import incidentController from "./incident.controller.js";
 
 /**
- * Agent governance API. People manage agents here; agents themselves are
- * refused by the REST guard, except for polling their own approvals.
+ * Agent governance API. People manage agents here. Agents may read it, and
+ * every change they make is held for a person by the REST guard.
  */
 class AgentRoutes implements Routes {
   public path = "/api/agents";
@@ -40,11 +41,24 @@ class AgentRoutes implements Routes {
     this.router.get("/approvals/:approvalId", c.getApproval);
     this.router.post("/approvals/:approvalId/approve", c.approve);
     this.router.post("/approvals/:approvalId/reject", c.reject);
+    this.router.post("/approvals/:approvalId/scope-down", c.scopeDown);
+
+    const i = incidentController;
+    this.router.get("/incidents", i.list);
+    this.router.get("/incidents/:incidentId", i.get);
+    this.router.get("/incidents/:incidentId/evidence", i.evidence);
+    this.router.post("/incidents/:incidentId/resume", i.resume);
+    this.router.post("/incidents/:incidentId/revoke", i.revoke);
+    this.router.post("/incidents/:incidentId/resolve", i.resolve);
+    this.router.post("/incidents/:incidentId/expand", i.expand);
+    this.router.post("/incidents/:incidentId/notify", i.notify);
 
     this.router.get("/alerts", c.listAlerts);
     this.router.post("/alerts/:alertId/acknowledge", c.acknowledgeAlert);
 
     this.router.get("/compliance", c.compliance);
+    this.router.get("/compliance/evidence", c.complianceEvidence);
+    this.router.post("/compliance/check", c.complianceCheck);
     this.router.get("/costs/summary", c.costSummary);
     this.router.get("/timeline", c.timeline);
     this.router.get("/timeline/agents", c.timelineAgents);

@@ -1,3 +1,4 @@
+import { detectCostDrift, monitorCompliance, runScheduledReports } from "./compliance.service.js";
 import cron from "node-cron";
 
 import logger from "../../lib/logger.js";
@@ -42,6 +43,10 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
       hygiene: await enforceAgentHygiene(),
       scored: await recomputeAllRisk(),
       vendors: await vendorService.nightly(),
+      // After scoring, so the compliance snapshot sees fresh risk levels.
+      costDrift: await detectCostDrift(),
+      compliance: await monitorCompliance(),
+      reports: await runScheduledReports(),
     })),
   ),
 ];

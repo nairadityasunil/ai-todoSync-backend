@@ -1,3 +1,5 @@
+import { scopeFor } from "./rest-guard.js";
+import { clearReapproval, logGovernanceEvent } from "./hybrid.service.js";
 import { randomBytes } from "node:crypto";
 
 import { Types } from "mongoose";
@@ -10,7 +12,8 @@ import toolRegistry from "../mcp/registry/tool-registry.js";
 import ProjectMemberModel from "../project/models/project-member.model.js";
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import activityService, { runAsAgent } from "./activity.service.js";
-import { agentBlockReason, hashKey } from "./agent.service.js";
+import agentService, { agentBlockReason, hashKey } from "./agent.service.js";
+import type { RiskLevel } from "../mcp/registry/tool-types.js";
 import webhookService from "./webhooks.service.js";
 import {
   AgentApprovalModel,
@@ -156,8 +159,38 @@ class AgentApprovalService {
       outcome: "blocked",
       approvalId,
       error: "Rejected by an approver",
+      decidedBy: "person",
+      rule: "Rejected by a person",
     });
     return this.getForUser(approvalId, userId);
+  }
+
+  /**
+   * Rejects the request and removes the scope the action needed from the
+   * agent, so it cannot ask for this kind of action again.
+   */
+  public async scopeDown(approvalId: string, userId: string) {
+    const rejected = await this.reject(approvalId, userId, "Rejected and scoped down");
+    const approval = await AgentApprovalModel.findById(approvalId).lean();
+    if (!approval) return rejected;
+    const scope = scopeFor(approval.domain, approval.risk as RiskLevel);
+    const agent = await AgentModel.findById(approval.agentId);
+    if (agent && agent.scopes.includes(scope)) {
+      agent.scopes = agent.scopes.filter((s) => s !== scope);
+      agent.adminLocked = true;
+      await agent.save();
+      agentService.invalidate(agent._id.toString());
+      await logGovernanceEvent({
+        workspaceId: approval.workspaceId ? String(approval.workspaceId) : null,
+        type: "scope_down",
+        actor: "person",
+        userId,
+        agentId: agent._id.toString(),
+        title: `${agent.name} lost the "${scope}" scope`,
+        detail: `Scoped down after rejecting ${approval.action}.`,
+      });
+    }
+    return { ...(rejected as object), removedScope: scope };
   }
 
   public async approve(approvalId: string, userId: string, note?: string) {
@@ -183,6 +216,8 @@ class AgentApprovalService {
           ? await this.runTool(approval, agent)
           : await this.replayRest(approval);
       await this.finish(approval, "executed", result, null);
+      // A person approved the agent after an incident: it may act on its own again.
+      if (agent.reapprovalRequired) await clearReapproval(agent._id.toString());
       activityService.record({
         agent,
         userId: owner._id.toString(),
@@ -195,6 +230,8 @@ class AgentApprovalService {
         outcome: "allowed",
         approvalId,
         durationMs: Date.now() - started,
+        decidedBy: "person",
+        rule: "Approved by a person",
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -215,6 +252,15 @@ class AgentApprovalService {
       });
     }
     return this.getForUser(approvalId, userId);
+  }
+
+  /** A revoked agent's pending requests can never run: expire them so nobody is asked to decide. */
+  public async expireForAgents(agentIds: Array<string | Types.ObjectId>): Promise<number> {
+    const result = await AgentApprovalModel.updateMany(
+      { status: "pending", agentId: { $in: agentIds.map((id) => new Types.ObjectId(String(id))) } },
+      { $set: { status: "expired" } },
+    );
+    return result.modifiedCount;
   }
 
   /** Marks pending approvals past their deadline as expired. */

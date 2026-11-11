@@ -231,6 +231,7 @@ class AgentService {
       kind: "api_key",
       name,
       keyHash: hashKey(key),
+      keyIssuedAt: new Date(),
       keyPrefix: displayPrefix(key),
       scopes,
       projectIds,
@@ -247,6 +248,7 @@ class AgentService {
     }
     const key = generateAgentKey();
     agent.keyHash = hashKey(key);
+    agent.keyIssuedAt = new Date();
     agent.keyPrefix = displayPrefix(key);
     await agent.save();
     this.invalidate(agent._id.toString());

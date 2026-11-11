@@ -15,6 +15,8 @@ export interface IWorkspaceSettings {
   aiBudgetHardStop?: boolean;
   /** Third parties under review are read-only until approved. */
   approvedVendorsOnly?: boolean;
+  /** Hybrid governance settings (agents/hybrid.ts); missing on older workspaces. */
+  governance?: Record<string, unknown>;
 }
 
 export interface IWorkspace {

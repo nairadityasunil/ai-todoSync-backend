@@ -64,6 +64,7 @@ class McpRoutes implements Routes {
             userScopes,
             rawInput,
             req.mcpAgent ?? null,
+            req.ip ?? null,
           );
           res.json(result);
         } catch (error) {

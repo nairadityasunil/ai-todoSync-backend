@@ -19,6 +19,23 @@ import {
   type PolicyLike,
 } from "./policy-engine.js";
 import { consume } from "./rate-limit.js";
+import {
+  defaultDecision,
+  dlpVerdict,
+  isBulkRead,
+  recommend,
+  scanForDlp,
+  tierFor,
+  type DlpFinding,
+} from "./hybrid.js";
+import {
+  governanceSettings,
+  handleThreats,
+  openIncident,
+  threatWindows,
+} from "./hybrid.service.js";
+import { AgentAlertModel } from "./model.js";
+import { VendorModel } from "../vendors/model.js";
 import { redactInput } from "./redaction.js";
 import webhookService from "./webhooks.service.js";
 import vendorService from "../vendors/service.js";
@@ -50,6 +67,49 @@ export interface AuthorizeInput {
    * changing agent governance). Policies can still deny it outright.
    */
   alwaysHold?: boolean;
+  /** Caller's IP address, for threat detection (one key used from many places). */
+  ip?: string | null;
+}
+
+/** How the system (not a policy) decided, recorded in the activity log as "System decided". */
+export interface SystemDecision {
+  decidedBy: "policy" | "system";
+  rule?: string | null;
+  tier?: string | null;
+  dlp?: DlpFinding[];
+}
+
+const builtin = (id: string, name: string): PolicyLike => ({
+  id: `builtin:${id}`,
+  name,
+  effect: "require_approval",
+  mode: "enforce",
+  priority: Number.MAX_SAFE_INTEGER,
+  enabled: true,
+  match: {} as PolicyLike["match"],
+});
+export const DLP_POLICY = builtin("dlp", "Data loss prevention");
+export const REAPPROVAL_POLICY = builtin("reapproval", "Re-approval required after an incident");
+const defaultRulePolicy = (rule: string): PolicyLike => builtin("default", rule);
+
+const hostCache = new Map<string, { hosts: string[]; at: number }>();
+/** Hosts agents may send links to: the portal and approved vendors' websites. */
+async function approvedHosts(workspaceId: string | null): Promise<string[]> {
+  const key = workspaceId ?? "";
+  const hit = hostCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.hosts;
+  const own = [process.env.FRONTEND_URL, process.env.APP_URL, "localhost"]
+    .filter((v): v is string => Boolean(v))
+    .map((v) => { try { return new URL(v.includes("://") ? v : `https://${v}`).hostname; } catch { return v; } });
+  const vendors = workspaceId
+    ? await VendorModel.find({ workspaceId, status: "approved", website: { $ne: null } }).select("website").lean()
+    : [];
+  const hosts = [
+    ...own,
+    ...vendors.map((v) => { try { return new URL(String(v.website).includes("://") ? String(v.website) : `https://${v.website}`).hostname.replace(/^www\./, ""); } catch { return ""; } }),
+  ].filter(Boolean);
+  hostCache.set(key, { hosts, at: Date.now() });
+  return hosts;
 }
 
 /** The built-in rule behind `alwaysHold`: agents never change governance on their own. */
@@ -69,6 +129,7 @@ export type AuthorizeResult =
       policy: PolicyLike | null;
       advisory: PolicyLike[];
       projectId: string | null;
+      system?: SystemDecision;
     }
   | {
       effect: "deny";
@@ -78,6 +139,7 @@ export type AuthorizeResult =
       reason: string;
       /** Set when the agent is over its rate limit (respond 429). */
       retryAfterSec?: number;
+      system?: SystemDecision;
     }
   | {
       effect: "require_approval";
@@ -85,6 +147,7 @@ export type AuthorizeResult =
       advisory: PolicyLike[];
       projectId: string | null;
       approval: IAgentApprovalDocument;
+      system?: SystemDecision;
     };
 
 const policyCache = new Map<string, { policies: PolicyLike[]; at: number }>();
@@ -265,16 +328,163 @@ export async function authorize(
     ).values(),
   ];
 
+  const settings = await governanceSettings(workspaceId);
+  const isRead = input.risk === "read";
+  // A shadow agent scores critical for using a person's login; its writes wait for a person
+  // (the shadow AI settings decide whether it is blocked), rather than being suspended outright.
+  const agentRiskLevel = agent.kind === "detected" && agent.riskLevel === "critical" ? "high" : agent.riskLevel;
+  const tier = tierFor({ risk: input.risk, agentRiskLevel });
+  let system: SystemDecision = { decidedBy: decision.policy ? "policy" : "system", tier };
+  const deny = (reason: string, sys: SystemDecision): AuthorizeResult => ({
+    effect: "deny",
+    policy: decision.policy,
+    advisory: decision.advisory,
+    projectId,
+    reason,
+    system: sys,
+  });
+
+  // Compliance enforcement: keys past their maximum age may only read.
+  if (
+    settings.complianceEnforce &&
+    !isRead &&
+    agent.kind === "api_key" &&
+    settings.keyMaxAgeDays > 0
+  ) {
+    const issued = (agent.keyIssuedAt ?? (agent as unknown as { createdAt?: Date }).createdAt) as Date | undefined;
+    if (issued && Date.now() - new Date(issued).getTime() > settings.keyMaxAgeDays * 86_400_000) {
+      return deny(`Blocked by compliance: this agent key is older than ${settings.keyMaxAgeDays} days. Rotate it to continue.`, {
+        decidedBy: "system",
+        tier,
+        rule: "Compliance: key expiration",
+      });
+    }
+  }
+
+  // Safety net: while an agent is deleting in bulk, further deletes are refused.
+  if (input.risk === "destructive" && settings.threatDetection && threatWindows.deletingInBulk(agent._id.toString())) {
+    return deny("Blocked: this agent is deleting in bulk. A person must review it first.", {
+      decidedBy: "system",
+      tier: "critical",
+      rule: "Threat: mass delete",
+    });
+  }
+
+  // Data loss prevention: secrets and personal data in what the agent sends, and bulk exports.
+  let dlp: DlpFinding[] = [];
+  if (settings.dlpMode !== "off") {
+    dlp = scanForDlp(input.input, { allowedHosts: await approvedHosts(workspaceId) });
+    if (input.request && isBulkRead(input.request.method, input.request.path)) {
+      dlp.push({ type: "bulk_export", label: "Bulk data export", confidence: "medium", count: 1 });
+    }
+    if (dlp.length) {
+      system = { ...system, dlp };
+      void raiseAlert({
+        workspaceId,
+        agentId: agent._id.toString(),
+        type: "dlp",
+        severity: dlp.some((f) => f.confidence === "high") ? "critical" : "warning",
+        title: `Sensitive data in ${agent.name}'s ${input.action}`,
+        detail: dlp.map((f) => `${f.label}${f.count > 1 ? ` (${f.count})` : ""}`).join(", ") + (settings.dlpMode === "monitor" ? ". Monitor mode: allowed and logged." : "."),
+        dedupeKey: `dlp:${agent._id}:${input.action}:${Math.floor(Date.now() / 600_000)}`,
+      }).catch(() => undefined);
+    }
+    // Secrets are enforced everywhere; personal data only when it leaves Pristine
+    // (AI calls, bulk exports, links out). Ordinary work data is monitored.
+    const leavesPristine = input.domain === "ai" || dlp.some((f) => f.type === "bulk_export" || f.type === "external_destination");
+    const enforceable = dlp.filter((f) => f.confidence === "high" || leavesPristine);
+    const verdict = dlpVerdict(settings.dlpMode, enforceable);
+    if (verdict.effect === "deny") {
+      return deny(verdict.reason as string, { decidedBy: "system", tier, rule: "Data loss prevention", dlp });
+    }
+    if (verdict.effect === "require_approval" && decision.effect !== "deny") {
+      decision.effect = "require_approval";
+      decision.policy = DLP_POLICY;
+      system = { decidedBy: "system", tier, rule: verdict.reason, dlp };
+    }
+  }
+
+  // After an incident a person must approve the agent's next change.
+  if (agent.reapprovalRequired && !isRead && decision.effect === "allow") {
+    decision.effect = "require_approval";
+    decision.policy = REAPPROVAL_POLICY;
+    system = { ...system, decidedBy: "system", rule: REAPPROVAL_POLICY.name };
+  }
+
   if (decision.effect === "allow" && input.alwaysHold) {
     decision.effect = "require_approval";
     decision.policy = GOVERNANCE_HOLD_POLICY;
+    system = { ...system, decidedBy: "system", rule: GOVERNANCE_HOLD_POLICY.name };
   }
+
+  // No explicit policy: the default rule for the action's risk tier decides.
+  if (decision.effect === "allow" && !decision.policy) {
+    const rule = defaultDecision(settings, tier, isRead);
+    system = { ...system, decidedBy: "system", rule: rule.rule, tier };
+    if (rule.wouldHave) {
+      decision.advisory = [...decision.advisory, { ...defaultRulePolicy(rule.rule), effect: rule.wouldHave, mode: "advisory" }];
+    }
+    if (rule.effect === "deny") {
+      if (rule.suspend) {
+        await openIncident({
+          workspaceId,
+          agents: [agent],
+          trigger: "critical_risk",
+          severity: "critical",
+          title: `${agent.name} tried a critical-risk action`,
+          summary: `${input.action} was blocked and ${agent.name} suspended until a person reviews it (${agent.riskLevel} agent risk).`,
+          action: input.action,
+          contain: true,
+        });
+      }
+      return deny(`Blocked: ${rule.rule}.`, system);
+    }
+    if (rule.effect === "require_approval") {
+      decision.effect = "require_approval";
+      decision.policy = defaultRulePolicy(rule.rule);
+    }
+  }
+
+  // Auto-approve repeats: a person approved the same action for this agent recently.
+  if (
+    decision.effect === "require_approval" &&
+    settings.autoApproveRepeatDays > 0 &&
+    decision.policy?.id !== DLP_POLICY.id &&
+    decision.policy?.id !== REAPPROVAL_POLICY.id &&
+    !input.noHold
+  ) {
+    const since = new Date(Date.now() - settings.autoApproveRepeatDays * 86_400_000);
+    const earlier = await AgentApprovalModel.findOne({
+      agentId: agent._id,
+      action: input.action,
+      status: { $in: ["approved", "executed"] },
+      decidedBySystem: { $ne: true },
+      decidedAt: { $gte: since },
+    })
+      .select("decidedAt")
+      .lean();
+    if (earlier) {
+      return {
+        effect: "allow",
+        policy: decision.policy,
+        advisory: decision.advisory,
+        projectId,
+        system: {
+          ...system,
+          decidedBy: "system",
+          rule: `Auto-approved: a person approved ${input.action} for this agent within the last ${settings.autoApproveRepeatDays} day(s)`,
+        },
+      };
+    }
+  }
+
   if (decision.effect === "allow") {
     return {
       effect: "allow",
       policy: decision.policy,
       advisory: decision.advisory,
       projectId,
+      system,
     };
   }
   if (decision.effect === "deny") {
@@ -284,6 +494,7 @@ export async function authorize(
       advisory: decision.advisory,
       projectId,
       reason: `Blocked by policy "${decision.policy?.name}".`,
+      system,
     };
   }
 
@@ -295,8 +506,25 @@ export async function authorize(
       advisory: decision.advisory,
       projectId,
       reason: `Policy "${policy.name}" requires approval, which this kind of call cannot wait for.`,
+      system,
     };
   }
+  const recentWindow = new Date(Date.now() - 30 * 86_400_000);
+  const [approvedBefore, rejectedBefore, threatSignals] = await Promise.all([
+    AgentApprovalModel.countDocuments({ agentId: agent._id, action: input.action, status: { $in: ["approved", "executed"] }, decidedAt: { $gte: recentWindow } }),
+    AgentApprovalModel.countDocuments({ agentId: agent._id, action: input.action, status: "rejected", decidedAt: { $gte: recentWindow } }),
+    AgentAlertModel.countDocuments({ agentId: agent._id, type: "threat", createdAt: { $gte: new Date(Date.now() - 86_400_000) } }),
+  ]);
+  const recommendation = recommend({
+    tier: (system.tier as never) ?? tier,
+    risk: input.risk,
+    agentRiskLevel: agent.riskLevel,
+    agentKind: agent.kind,
+    approvedBefore,
+    rejectedBefore,
+    dlpFindings: (system.dlp ?? []).length,
+    threatSignals,
+  });
   const approval = await AgentApprovalModel.create({
     workspaceId,
     projectId,
@@ -312,6 +540,9 @@ export async function authorize(
     policyId: storedPolicyId(policy),
     policyName: policy.name,
     status: "pending",
+    tier: system.tier ?? tier,
+    recommendation,
+    dlp: system.dlp ?? [],
     expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
   });
   webhookService.emit({
@@ -328,6 +559,7 @@ export async function authorize(
       projectId,
       expiresAt: approval.expiresAt,
       input: approval.inputPreview,
+      recommendation,
     },
   });
   logger.info("Agent action held for approval", {
@@ -341,6 +573,7 @@ export async function authorize(
     advisory: decision.advisory,
     projectId,
     approval,
+    system,
   };
 }
 
@@ -378,6 +611,29 @@ export function recordDecision(
       result.effect === "require_approval"
         ? result.approval._id.toString()
         : null,
+    decidedBy: result.system?.decidedBy ?? (result.policy ? "policy" : null),
+    rule: result.system?.rule ?? null,
+    tier: result.system?.tier ?? null,
+    dlp: result.system?.dlp ?? [],
+    ip: input.ip ?? null,
     ...extra,
   });
+  observeThreats(input, result.effect === "deny" && !(result as { retryAfterSec?: number }).retryAfterSec ? "blocked" : null);
+}
+
+/**
+ * Feeds the threat detectors (key used from many addresses, rapid listing,
+ * repeated exports, bulk deletes, repeated blocks) and acts on what they find.
+ */
+export function observeThreats(input: Pick<AuthorizeInput, "agent" | "ip" | "risk" | "action" | "request">, outcome: "blocked" | "escalation" | null): void {
+  const signals = threatWindows.observe({
+    agentId: input.agent._id.toString(),
+    agentName: input.agent.name,
+    ip: input.ip ?? null,
+    risk: input.risk,
+    isList: /:list$/.test(input.action),
+    isBulk: Boolean(input.request && isBulkRead(input.request.method, input.request.path)),
+    outcome,
+  });
+  if (signals.length) void handleThreats(input.agent, signals, input.action).catch(() => undefined);
 }

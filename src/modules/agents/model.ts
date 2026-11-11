@@ -58,6 +58,12 @@ export interface IAgent {
   statusSetByAdmin: boolean;
   /** Permissions were narrowed by an admin: the owner may only narrow further. */
   adminLocked: boolean;
+  /** Suspended automatically (critical risk, threat or incident); any admin or the owner can resume. */
+  suspendedBySystem?: boolean;
+  /** After an incident: the agent's next change needs a person's approval. */
+  reapprovalRequired?: boolean;
+  /** When the current key was issued (creation or last rotation). */
+  keyIssuedAt?: Date | null;
   expiresAt?: Date | null;
   /** Calls allowed per minute across REST, MCP and AI; null for no limit. */
   rateLimitPerMinute?: number | null;
@@ -128,6 +134,9 @@ const agentSchema = new Schema<IAgentDocument>(
     statusReason: { type: String, default: null },
     statusSetByAdmin: { type: Boolean, default: false },
     adminLocked: { type: Boolean, default: false },
+    suspendedBySystem: { type: Boolean, default: false },
+    reapprovalRequired: { type: Boolean, default: false },
+    keyIssuedAt: { type: Date, default: null },
     expiresAt: { type: Date, default: null },
     rateLimitPerMinute: { type: Number, default: null },
     lastSeenAt: { type: Date, default: null },
@@ -275,6 +284,14 @@ export interface IAgentActivity {
   approvalId?: Types.ObjectId | string | null;
   error?: string | null;
   durationMs?: number | null;
+  /** "policy": an explicit policy decided; "system": a default rule, DLP, threat or safety net; "person": a person's approval. */
+  decidedBy?: "policy" | "system" | "person" | null;
+  /** The rule behind a system decision, e.g. "Default rule: low risk, allowed automatically". */
+  rule?: string | null;
+  tier?: string | null;
+  dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
+  threats?: string[];
+  ip?: string | null;
   /** State of the changed record before the agent touched it. */
   undo?: AgentUndoSnapshot | null;
   undoneAt?: Date | null;
@@ -316,6 +333,12 @@ const agentActivitySchema = new Schema<IAgentActivityDocument>(
     approvalId: { type: Schema.Types.ObjectId, default: null },
     error: { type: String, default: null },
     durationMs: { type: Number, default: null },
+    decidedBy: { type: String, default: null },
+    rule: { type: String, default: null },
+    tier: { type: String, default: null },
+    dlp: { type: [Schema.Types.Mixed], default: [] },
+    threats: { type: [String], default: [] },
+    ip: { type: String, default: null },
     undo: { type: Schema.Types.Mixed, default: null },
     undoneAt: { type: Date, default: null },
     undoneBy: { type: Schema.Types.ObjectId, default: null },
@@ -374,6 +397,10 @@ export interface IAgentApproval {
   /** sha256 of the one-time token used to replay an approved REST call. */
   replayTokenHash?: string | null;
   expiresAt: Date;
+  tier?: string | null;
+  recommendation?: { decision: "approve" | "reject"; reasons: string[] } | null;
+  dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
+  decidedBySystem?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -414,6 +441,11 @@ const agentApprovalSchema = new Schema<IAgentApprovalDocument>(
     error: { type: String, default: null },
     replayTokenHash: { type: String, default: null },
     expiresAt: { type: Date, required: true },
+    tier: { type: String, default: null },
+    recommendation: { type: Schema.Types.Mixed, default: null },
+    dlp: { type: [Schema.Types.Mixed], default: [] },
+    /** Decided by the system (auto-approve of a repeat), not a person. */
+    decidedBySystem: { type: Boolean, default: false },
   },
   { timestamps: true },
 );
@@ -433,6 +465,10 @@ export const AgentApprovalModel = mongoose.model<IAgentApprovalDocument>(
 
 export type AgentAlertSeverity = "info" | "warning" | "critical";
 export type AgentAlertType =
+  | "threat"
+  | "dlp"
+  | "compliance_drift"
+  | "critical_risk"
   | "bulk_destructive"
   | "volume_spike"
   | "off_hours"
@@ -533,13 +569,19 @@ export type WebhookEvent =
   | "alert.raised"
   | "approval.requested"
   | "approval.decided"
-  | "activity.blocked";
+  | "activity.blocked"
+  | "incident.opened"
+  | "compliance.report"
+  | "compliance.drift";
 
 export const WEBHOOK_EVENTS: WebhookEvent[] = [
   "alert.raised",
   "approval.requested",
   "approval.decided",
   "activity.blocked",
+  "incident.opened",
+  "compliance.report",
+  "compliance.drift",
 ];
 
 export interface IAgentWebhook {
@@ -602,4 +644,162 @@ agentWebhookSchema.index({ workspaceId: 1, enabled: 1 });
 export const AgentWebhookModel = mongoose.model<IAgentWebhookDocument>(
   "AgentWebhook",
   agentWebhookSchema,
+);
+
+/* ------------------------------------------------------------------ */
+/* Incidents                                                           */
+/* ------------------------------------------------------------------ */
+
+export type IncidentStatus = "open" | "contained" | "resolved";
+
+export interface IIncidentEntry {
+  at: Date;
+  /** "system" for automatic actions, otherwise the person who acted. */
+  actor: "system" | "person";
+  userId?: Types.ObjectId | string | null;
+  action: string;
+  detail: string;
+}
+
+export interface IAgentIncident {
+  workspaceId?: Types.ObjectId | string | null;
+  title: string;
+  severity: "warning" | "critical";
+  /** What opened it: a threat type, "critical_risk", "dlp" or "manual". */
+  trigger: string;
+  status: IncidentStatus;
+  agentIds: Array<Types.ObjectId | string>;
+  /** The action that triggered it, when there was one. */
+  action?: string | null;
+  summary: string;
+  timeline: IIncidentEntry[];
+  suggestions: string[];
+  /** Activity window kept with the incident (from, to). */
+  windowFrom: Date;
+  windowTo?: Date | null;
+  resolution?: string | null;
+  resolvedAt?: Date | null;
+  resolvedBy?: Types.ObjectId | string | null;
+  dedupeKey: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface IAgentIncidentDocument extends IAgentIncident, Document {}
+
+const incidentEntrySchema = new Schema<IIncidentEntry>(
+  {
+    at: { type: Date, default: Date.now },
+    actor: { type: String, enum: ["system", "person"], required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    action: { type: String, required: true },
+    detail: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
+const agentIncidentSchema = new Schema<IAgentIncidentDocument>(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, default: null, index: true },
+    title: { type: String, required: true },
+    severity: { type: String, enum: ["warning", "critical"], required: true },
+    trigger: { type: String, required: true },
+    status: { type: String, enum: ["open", "contained", "resolved"], default: "open" },
+    agentIds: [{ type: Schema.Types.ObjectId, ref: "Agent" }],
+    action: { type: String, default: null },
+    summary: { type: String, default: "" },
+    timeline: { type: [incidentEntrySchema], default: [] },
+    suggestions: { type: [String], default: [] },
+    windowFrom: { type: Date, required: true },
+    windowTo: { type: Date, default: null },
+    resolution: { type: String, default: null },
+    resolvedAt: { type: Date, default: null },
+    resolvedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    dedupeKey: { type: String, required: true },
+  },
+  { timestamps: true },
+);
+agentIncidentSchema.index({ workspaceId: 1, status: 1, createdAt: -1 });
+agentIncidentSchema.index({ dedupeKey: 1 });
+
+export const AgentIncidentModel = mongoose.model<IAgentIncidentDocument>(
+  "AgentIncident",
+  agentIncidentSchema,
+);
+
+/* ------------------------------------------------------------------ */
+/* Governance events: what the system (or a person) did to governance */
+/* itself, e.g. auto-suspend, compliance reports, drift               */
+/* ------------------------------------------------------------------ */
+
+export interface IGovernanceEvent {
+  workspaceId?: Types.ObjectId | string | null;
+  type: string;
+  actor: "system" | "person";
+  userId?: Types.ObjectId | string | null;
+  agentId?: Types.ObjectId | string | null;
+  incidentId?: Types.ObjectId | string | null;
+  title: string;
+  detail: string;
+  createdAt: Date;
+}
+
+export interface IGovernanceEventDocument extends IGovernanceEvent, Document {}
+
+const governanceEventSchema = new Schema<IGovernanceEventDocument>(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, default: null },
+    type: { type: String, required: true },
+    actor: { type: String, enum: ["system", "person"], required: true },
+    userId: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    agentId: { type: Schema.Types.ObjectId, ref: "Agent", default: null },
+    incidentId: { type: Schema.Types.ObjectId, default: null },
+    title: { type: String, required: true },
+    detail: { type: String, default: "" },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { versionKey: false },
+);
+governanceEventSchema.index({ workspaceId: 1, createdAt: -1 });
+governanceEventSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: 365 * 86400 },
+);
+
+export const GovernanceEventModel = mongoose.model<IGovernanceEventDocument>(
+  "GovernanceEvent",
+  governanceEventSchema,
+);
+
+/* ------------------------------------------------------------------ */
+/* Compliance snapshots (score history and drift)                      */
+/* ------------------------------------------------------------------ */
+
+export interface IComplianceSnapshot {
+  workspaceId: Types.ObjectId | string;
+  score: number;
+  controls: Array<{ id: string; title: string; status: string }>;
+  createdAt: Date;
+}
+
+export interface IComplianceSnapshotDocument extends IComplianceSnapshot, Document {}
+
+const complianceSnapshotSchema = new Schema<IComplianceSnapshotDocument>(
+  {
+    workspaceId: { type: Schema.Types.ObjectId, required: true },
+    score: { type: Number, required: true },
+    controls: { type: Schema.Types.Mixed, default: [] },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { versionKey: false },
+);
+complianceSnapshotSchema.index({ workspaceId: 1, createdAt: -1 });
+complianceSnapshotSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: 400 * 86400 },
+);
+
+export const ComplianceSnapshotModel = mongoose.model<IComplianceSnapshotDocument>(
+  "ComplianceSnapshot",
+  complianceSnapshotSchema,
 );

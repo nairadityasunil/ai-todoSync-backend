@@ -1,3 +1,5 @@
+import { normalizeGovernance } from "./hybrid.js";
+import { scopeFor } from "./rest-guard.js";
 import { Types } from "mongoose";
 
 import logger from "../../lib/logger.js";
@@ -19,6 +21,7 @@ import {
   AgentApprovalModel,
   AgentModel,
   AgentPolicyModel,
+  AgentIncidentModel,
   type IAgentDocument,
 } from "./model.js";
 import { unusualHours } from "./alert-rules.js";
@@ -97,10 +100,28 @@ export async function recomputeRisk(
       },
     },
   );
+  const previousLevel = agent.riskLevel;
   agent.riskScore = result.score;
   agent.riskLevel = result.level;
   agent.riskFactors = result.factors;
   agent.riskEvaluatedAt = now;
+  // Safety net: an agent that just became critical is suspended until a person reviews it.
+  if (result.level === "critical" && previousLevel !== "critical" && agent.status === "active") {
+    const { governanceSettings, openIncident } = await import("./hybrid.service.js");
+    const settings = await governanceSettings(agent.workspaceId ? String(agent.workspaceId) : null);
+    // Shadow agents are critical from the start (a person's login); the shadow AI settings handle them.
+    if (settings.criticalAutoSuspend && agent.kind !== "detected") {
+      await openIncident({
+        workspaceId: agent.workspaceId ? String(agent.workspaceId) : null,
+        agents: [agent],
+        trigger: "critical_risk",
+        severity: "critical",
+        title: `${agent.name} reached critical risk`,
+        summary: `Risk score ${result.score}: ${result.factors.slice(0, 3).map((f) => f.label).join("; ")}.`,
+        contain: true,
+      });
+    }
+  }
   return agent;
 }
 
@@ -733,6 +754,55 @@ export async function complianceReport(workspaceId: string) {
   const reviewable = agents.filter((agent) => agent.status !== "revoked");
   const masking = Boolean(workspace?.settings?.aiDataMasking);
 
+  const hybrid = normalizeGovernance(
+    (workspace?.settings as { governance?: unknown } | undefined)?.governance,
+  );
+  const keyAgeLimit = hybrid.keyMaxAgeDays * 86_400_000;
+  const keyDocs = keys.length
+    ? await AgentModel.find({ _id: { $in: keys.map((k) => k._id) } }).select("name keyIssuedAt createdAt").lean()
+    : [];
+  const staleKeys = hybrid.keyMaxAgeDays
+    ? keyDocs.filter((k) => {
+        const issued = (k.keyIssuedAt ?? (k as unknown as { createdAt?: Date }).createdAt) as Date | undefined;
+        return issued ? Date.now() - new Date(issued).getTime() > keyAgeLimit : false;
+      })
+    : [];
+  const monthAgo = new Date(Date.now() - 30 * 86_400_000);
+  const used = await AgentActivityModel.aggregate<{ _id: { agentId: Types.ObjectId; domain: string; risk: string } }>([
+    { $match: { workspaceId: ws, createdAt: { $gte: monthAgo }, agentId: { $in: active.map((a) => a._id) } } },
+    { $group: { _id: { agentId: "$agentId", domain: "$domain", risk: "$risk" } } },
+  ]);
+  const usedScopes = new Map<string, Set<string>>();
+  for (const row of used) {
+    const key = String(row._id.agentId);
+    const set = usedScopes.get(key) ?? new Set<string>();
+    set.add(scopeFor(row._id.domain, row._id.risk as never));
+    usedScopes.set(key, set);
+  }
+  const overPrivileged = keys
+    .filter((a) => usedScopes.has(String(a._id)))
+    .map((a) => ({ name: a.name, unused: a.scopes.filter((scope) => !usedScopes.get(String(a._id))?.has(scope)) }))
+    .filter((o) => o.unused.length > 0);
+  const actedRecently = await AgentModel.find({ _id: { $in: active.map((a) => a._id) }, lastSeenAt: { $gte: monthAgo } })
+    .select("name callCount")
+    .lean();
+  const unlogged = actedRecently.filter((a) => !usedScopes.has(String(a._id)) && (a.callCount ?? 0) > 50);
+  const enforcedDestructive = await AgentPolicyModel.countDocuments({
+    workspaceId: ws,
+    enabled: true,
+    mode: "enforce",
+    effect: { $in: ["deny", "require_approval"] },
+    $or: [{ "match.tools": { $elemMatch: { $regex: "delete|\\*" } } }, { "match.minRisk": { $in: ["destructive", "security_critical"] } }],
+  }).catch(() => 0);
+  const regionOk = (location: string) =>
+    hybrid.allowedDataRegions.some((region) => location.toLowerCase().includes(region.toLowerCase()));
+  const outsideRegions = hybrid.allowedDataRegions.length
+    ? (await VendorModel.find({ _id: { $in: [...vendorsInUse] } }).select("name dataLocation answers").lean())
+        .map((v) => ({ name: v.name, location: String(v.dataLocation || (v.answers as Record<string, string> | undefined)?.data_location || "") }))
+        .filter((v) => !v.location || !regionOk(v.location))
+    : [];
+  const openIncidents = await AgentIncidentModel.countDocuments({ workspaceId: ws, status: { $ne: "resolved" } });
+
   const pick = (ok: boolean, partial: boolean): ControlStatus =>
     ok ? "met" : partial ? "partial" : "gap";
 
@@ -896,6 +966,88 @@ export async function complianceReport(workspaceId: string) {
         : `${aiProviders.length} AI provider(s) receive prompts without masking.`,
       recommendation:
         masking || aiProviders.length === 0 ? null : "Turn on AI data masking.",
+    },
+    {
+      id: "key_expiration",
+      framework: "ISO/IEC 27001 A.5.17",
+      title: `Agent keys are rotated within ${hybrid.keyMaxAgeDays || "the allowed"} days`,
+      status: hybrid.keyMaxAgeDays === 0 ? "met" : pick(staleKeys.length === 0, staleKeys.length <= 1),
+      evidence:
+        hybrid.keyMaxAgeDays === 0
+          ? "No maximum key age is set."
+          : staleKeys.length
+            ? `${staleKeys.length} key(s) older than ${hybrid.keyMaxAgeDays} days: ${staleKeys.slice(0, 5).map((a) => a.name).join(", ")}.`
+            : `All ${keys.length} agent key(s) were issued within ${hybrid.keyMaxAgeDays} days.`,
+      recommendation: staleKeys.length ? "Rotate these keys (Agents → the agent → Rotate key)." : null,
+    },
+    {
+      id: "unused_scopes",
+      framework: FRAMEWORKS.OWASP_EXCESSIVE_AGENCY,
+      title: "Agents only hold the scopes they use",
+      status: pick(overPrivileged.length === 0, overPrivileged.length <= Math.max(1, Math.round(keys.length * 0.2))),
+      evidence: overPrivileged.length
+        ? `${overPrivileged.length} agent(s) hold scopes unused in 30 days: ${overPrivileged
+            .slice(0, 5)
+            .map((o) => `${o.name} (${o.unused.join(", ")})`)
+            .join("; ")}.`
+        : "Every agent key that acted in the last 30 days used all of its scopes.",
+      recommendation: overPrivileged.length ? "Remove the unused scopes from these agents." : null,
+    },
+    {
+      id: "approval_coverage",
+      framework: FRAMEWORKS.EU_OVERSIGHT,
+      title: "High-risk agent actions need a person's approval",
+      status: hybrid.mode !== "advisory" || enforcedDestructive > 0 ? "met" : "partial",
+      evidence:
+        hybrid.mode !== "advisory"
+          ? `Default rule: ${hybrid.mode === "auto_low_risk" ? "low-risk actions run automatically; medium and high risk wait for a person" : "every change waits for a person unless a policy allows it"}.`
+          : enforcedDestructive > 0
+            ? `${enforcedDestructive} enforced policy(ies) hold or block destructive actions.`
+            : "Governance is in advisory mode and no enforced policy covers destructive actions.",
+      recommendation:
+        hybrid.mode === "advisory" && enforcedDestructive === 0
+          ? 'Switch the governance mode to "Enforce + auto low-risk", or add an approval policy for deletes.'
+          : null,
+    },
+    {
+      id: "audit_completeness",
+      framework: FRAMEWORKS.EU_LOGGING,
+      title: "Every acting agent is in the activity log",
+      status: pick(unlogged.length === 0, unlogged.length <= 1),
+      evidence: unlogged.length
+        ? `${unlogged.length} agent(s) were active in the last 30 days without a single activity record: ${unlogged.slice(0, 5).map((a) => a.name).join(", ")}.`
+        : "Every agent active in the last 30 days has activity records.",
+      recommendation: unlogged.length ? "Check these agents call through governed channels (agent keys or MCP)." : null,
+    },
+    {
+      id: "data_residency",
+      framework: "GDPR Chapter V",
+      title: "Data stays in allowed regions",
+      status: hybrid.allowedDataRegions.length === 0 ? "partial" : pick(outsideRegions.length === 0, false),
+      evidence:
+        hybrid.allowedDataRegions.length === 0
+          ? "No allowed regions are set, so vendor locations are not checked."
+          : outsideRegions.length
+            ? `${outsideRegions.length} vendor(s) in use process data outside ${hybrid.allowedDataRegions.join(", ")}: ${outsideRegions
+                .slice(0, 5)
+                .map((v) => `${v.name} (${v.location || "unknown"})`)
+                .join(", ")}.`
+            : `All vendors in use process data in ${hybrid.allowedDataRegions.join(", ")}.`,
+      recommendation:
+        hybrid.allowedDataRegions.length === 0
+          ? "Set the allowed data regions in Governance settings."
+          : outsideRegions.length
+            ? "Restrict or replace these vendors, or record their data location."
+            : null,
+    },
+    {
+      id: "dlp_threats",
+      framework: FRAMEWORKS.EU_SECURITY,
+      title: "Data loss prevention and threat detection are on",
+      status: pick(hybrid.dlpMode === "enforce" && hybrid.threatDetection, hybrid.dlpMode !== "off" && hybrid.threatDetection),
+      evidence: `DLP: ${hybrid.dlpMode}. Threat detection: ${hybrid.threatDetection ? "on" : "off"}. Incident containment: ${hybrid.incidentAutoContain ? "on" : "off"}. ${openIncidents} open incident(s).`,
+      recommendation:
+        hybrid.dlpMode !== "enforce" || !hybrid.threatDetection ? "Set DLP to enforce and turn on threat detection." : null,
     },
     {
       id: "kill_switch",

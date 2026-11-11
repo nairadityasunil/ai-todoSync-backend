@@ -49,6 +49,13 @@ export interface RecordInput {
   error?: string | null;
   durationMs?: number | null;
   undo?: AgentUndoSnapshot | null;
+  /** Who decided: an explicit policy, the system (default rule, DLP, threat) or a person. */
+  decidedBy?: "policy" | "system" | "person" | null;
+  rule?: string | null;
+  tier?: string | null;
+  dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
+  threats?: string[];
+  ip?: string | null;
 }
 
 const HOUR = 3600 * 1000;
@@ -81,6 +88,12 @@ class AgentActivityService {
         approvalId: entry.approvalId ?? null,
         error: entry.error ? entry.error.slice(0, 500) : null,
         durationMs: entry.durationMs ?? null,
+        decidedBy: entry.decidedBy ?? (entry.policy ? "policy" : null),
+        rule: entry.rule ?? null,
+        tier: entry.tier ?? null,
+        dlp: entry.dlp ?? [],
+        threats: entry.threats ?? [],
+        ip: entry.ip ?? null,
         // Only successful changes can be undone.
         undo: entry.outcome === "allowed" && entry.undo ? entry.undo : null,
       });
