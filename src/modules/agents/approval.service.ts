@@ -260,6 +260,9 @@ class AgentApprovalService {
       { status: "pending", agentId: { $in: agentIds.map((id) => new Types.ObjectId(String(id))) } },
       { $set: { status: "expired" } },
     );
+    // Just-in-time grants and requests end with the agent.
+    const { endElevationsFor } = await import("./advanced.service.js");
+    await endElevationsFor(agentIds);
     return result.modifiedCount;
   }
 

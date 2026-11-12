@@ -4,6 +4,7 @@ import type { Routes } from "../../interfaces/routes.interface.js";
 import authMiddleware from "../../middleware/auth.middleware.js";
 import agentController from "./controller.js";
 import incidentController from "./incident.controller.js";
+import advancedController from "./advanced.controller.js";
 
 /**
  * Agent governance API. People manage agents here. Agents may read it, and
@@ -30,8 +31,16 @@ class AgentRoutes implements Routes {
     this.router.get("/activity/export", c.exportActivity);
     this.router.post("/activity/:activityId/undo", c.undo);
 
+    const a = advancedController;
     this.router.get("/policies", c.listPolicies);
     this.router.get("/policies/templates", c.policyTemplates);
+    this.router.get("/policies/export", a.exportPolicies);
+    this.router.post("/policies/simulate", a.simulate);
+    this.router.get("/policies/proposals", a.proposals);
+    this.router.post("/policies/proposals/:versionId/approve", a.approveProposal);
+    this.router.post("/policies/proposals/:versionId/reject", a.rejectProposal);
+    this.router.get("/policies/:policyId/versions", a.versions);
+    this.router.post("/policies/:policyId/rollback", a.rollback);
     this.router.post("/policies", c.createPolicy);
     this.router.post("/policies/test", c.testPolicies);
     this.router.patch("/policies/:policyId", c.updatePolicy);
@@ -52,6 +61,26 @@ class AgentRoutes implements Routes {
     this.router.post("/incidents/:incidentId/resolve", i.resolve);
     this.router.post("/incidents/:incidentId/expand", i.expand);
     this.router.post("/incidents/:incidentId/notify", i.notify);
+
+    this.router.post("/elevations", a.requestElevation);
+    this.router.get("/elevations", a.listElevations);
+    this.router.get("/elevations/:elevationId", a.getElevation);
+    this.router.post("/elevations/:elevationId/approve", a.approveElevation);
+    this.router.post("/elevations/:elevationId/reject", a.rejectElevation);
+    this.router.post("/elevations/:elevationId/revoke", a.revokeElevation);
+
+    this.router.get("/playbooks", a.listPlaybooks);
+    this.router.get("/playbooks/templates", a.playbookTemplates);
+    this.router.post("/playbooks", a.createPlaybook);
+    this.router.patch("/playbooks/:playbookId", a.updatePlaybook);
+    this.router.delete("/playbooks/:playbookId", a.deletePlaybook);
+    this.router.get("/playbook-runs", a.listRuns);
+    this.router.post("/playbook-runs/:runId/continue", a.continueRun);
+    this.router.post("/playbook-runs/:runId/cancel", a.cancelRun);
+
+    this.router.get("/classification", a.getClassification);
+    this.router.put("/classification", a.setClassification);
+    this.router.post("/key-lifecycle/run", a.runKeyLifecycle);
 
     this.router.get("/alerts", c.listAlerts);
     this.router.post("/alerts/:alertId/acknowledge", c.acknowledgeAlert);
@@ -77,6 +106,9 @@ class AgentRoutes implements Routes {
     this.router.patch("/:agentId", c.update);
     this.router.get("/:agentId/activity", c.activity);
     this.router.post("/:agentId/rotate", c.rotate);
+    this.router.post("/:agentId/pending-key/reveal", a.revealPendingKey);
+    this.router.get("/:agentId/baseline", a.baseline);
+    this.router.post("/:agentId/baseline", a.recomputeBaseline);
     this.router.post("/:agentId/replace-with-key", c.replaceWithKey);
     this.router.post("/:agentId/review", c.review);
     this.router.get("/:agentId/reach", c.reach);

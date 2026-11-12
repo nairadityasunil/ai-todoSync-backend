@@ -27,6 +27,28 @@ export interface GovernanceSettings {
   complianceReportSchedule: ReportSchedule;
   /** Regions data may be processed in (vendor data location); empty: not restricted. */
   allowedDataRegions: string[];
+  /** Compare agents with their own behaviour baseline and hold large deviations. */
+  anomalyDetection: boolean;
+  /** Group related actions by several agents into one incident. */
+  correlation: boolean;
+  /** New network address, new country or a recent password change raise an action's risk. */
+  sessionRisk: boolean;
+  /** Stricter rules for confidential and restricted projects and tasks. */
+  classificationEnforce: boolean;
+  /** Agents may ask for extra scopes for a short time. */
+  jitEnabled: boolean;
+  /** Longest just-in-time grant, in minutes. */
+  jitMaxMinutes: number;
+  /** Grant low-risk (read-only) requests automatically. */
+  jitAutoGrantLowRisk: boolean;
+  /** Keys near their maximum age: warn the owner, or rotate them (low risk) with a grace period. */
+  keyRotation: "off" | "notify" | "auto";
+  /** Hours the old key keeps working after a rotation. */
+  keyGraceHours: number;
+  /** Longest life of a key used by a third party. */
+  vendorKeyMaxDays: number;
+  /** Policy changes need a second admin's approval before they apply. */
+  policyChangeApproval: boolean;
 }
 
 /** Defaults for new workspaces (the hybrid model). */
@@ -41,6 +63,17 @@ export const NEW_WORKSPACE_GOVERNANCE: GovernanceSettings = {
   complianceEnforce: false,
   complianceReportSchedule: "off",
   allowedDataRegions: [],
+  anomalyDetection: true,
+  correlation: true,
+  sessionRisk: true,
+  classificationEnforce: true,
+  jitEnabled: true,
+  jitMaxMinutes: 60,
+  jitAutoGrantLowRisk: true,
+  keyRotation: "notify",
+  keyGraceHours: 48,
+  vendorKeyMaxDays: 30,
+  policyChangeApproval: false,
 };
 
 /**
@@ -58,6 +91,7 @@ export const EXISTING_WORKSPACE_GOVERNANCE: GovernanceSettings = {
 
 const oneOf = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
   typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+const bool = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
 const intIn = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = Number(value);
   return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
@@ -81,6 +115,17 @@ export function normalizeGovernance(stored: unknown): GovernanceSettings {
     allowedDataRegions: Array.isArray(s.allowedDataRegions)
       ? s.allowedDataRegions.filter((r): r is string => typeof r === "string" && r.trim() !== "").map((r) => r.trim().slice(0, 40)).slice(0, 20)
       : base.allowedDataRegions,
+    anomalyDetection: bool(s.anomalyDetection, base.anomalyDetection),
+    correlation: bool(s.correlation, base.correlation),
+    sessionRisk: bool(s.sessionRisk, base.sessionRisk),
+    classificationEnforce: bool(s.classificationEnforce, base.classificationEnforce),
+    jitEnabled: bool(s.jitEnabled, base.jitEnabled),
+    jitMaxMinutes: intIn(s.jitMaxMinutes, 5, 480, base.jitMaxMinutes),
+    jitAutoGrantLowRisk: bool(s.jitAutoGrantLowRisk, base.jitAutoGrantLowRisk),
+    keyRotation: oneOf(s.keyRotation, ["off", "notify", "auto"] as const, base.keyRotation),
+    keyGraceHours: intIn(s.keyGraceHours, 0, 336, base.keyGraceHours),
+    vendorKeyMaxDays: intIn(s.vendorKeyMaxDays, 1, 365, base.vendorKeyMaxDays),
+    policyChangeApproval: bool(s.policyChangeApproval, base.policyChangeApproval),
   };
 }
 
@@ -171,6 +216,8 @@ export function recommend(input: {
   rejectedBefore: number;
   dlpFindings: number;
   threatSignals: number;
+  /** Context that made the call riskier: baseline deviations, session signals, data labels. */
+  signals?: string[];
 }): Recommendation {
   const reasons: string[] = [];
   let score = 0;
@@ -209,6 +256,10 @@ export function recommend(input: {
   if (input.threatSignals > 0) {
     score -= 2;
     reasons.push("Agent has recent threat signals");
+  }
+  for (const signal of (input.signals ?? []).slice(0, 4)) {
+    score -= 1;
+    reasons.push(signal);
   }
   return { decision: score > 0 ? "approve" : "reject", reasons: reasons.length ? reasons : ["No strong signal either way"] };
 }
@@ -393,6 +444,11 @@ export class ThreatWindows {
       out.push({ type: "mass_delete", severity: "critical", title: `${agentName} is deleting in bulk`, detail: `${r.massDeletes} deletes within 5 minutes.` });
     }
     return out;
+  }
+
+  /** Distinct addresses the agent was used from within the window. */
+  distinctIps(agentId: string, windowMs = THREAT_RULES.keyAbuseWindowMs): number {
+    return new Set(this.count(agentId, "ip", windowMs).map((e) => e.value)).size;
   }
 
   /** True while the agent has a mass-delete signal (further deletes are blocked). */

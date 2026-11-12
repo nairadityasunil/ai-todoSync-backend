@@ -178,6 +178,8 @@ export async function governAiCall(input: {
       input: { source: input.source, provider: input.providerId },
       projectId,
       noHold: true,
+      // The prompt itself is checked (DLP, data labels) but never stored.
+      content: input.messages.map((m) => m.content),
     };
     const decision = await authorize(guardInput);
     if (decision.effect !== "allow") {

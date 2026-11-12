@@ -23,6 +23,8 @@ export interface IUser {
   passwordResetCodeExpiresAt?: Date | null;
   twoFactorAttempts?: number;
   passwordResetAttempts?: number;
+  /** Last password change or reset (agent session risk). */
+  passwordChangedAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -120,6 +122,7 @@ const userSchema = new Schema<IUserDocument>(
       type: Number,
       default: 0,
     },
+    passwordChangedAt: { type: Date, default: null },
   },
   {
     timestamps: true,
@@ -135,6 +138,7 @@ userSchema.pre<IUserDocument>("save", async function () {
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
+  if (!this.isNew) this.passwordChangedAt = new Date();
 });
 
 userSchema.methods.comparePassword = async function (candidate: string) {

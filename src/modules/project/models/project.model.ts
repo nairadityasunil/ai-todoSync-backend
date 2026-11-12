@@ -68,6 +68,8 @@ export interface IProject {
   tags?: string[];
   customFields?: IProjectCustomField[];
   isArchived?: boolean;
+  /** Data label for agent governance: public, internal (default), confidential, restricted. */
+  classification?: string | null;
   /** Embedded AI configuration (formerly ProjectAiConfig collection) */
   ai?: IProjectAi;
   /** Embedded audit retention policy (formerly AuditRetentionPolicy collection) */
@@ -163,6 +165,7 @@ const projectSchema = new Schema<IProjectDocument>(
     tags: { type: [String], default: [] },
     customFields: { type: Array, default: [] },
     isArchived: { type: Boolean, default: false },
+    classification: { type: String, enum: ["public", "internal", "confidential", "restricted", null], default: null },
     // Embedded subdocuments (formerly separate collections)
     ai: { type: projectAiSchema, default: () => ({}) },
     audit: { type: projectAuditSchema, default: () => ({}) },

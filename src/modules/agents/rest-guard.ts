@@ -11,6 +11,7 @@ import {
   type AuthorizeInput,
 } from "./guard.js";
 import type { IAgentDocument } from "./model.js";
+import { countryHeader, effectiveScopes, noteElevationUse } from "./advanced.service.js";
 import { snapshotBefore } from "./undo.service.js";
 
 /**
@@ -28,6 +29,8 @@ export interface RestAction {
   forbidden: boolean;
   /** An agent changing agent governance or vendors: always held for a person. */
   holdForPerson: boolean;
+  /** An agent asking for just-in-time access: needs no scope and is never held. */
+  selfService: boolean;
   refs: { projectId?: string; taskId?: string; epicId?: string };
 }
 
@@ -68,8 +71,14 @@ const isPeopleOnlyGovernance = (
     return (
       /^approvals\/[^/]+\/(approve|reject|scope-down)$/.test(path) ||
       /^incidents\/[^/]+\/(resume|revoke|resolve|expand|notify)$/.test(path) ||
+      // No agent grants itself access, decides a playbook, relabels data or approves a policy change.
+      /^elevations\/[^/]+\/(approve|reject|revoke)$/.test(path) ||
+      /^playbook-runs\/[^/]+\/(continue|cancel)$/.test(path) ||
+      /^policies\/proposals\/[^/]+\/(approve|reject)$/.test(path) ||
+      path === "classification" ||
+      path === "key-lifecycle/run" ||
       path === "keys" ||
-      /^[^/]+\/(rotate|replace-with-key)$/.test(path)
+      /^[^/]+\/(rotate|replace-with-key|pending-key\/reveal)$/.test(path)
     );
   }
   if (domain === "vendor") return /^[^/]+\/status$/.test(path);
@@ -79,7 +88,7 @@ const isPeopleOnlyGovernance = (
 /** Governance calls that only check something (no change), so need no hold. */
 const isGovernanceDryRun = (domain: string, segments: string[]): boolean =>
   domain === "agent" &&
-  ["policies/test", "prompt-checks"].includes(segments.join("/"));
+  ["policies/test", "policies/simulate", "prompt-checks"].includes(segments.join("/"));
 
 const isForbiddenForAgents = (
   domain: string,
@@ -159,7 +168,8 @@ export function describeRestCall(method: string, path: string): RestAction {
     if (domain === "auth" || domain === "agent") risk = "security_critical";
   }
 
-  const scope = scopeFor(domain, risk);
+  const selfService = domain === "agent" && method === "POST" && rest.join("/") === "elevations";
+  const scope = selfService ? "work:read" : scopeFor(domain, risk);
 
   const refs: RestAction["refs"] = {};
   rest.forEach((segment, index) => {
@@ -180,7 +190,9 @@ export function describeRestCall(method: string, path: string): RestAction {
       (domain === "agent" || domain === "vendor") &&
       method !== "GET" &&
       method !== "HEAD" &&
-      !isGovernanceDryRun(domain, rest),
+      !isGovernanceDryRun(domain, rest) &&
+      !selfService,
+    selfService,
     refs,
   };
 }
@@ -221,12 +233,31 @@ export async function guardAgentRequest(
     });
     return;
   }
-  if (!agent.scopes.includes(call.scope)) {
+  // Standing scopes plus any just-in-time grant still running.
+  const scopes = agent.scopes.includes(call.scope) ? agent.scopes : await effectiveScopes(agent);
+  if (!scopes.includes(call.scope)) {
     observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
     res.status(403).json({
       error: "agent_scope",
-      message: `This agent lacks the "${call.scope}" scope needed for ${call.action}.`,
+      message: `This agent lacks the "${call.scope}" scope needed for ${call.action}. It can ask for it for a limited time: POST /api/agents/elevations with { scopes: ["${call.scope}"], reason, durationMinutes }.`,
+      requestAccess: { method: "POST", path: "/api/agents/elevations", scopes: [call.scope] },
     });
+    return;
+  }
+  if (!agent.scopes.includes(call.scope)) void noteElevationUse(agent, call.scope).catch(() => undefined);
+
+  // Asking for access is always allowed (and logged); a person or the
+  // low-risk rule decides the request itself.
+  if (call.selfService) {
+    const started = Date.now();
+    res.on("finish", () => {
+      recordDecision(
+        { agent, userId, channel: "rest", action: call.action, domain: call.domain, risk: "write", input: body, request: { method, path }, ip },
+        { effect: "allow", policy: null, advisory: [], projectId: null, system: { decidedBy: "system", rule: "Just-in-time access request" } },
+        { statusCode: res.statusCode, error: res.statusCode >= 400 ? `HTTP ${res.statusCode}` : null, durationMs: Date.now() - started },
+      );
+    });
+    runAsAgent(agent, () => next());
     return;
   }
 
@@ -262,6 +293,8 @@ export async function guardAgentRequest(
     request: { method, path },
     alwaysHold: call.holdForPerson,
     ip,
+    country: firstString(req.headers[countryHeader()]) ?? null,
+    taskId: pathNamesRecord ? (call.refs.taskId ?? null) : (firstString(body.taskId, query.taskId) ?? null),
   };
   const decision = await authorize(guardInput);
 

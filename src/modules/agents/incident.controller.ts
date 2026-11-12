@@ -139,7 +139,11 @@ class IncidentController {
         agent.status = "revoked";
         agent.suspendedBySystem = false;
         agent.statusReason = `Revoked after incident: ${incident.title}`.slice(0, 300);
-        if (agent.kind === "api_key") agent.keyHash = null;
+        if (agent.kind === "api_key") {
+          agent.keyHash = null;
+          agent.previousKeyHash = null;
+          agent.pendingKeyCiphertext = null;
+        }
         await agent.save();
         agentService.invalidate(agent._id.toString());
       }

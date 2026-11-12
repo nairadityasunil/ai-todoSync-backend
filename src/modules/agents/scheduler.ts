@@ -4,6 +4,7 @@ import cron from "node-cron";
 import logger from "../../lib/logger.js";
 import { runExclusive } from "../../utils/job-lock.js";
 import approvalService from "./approval.service.js";
+import { expireElevations, recomputeAllBaselines, runKeyLifecycle } from "./advanced.service.js";
 import vendorService from "../vendors/service.js";
 import {
   detectAlerts,
@@ -34,6 +35,8 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
     run("agent-alerts", 240000, async () => ({
       alerts: await detectAlerts(),
       expiredApprovals: await approvalService.expireStale(),
+      // Just-in-time grants end on time even if no call checks them.
+      expiredElevations: await expireElevations(),
     })),
   ),
   // Hygiene first, so suspended agents are scored as such.
@@ -41,6 +44,8 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
     RISK_CRON,
     run("agent-risk", 3_000_000, async () => ({
       hygiene: await enforceAgentHygiene(),
+      baselines: await recomputeAllBaselines(),
+      keys: await runKeyLifecycle(),
       scored: await recomputeAllRisk(),
       vendors: await vendorService.nightly(),
       // After scoring, so the compliance snapshot sees fresh risk levels.

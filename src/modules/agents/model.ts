@@ -64,6 +64,18 @@ export interface IAgent {
   reapprovalRequired?: boolean;
   /** When the current key was issued (creation or last rotation). */
   keyIssuedAt?: Date | null;
+  /** "vendor": the key is used by a third party (stricter rules). */
+  operatedBy?: "internal" | "vendor";
+  /** The key before the last rotation, still accepted until previousKeyExpiresAt. */
+  previousKeyHash?: string | null;
+  previousKeyExpiresAt?: Date | null;
+  /** The owner was told the current key is due for rotation. */
+  rotationNotifiedAt?: Date | null;
+  /** A key the system rotated, encrypted, until the owner reveals it once. */
+  pendingKeyCiphertext?: string | null;
+  pendingKeyIssuedAt?: Date | null;
+  /** Network addresses (and countries) this agent normally uses. */
+  knownIps?: Array<{ ip: string; country?: string | null; firstSeen: Date; lastSeen: Date }>;
   expiresAt?: Date | null;
   /** Calls allowed per minute across REST, MCP and AI; null for no limit. */
   rateLimitPerMinute?: number | null;
@@ -137,6 +149,21 @@ const agentSchema = new Schema<IAgentDocument>(
     suspendedBySystem: { type: Boolean, default: false },
     reapprovalRequired: { type: Boolean, default: false },
     keyIssuedAt: { type: Date, default: null },
+    operatedBy: { type: String, enum: ["internal", "vendor"], default: "internal" },
+    previousKeyHash: { type: String, default: null },
+    previousKeyExpiresAt: { type: Date, default: null },
+    rotationNotifiedAt: { type: Date, default: null },
+    pendingKeyCiphertext: { type: String, default: null },
+    pendingKeyIssuedAt: { type: Date, default: null },
+    knownIps: {
+      type: [
+        new Schema(
+          { ip: String, country: { type: String, default: null }, firstSeen: Date, lastSeen: Date },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     expiresAt: { type: Date, default: null },
     rateLimitPerMinute: { type: Number, default: null },
     lastSeenAt: { type: Date, default: null },
@@ -175,6 +202,10 @@ agentSchema.index(
   { workspaceId: 1, fingerprint: 1 },
   { unique: true, partialFilterExpression: { kind: "ai_provider" } },
 );
+agentSchema.index(
+  { previousKeyHash: 1 },
+  { partialFilterExpression: { previousKeyHash: { $type: "string" } } },
+);
 agentSchema.index({ workspaceId: 1, status: 1 });
 agentSchema.index({ sessionId: 1 }, { sparse: true });
 agentSchema.index({ deviceId: 1 }, { sparse: true });
@@ -187,7 +218,8 @@ export const AgentModel = mongoose.model<IAgentDocument>("Agent", agentSchema);
 /* ------------------------------------------------------------------ */
 
 export type PolicyEffect = "allow" | "deny" | "require_approval";
-export type PolicyMode = "enforce" | "advisory";
+/** "simulation": a draft that is never evaluated live, only replayed. */
+export type PolicyMode = "enforce" | "advisory" | "simulation";
 
 export interface IPolicyMatch {
   agentKinds?: AgentKind[];
@@ -197,6 +229,10 @@ export interface IPolicyMatch {
   domains?: string[];
   minRisk?: RiskLevel | null;
   projectIds?: string[];
+  /** Only for data with these labels (task label, else project label). */
+  classifications?: string[];
+  /** Only for agents operated by the workspace or by a third party. */
+  operatedBy?: Array<"internal" | "vendor">;
   /** Only between these hours (0-23, workspace timezone) on these weekdays (0=Sun). */
   timeWindow?: {
     days?: number[];
@@ -239,7 +275,7 @@ const agentPolicySchema = new Schema<IAgentPolicyDocument>(
       enum: ["allow", "deny", "require_approval"],
       required: true,
     },
-    mode: { type: String, enum: ["enforce", "advisory"], default: "advisory" },
+    mode: { type: String, enum: ["enforce", "advisory", "simulation"], default: "advisory" },
     priority: { type: Number, default: 100 },
     enabled: { type: Boolean, default: true },
     match: { type: Schema.Types.Mixed, default: {} },
@@ -292,6 +328,10 @@ export interface IAgentActivity {
   dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
   threats?: string[];
   ip?: string | null;
+  /** Label of the data touched. */
+  classification?: string | null;
+  /** Why the call was riskier than usual (baseline, session). */
+  signals?: string[];
   /** State of the changed record before the agent touched it. */
   undo?: AgentUndoSnapshot | null;
   undoneAt?: Date | null;
@@ -339,6 +379,8 @@ const agentActivitySchema = new Schema<IAgentActivityDocument>(
     dlp: { type: [Schema.Types.Mixed], default: [] },
     threats: { type: [String], default: [] },
     ip: { type: String, default: null },
+    classification: { type: String, default: null },
+    signals: { type: [String], default: [] },
     undo: { type: Schema.Types.Mixed, default: null },
     undoneAt: { type: Date, default: null },
     undoneBy: { type: Schema.Types.ObjectId, default: null },
@@ -401,6 +443,8 @@ export interface IAgentApproval {
   recommendation?: { decision: "approve" | "reject"; reasons: string[] } | null;
   dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
   decidedBySystem?: boolean;
+  classification?: string | null;
+  signals?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -446,6 +490,8 @@ const agentApprovalSchema = new Schema<IAgentApprovalDocument>(
     dlp: { type: [Schema.Types.Mixed], default: [] },
     /** Decided by the system (auto-approve of a repeat), not a person. */
     decidedBySystem: { type: Boolean, default: false },
+    classification: { type: String, default: null },
+    signals: { type: [String], default: [] },
   },
   { timestamps: true },
 );
@@ -475,7 +521,11 @@ export type AgentAlertType =
   | "new_tool"
   | "permission_errors"
   | "policy_block"
-  | "stale_agent";
+  | "stale_agent"
+  | "anomaly"
+  | "coordinated_access"
+  | "key_rotation_due"
+  | "session_risk";
 
 export interface IAgentAlert {
   workspaceId?: Types.ObjectId | string | null;
@@ -572,7 +622,9 @@ export type WebhookEvent =
   | "activity.blocked"
   | "incident.opened"
   | "compliance.report"
-  | "compliance.drift";
+  | "compliance.drift"
+  | "playbook.run"
+  | "access.requested";
 
 export const WEBHOOK_EVENTS: WebhookEvent[] = [
   "alert.raised",
@@ -582,6 +634,8 @@ export const WEBHOOK_EVENTS: WebhookEvent[] = [
   "incident.opened",
   "compliance.report",
   "compliance.drift",
+  "playbook.run",
+  "access.requested",
 ];
 
 export interface IAgentWebhook {

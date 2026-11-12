@@ -75,6 +75,7 @@ export async function recomputeRisk(
     ]);
   const result = scoreAgent({
     kind: agent.kind,
+    operatedBy: agent.operatedBy ?? "internal",
     scopes: agent.scopes,
     projectIds: agent.projectIds ?? [],
     legacy: agent.legacy,

@@ -33,6 +33,7 @@ interface ProjectDto {
   description?: string;
   userId: string;
   currentUserRole: ProjectRole;
+  classification?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
   creator?: {
@@ -600,6 +601,7 @@ class ProjectService {
         ? creatorUser._id.toString()
         : project.userId.toString(),
       currentUserRole,
+      classification: project.classification ?? null,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     };

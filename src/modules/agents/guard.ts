@@ -23,11 +23,15 @@ import {
   defaultDecision,
   dlpVerdict,
   isBulkRead,
+  maxTier,
   recommend,
   scanForDlp,
   tierFor,
   type DlpFinding,
+  type RiskTier,
 } from "./hybrid.js";
+import { ANOMALY_RULES, labelVerdict, type Classification } from "./advanced.js";
+import { assessAnomaly, assessSession, classificationFor, observeCorrelation } from "./advanced.service.js";
 import {
   governanceSettings,
   handleThreats,
@@ -69,6 +73,12 @@ export interface AuthorizeInput {
   alwaysHold?: boolean;
   /** Caller's IP address, for threat detection (one key used from many places). */
   ip?: string | null;
+  /** Caller's country, when a trusted proxy reports it (session risk). */
+  country?: string | null;
+  /** The task the call names, for its data label. */
+  taskId?: string | null;
+  /** Content sent on (e.g. an AI prompt), scanned by DLP but never stored. */
+  content?: unknown;
 }
 
 /** How the system (not a policy) decided, recorded in the activity log as "System decided". */
@@ -77,6 +87,10 @@ export interface SystemDecision {
   rule?: string | null;
   tier?: string | null;
   dlp?: DlpFinding[];
+  /** Label of the data touched. */
+  classification?: string | null;
+  /** Why the call was riskier than usual: baseline deviations, session signals. */
+  signals?: string[];
 }
 
 const builtin = (id: string, name: string): PolicyLike => ({
@@ -90,6 +104,10 @@ const builtin = (id: string, name: string): PolicyLike => ({
 });
 export const DLP_POLICY = builtin("dlp", "Data loss prevention");
 export const REAPPROVAL_POLICY = builtin("reapproval", "Re-approval required after an incident");
+export const VENDOR_POLICY = builtin("vendor", "Vendor agents: every change needs a person");
+export const ANOMALY_POLICY = builtin("anomaly", "Far from the agent's usual behaviour");
+export const SESSION_POLICY = builtin("session", "Unusual session: sensitive actions need a person");
+export const LABEL_POLICY = builtin("classification", "Data classification");
 const defaultRulePolicy = (rule: string): PolicyLike => builtin("default", rule);
 
 const hostCache = new Map<string, { hosts: string[]; at: number }>();
@@ -275,6 +293,15 @@ export async function authorize(
         });
   const { projectId } = resolved;
 
+  // Related actions by several agents (reads included) form one incident.
+  void observeCorrelation({
+    agent,
+    action: input.action,
+    risk: input.risk,
+    projectId,
+    isBulk: Boolean(input.request && isBulkRead(input.request.method, input.request.path)),
+  }).catch(() => undefined);
+
   // Third-party status: blocked or restricted vendors limit their agents.
   const vendorDecision = await vendorService.decide(agent, input.risk);
   if (vendorDecision) {
@@ -284,6 +311,18 @@ export async function authorize(
       advisory: [],
       projectId: input.projectId ?? null,
       reason: vendorDecision.deny,
+    };
+  }
+
+  // Third-party agents must be limited to specific projects.
+  const isVendor = agent.operatedBy === "vendor";
+  if (isVendor && (agent.projectIds ?? []).length === 0) {
+    return {
+      effect: "deny",
+      policy: null,
+      advisory: [],
+      projectId: input.projectId ?? null,
+      reason: "Blocked: agents used by a third party must be limited to specific projects.",
     };
   }
 
@@ -307,6 +346,10 @@ export async function authorize(
     }
   }
 
+  const settings = await governanceSettings(workspaceId);
+  const taskId = input.taskId ?? (typeof input.input.taskId === "string" ? input.input.taskId : null);
+  const classification = await classificationFor({ projectIds: resolved.touched, taskId }).catch(() => "internal" as Classification);
+
   // Policies are checked for each project touched; the strictest result wins.
   const policies = await loadPolicies(workspaceId);
   const decisions = resolved.touched.map((touched) =>
@@ -317,6 +360,8 @@ export async function authorize(
       domain: input.domain,
       risk: input.risk,
       projectId: touched,
+      classification,
+      operatedBy: isVendor ? "vendor" : "internal",
     }),
   );
   const decision = decisions.reduce((worst, next) =>
@@ -328,13 +373,30 @@ export async function authorize(
     ).values(),
   ];
 
-  const settings = await governanceSettings(workspaceId);
   const isRead = input.risk === "read";
   // A shadow agent scores critical for using a person's login; its writes wait for a person
   // (the shadow AI settings decide whether it is blocked), rather than being suspended outright.
   const agentRiskLevel = agent.kind === "detected" && agent.riskLevel === "critical" ? "high" : agent.riskLevel;
-  const tier = tierFor({ risk: input.risk, agentRiskLevel });
-  let system: SystemDecision = { decidedBy: decision.policy ? "policy" : "system", tier };
+  // Context that raises an action's risk: the data's label, the agent's own
+  // baseline and the session it is used from.
+  const strictLabel = settings.classificationEnforce && (classification === "confidential" || classification === "restricted");
+  const [anomaly, session] = await Promise.all([
+    assessAnomaly(agent, { action: input.action, risk: input.risk, projectId }, settings).catch(() => null),
+    assessSession(agent, input.ip, input.country, settings).catch(() => null),
+  ]);
+  const labelBoost = strictLabel ? labelVerdict({ label: classification, risk: input.risk, toModel: false, leaves: false, dlpFindings: 0 }).boost : null;
+  const sessionBoost = session && !isRead ? session.boost : null;
+  const tier = tierFor({
+    risk: input.risk,
+    agentRiskLevel,
+    boost: maxTier(...([labelBoost, anomaly?.boost, sessionBoost].filter(Boolean) as RiskTier[])),
+  });
+  const signals = [
+    ...(anomaly?.reasons ?? []),
+    ...(session && !isRead ? session.reasons : []),
+    ...(strictLabel ? [`${classification[0].toUpperCase()}${classification.slice(1)} data`] : []),
+  ];
+  let system: SystemDecision = { decidedBy: decision.policy ? "policy" : "system", tier, classification, signals };
   const deny = (reason: string, sys: SystemDecision): AuthorizeResult => ({
     effect: "deny",
     policy: decision.policy,
@@ -372,11 +434,13 @@ export async function authorize(
 
   // Data loss prevention: secrets and personal data in what the agent sends, and bulk exports.
   let dlp: DlpFinding[] = [];
-  if (settings.dlpMode !== "off") {
-    dlp = scanForDlp(input.input, { allowedHosts: await approvedHosts(workspaceId) });
+  if (settings.dlpMode !== "off" || strictLabel) {
+    dlp = scanForDlp(input.content !== undefined ? [input.input, input.content] : input.input, { allowedHosts: await approvedHosts(workspaceId) });
     if (input.request && isBulkRead(input.request.method, input.request.path)) {
       dlp.push({ type: "bulk_export", label: "Bulk data export", confidence: "medium", count: 1 });
     }
+  }
+  if (settings.dlpMode !== "off") {
     if (dlp.length) {
       system = { ...system, dlp };
       void raiseAlert({
@@ -404,6 +468,40 @@ export async function authorize(
     }
   }
 
+  // Labelled data: confidential and restricted content does not leave Pristine,
+  // whatever the policies say.
+  if (strictLabel) {
+    const verdict = labelVerdict({
+      label: classification,
+      risk: input.risk,
+      toModel: input.domain === "ai",
+      leaves: dlp.some((f) => f.type === "bulk_export" || f.type === "external_destination"),
+      dlpFindings: dlp.filter((f) => f.type !== "bulk_export" && f.type !== "external_destination").length,
+    });
+    if (verdict.effect === "deny") {
+      return deny(verdict.reason as string, { ...system, decidedBy: "system", rule: `Data classification: ${classification}`, dlp });
+    }
+    if (verdict.effect === "require_approval" && decision.effect === "allow") {
+      decision.effect = "require_approval";
+      decision.policy = LABEL_POLICY;
+      system = { ...system, decidedBy: "system", rule: verdict.reason, dlp };
+    }
+  }
+
+  // Safety nets (enforce modes): far from its baseline, or an unusual session
+  // for a sensitive action, the call waits for a person even if a policy allows it.
+  if (decision.effect === "allow" && !isRead && settings.mode !== "advisory") {
+    if (anomaly && anomaly.score >= ANOMALY_RULES.highScore) {
+      decision.effect = "require_approval";
+      decision.policy = ANOMALY_POLICY;
+      system = { ...system, decidedBy: "system", rule: `${ANOMALY_POLICY.name}: ${anomaly.reasons[0] ?? "deviation"}` };
+    } else if (session?.level === "high" && riskRank(input.risk) >= riskRank("write")) {
+      decision.effect = "require_approval";
+      decision.policy = SESSION_POLICY;
+      system = { ...system, decidedBy: "system", rule: `${SESSION_POLICY.name} (${session.reasons.join("; ")})` };
+    }
+  }
+
   // After an incident a person must approve the agent's next change.
   if (agent.reapprovalRequired && !isRead && decision.effect === "allow") {
     decision.effect = "require_approval";
@@ -415,6 +513,13 @@ export async function authorize(
     decision.effect = "require_approval";
     decision.policy = GOVERNANCE_HOLD_POLICY;
     system = { ...system, decidedBy: "system", rule: GOVERNANCE_HOLD_POLICY.name };
+  }
+
+  // Third-party agents: every change waits for a person unless a policy explicitly allows it.
+  if (isVendor && !isRead && decision.effect === "allow" && !decision.policy) {
+    decision.effect = "require_approval";
+    decision.policy = VENDOR_POLICY;
+    system = { ...system, decidedBy: "system", rule: VENDOR_POLICY.name };
   }
 
   // No explicit policy: the default rule for the action's risk tier decides.
@@ -451,6 +556,10 @@ export async function authorize(
     settings.autoApproveRepeatDays > 0 &&
     decision.policy?.id !== DLP_POLICY.id &&
     decision.policy?.id !== REAPPROVAL_POLICY.id &&
+    decision.policy?.id !== ANOMALY_POLICY.id &&
+    decision.policy?.id !== SESSION_POLICY.id &&
+    decision.policy?.id !== LABEL_POLICY.id &&
+    !isVendor &&
     !input.noHold
   ) {
     const since = new Date(Date.now() - settings.autoApproveRepeatDays * 86_400_000);
@@ -524,6 +633,7 @@ export async function authorize(
     rejectedBefore,
     dlpFindings: (system.dlp ?? []).length,
     threatSignals,
+    signals,
   });
   const approval = await AgentApprovalModel.create({
     workspaceId,
@@ -543,6 +653,8 @@ export async function authorize(
     tier: system.tier ?? tier,
     recommendation,
     dlp: system.dlp ?? [],
+    classification,
+    signals,
     expiresAt: new Date(Date.now() + APPROVAL_TTL_MS),
   });
   webhookService.emit({
@@ -615,9 +727,12 @@ export function recordDecision(
     rule: result.system?.rule ?? null,
     tier: result.system?.tier ?? null,
     dlp: result.system?.dlp ?? [],
+    classification: result.system?.classification ?? null,
+    signals: result.system?.signals ?? [],
     ip: input.ip ?? null,
     ...extra,
   });
+
   observeThreats(input, result.effect === "deny" && !(result as { retryAfterSec?: number }).retryAfterSec ? "blocked" : null);
 }
 

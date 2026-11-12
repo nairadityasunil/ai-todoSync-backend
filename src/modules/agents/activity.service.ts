@@ -56,6 +56,8 @@ export interface RecordInput {
   dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
   threats?: string[];
   ip?: string | null;
+  classification?: string | null;
+  signals?: string[];
 }
 
 const HOUR = 3600 * 1000;
@@ -94,6 +96,8 @@ class AgentActivityService {
         dlp: entry.dlp ?? [],
         threats: entry.threats ?? [],
         ip: entry.ip ?? null,
+        classification: entry.classification ?? null,
+        signals: entry.signals ?? [],
         // Only successful changes can be undone.
         undo: entry.outcome === "allowed" && entry.undo ? entry.undo : null,
       });
@@ -155,6 +159,10 @@ export async function raiseAlert(alert: {
   );
   const raised = result.upsertedCount > 0;
   if (raised) {
+    // Automated response: playbooks whose trigger matches this alert.
+    void import("./playbooks.service.js")
+      .then((m) => m.triggerPlaybooks(alert))
+      .catch((error) => logger.warn("Playbooks could not run", { message: error instanceof Error ? error.message : String(error) }));
     webhookService.emit({
       type: "alert.raised",
       workspaceId: alert.workspaceId,

@@ -311,9 +311,31 @@ describe("REST call naming", () => {
       ["PATCH", `/api/agents/webhooks/${id}`],
       ["POST", `/api/agents/incidents/${id}/resume`],
       ["POST", `/api/agents/approvals/${id}/scope-down`],
+      // No agent grants itself access, runs a playbook decision, relabels data or approves policy changes.
+      ["POST", `/api/agents/elevations/${id}/approve`],
+      ["POST", `/api/agents/elevations/${id}/reject`],
+      ["POST", `/api/agents/elevations/${id}/revoke`],
+      ["POST", `/api/agents/playbook-runs/${id}/continue`],
+      ["POST", `/api/agents/playbook-runs/${id}/cancel`],
+      ["POST", `/api/agents/policies/proposals/${id}/approve`],
+      ["PUT", "/api/agents/classification"],
+      ["POST", "/api/agents/key-lifecycle/run"],
+      ["POST", `/api/agents/${id}/pending-key/reveal`],
     ] as const) {
       assert.equal(call(method, path).forbidden, true, path);
     }
+  });
+
+  test("an agent asks for just-in-time access itself; it needs no scope and is never held", () => {
+    const ask = describeRestCall("POST", "/api/agents/elevations");
+    assert.equal(ask.forbidden, false);
+    assert.equal(ask.selfService, true);
+    assert.equal(ask.holdForPerson, false);
+    assert.equal(ask.scope, "work:read");
+    // Simulating a policy is a dry run; creating a playbook is held for a person.
+    assert.equal(describeRestCall("POST", "/api/agents/policies/simulate").holdForPerson, false);
+    assert.equal(describeRestCall("POST", "/api/agents/playbooks").holdForPerson, true);
+    assert.equal(describeRestCall("POST", `/api/agents/policies/${id}/rollback`).holdForPerson, true);
   });
 
   test("assigns risk, scope and project references", () => {
