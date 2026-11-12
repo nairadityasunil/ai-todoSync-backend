@@ -68,7 +68,7 @@ export interface VendorDecision {
 class VendorService {
   private statusCache = new Map<
     string,
-    { value: { status: VendorStatus; name: string } | null; at: number }
+    { value: { status: VendorStatus; name: string; location: string | null } | null; at: number }
   >();
   private strictCache = new Map<string, { value: boolean; at: number }>();
 
@@ -194,13 +194,18 @@ class VendorService {
 
   public async statusOf(
     vendorId: string,
-  ): Promise<{ status: VendorStatus; name: string } | null> {
+  ): Promise<{ status: VendorStatus; name: string; location: string | null } | null> {
     const hit = this.statusCache.get(vendorId);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;
     const vendor = await VendorModel.findById(vendorId)
-      .select("status name")
+      .select("status name dataLocation answers")
       .lean();
-    const value = vendor ? { status: vendor.status, name: vendor.name } : null;
+    const answered = (vendor?.answers as Record<string, unknown> | undefined)?.data_location;
+    const location =
+      (typeof vendor?.dataLocation === "string" && vendor.dataLocation.trim()) ||
+      (typeof answered === "string" && answered.trim()) ||
+      null;
+    const value = vendor ? { status: vendor.status, name: vendor.name, location } : null;
     if (this.statusCache.size > 10_000) this.statusCache.clear();
     this.statusCache.set(vendorId, { value, at: Date.now() });
     return value;
@@ -295,6 +300,7 @@ class VendorService {
       });
     }
     await vendor.save();
+    this.invalidate(vendor._id.toString());
     return this.recomputeRisk(vendor);
   }
 

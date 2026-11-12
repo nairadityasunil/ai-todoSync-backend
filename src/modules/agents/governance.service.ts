@@ -1,4 +1,4 @@
-import { normalizeGovernance } from "./hybrid.js";
+import { normalizeGovernance, regionAllowed } from "./hybrid.js";
 import { scopeFor } from "./rest-guard.js";
 import { Types } from "mongoose";
 
@@ -286,6 +286,10 @@ export const ALERT_THRESHOLDS = {
   permissionErrors: 5,
   volumeMinimum: 60,
   volumeMultiplier: 5,
+  /** AI spend in the last 24 hours that counts as a jump: at least this much... */
+  costSpikeMinimumUsd: 1,
+  /** ...and this many times the agent's usual daily spend. */
+  costSpikeMultiplier: 3,
 };
 
 /**
@@ -509,6 +513,49 @@ export async function detectAlerts(now = new Date()): Promise<number> {
         );
       }
     }
+  }
+  raised += await detectCostSpikes(now);
+  return raised;
+}
+
+/**
+ * Cost jump: an agent's AI spend over the last 24 hours against its daily
+ * average for the 7 days before. Needs earlier spend, so brand-new agents are
+ * left to the workspace budget alerts.
+ */
+export async function detectCostSpikes(now = new Date()): Promise<number> {
+  const dayAgo = new Date(now.getTime() - DAY);
+  const weekBefore = new Date(dayAgo.getTime() - 7 * DAY);
+  const spendBy = (from: Date, to: Date) =>
+    PromptExecutionLogModel.aggregate<{ _id: Types.ObjectId | null; usd: number }>([
+      { $match: { agentId: { $ne: null }, createdAt: { $gte: from, $lt: to } } },
+      { $group: { _id: "$agentId", usd: { $sum: "$totalCost" } } },
+    ]);
+  const recent = (await spendBy(dayAgo, now)).filter(
+    (r) => r._id && r.usd >= ALERT_THRESHOLDS.costSpikeMinimumUsd,
+  );
+  if (recent.length === 0) return 0;
+  const before = new Map(
+    (await spendBy(weekBefore, dayAgo)).map((r) => [String(r._id), r.usd]),
+  );
+  let raised = 0;
+  for (const row of recent) {
+    const agentId = String(row._id);
+    const average = (before.get(agentId) ?? 0) / 7;
+    if (average <= 0 || row.usd < average * ALERT_THRESHOLDS.costSpikeMultiplier) continue;
+    const agent = await AgentModel.findById(agentId).select("name workspaceId").lean();
+    if (!agent) continue;
+    raised += Number(
+      await raiseAlert({
+        workspaceId: agent.workspaceId?.toString() ?? null,
+        agentId,
+        type: "cost_spike",
+        severity: "warning",
+        title: `${agent.name} is spending much more on AI than usual`,
+        detail: `$${row.usd.toFixed(2)} in the last 24 hours against a usual $${average.toFixed(2)} a day (${Math.round(row.usd / average)}×).`,
+        dedupeKey: `cost_spike:${agentId}:${Math.floor(now.getTime() / DAY)}`,
+      }),
+    );
   }
   return raised;
 }
@@ -795,8 +842,7 @@ export async function complianceReport(workspaceId: string) {
     effect: { $in: ["deny", "require_approval"] },
     $or: [{ "match.tools": { $elemMatch: { $regex: "delete|\\*" } } }, { "match.minRisk": { $in: ["destructive", "security_critical"] } }],
   }).catch(() => 0);
-  const regionOk = (location: string) =>
-    hybrid.allowedDataRegions.some((region) => location.toLowerCase().includes(region.toLowerCase()));
+  const regionOk = (location: string) => regionAllowed(location, hybrid.allowedDataRegions);
   const outsideRegions = hybrid.allowedDataRegions.length
     ? (await VendorModel.find({ _id: { $in: [...vendorsInUse] } }).select("name dataLocation answers").lean())
         .map((v) => ({ name: v.name, location: String(v.dataLocation || (v.answers as Record<string, string> | undefined)?.data_location || "") }))

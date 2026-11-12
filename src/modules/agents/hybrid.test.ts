@@ -13,10 +13,24 @@ import {
   NEW_WORKSPACE_GOVERNANCE,
   normalizeGovernance,
   recommend,
+  regionAllowed,
   scanForDlp,
   ThreatWindows,
   tierFor,
 } from "./hybrid.js";
+
+describe("data residency", () => {
+  test("a location inside an allowed region passes, case-insensitively", () => {
+    assert.equal(regionAllowed("EU (Frankfurt)", ["eu"]), true);
+    assert.equal(regionAllowed("India", ["EU", "India"]), true);
+  });
+  test("a location outside every allowed region fails", () => {
+    assert.equal(regionAllowed("United States", ["EU"]), false);
+  });
+  test("blank regions never match", () => {
+    assert.equal(regionAllowed("United States", ["  "]), false);
+  });
+});
 
 describe("hybrid governance: settings", () => {
   test("new workspaces get the hybrid defaults; older ones keep advisory behaviour", () => {

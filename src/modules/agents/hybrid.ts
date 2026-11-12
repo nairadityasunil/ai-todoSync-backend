@@ -494,3 +494,9 @@ export function incidentSuggestions(trigger: string, action?: string | null): st
   s.push("Require a person to approve the agent's next action before it can act again.");
   return s;
 }
+
+/** Whether a stated data location falls inside one of the allowed regions (case-insensitive, "EU" matches "EU (Frankfurt)"). */
+export function regionAllowed(location: string, regions: string[]): boolean {
+  const where = location.toLowerCase();
+  return regions.some((region) => region.trim() !== "" && where.includes(region.trim().toLowerCase()));
+}

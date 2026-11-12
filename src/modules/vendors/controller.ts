@@ -396,6 +396,7 @@ class VendorController {
         vendor.history = vendor.history.slice(-200);
     }
     await vendor.save();
+    vendorService.invalidate(vendor._id.toString());
     await vendorService.recomputeRisk(vendor);
     res.json({ success: true, data: serialize(vendor) });
   };
