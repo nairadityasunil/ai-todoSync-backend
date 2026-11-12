@@ -23,6 +23,7 @@ export const FRAMEWORKS = {
 
 export interface RiskInput {
   kind: AgentKind;
+  operatedBy?: "internal" | "vendor";
   scopes: McpScope[];
   projectIds: unknown[];
   legacy: boolean;
@@ -78,6 +79,12 @@ export function scoreAgent(input: RiskInput): RiskResult {
       30,
       [FRAMEWORKS.NIST_GOVERN, FRAMEWORKS.ISO_ACCESS, FRAMEWORKS.EU_LOGGING],
     );
+  }
+  if (input.operatedBy === "vendor") {
+    add("vendor_operated", "Used by a third party", 15, [
+      FRAMEWORKS.NIST_GOVERN,
+      FRAMEWORKS.ISO_ACCESS,
+    ]);
   }
   if (input.scopes.includes("workspace:admin")) {
     add("admin_scope", "Can administer the workspace", 25, [

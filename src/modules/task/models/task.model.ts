@@ -30,6 +30,8 @@ export interface ISubtask {
 }
 
 export interface ITask {
+  /** Data label; null inherits the project's. */
+  classification?: string | null;
   userId: Types.ObjectId | string;
   title: string;
   description?: string;
@@ -228,6 +230,7 @@ const taskSchema = new Schema<ITaskDocument>(
       ref: "Project",
       default: null,
     },
+    classification: { type: String, enum: ["public", "internal", "confidential", "restricted", null], default: null },
     epicId: {
       type: Schema.Types.ObjectId,
       ref: "Epic",

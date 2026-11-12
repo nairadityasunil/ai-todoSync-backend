@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { effectiveScopes } from "../../agents/advanced.service.js";
 import env from "../../../config/env.js";
 import type { IUserDocument } from "../../auth/models/user.model.js";
 import {
@@ -130,7 +131,8 @@ export const mcpAuthMiddleware = async (
   req.mcpUser = user;
   req.mcpUserId = user._id.toString();
   req.mcpAgent = agent ?? undefined;
-  req.mcpScopes = agent ? [...agent.scopes] : [...(personScopes ?? [])];
+  // An agent's standing scopes plus any just-in-time grant still running.
+  req.mcpScopes = agent ? [...(await effectiveScopes(agent))] : [...(personScopes ?? [])];
 
   const body = (
     req.body && typeof req.body === "object" ? req.body : {}

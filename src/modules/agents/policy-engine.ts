@@ -34,6 +34,9 @@ export interface PolicyContext {
   domain: string;
   risk: RiskLevel;
   projectId?: string | null;
+  /** Label of the data touched (task label, else project label). */
+  classification?: string | null;
+  operatedBy?: "internal" | "vendor";
   now?: Date;
 }
 
@@ -129,6 +132,10 @@ export function policyMatches(
     if (!context.projectId || !match.projectIds.includes(context.projectId))
       return false;
   }
+  if (!matchesList(match.classifications, context.classification ?? "internal"))
+    return false;
+  if (!matchesList(match.operatedBy, context.operatedBy ?? "internal"))
+    return false;
   if (!matchesTimeWindow(match.timeWindow, context.now ?? new Date()))
     return false;
   return true;
@@ -153,6 +160,8 @@ export function evaluatePolicies(
   );
   const advisory: PolicyLike[] = [];
   for (const policy of ordered) {
+    // Drafts are only replayed by the simulator.
+    if (policy.mode === "simulation") continue;
     if (!policyMatches(policy, context)) continue;
     if (policy.mode === "advisory") {
       if (policy.effect !== "allow") advisory.push(policy);
@@ -162,3 +171,9 @@ export function evaluatePolicies(
   }
   return { effect: "allow", policy: null, advisory };
 }
+
+/** Database id of a policy, or null for a built-in rule (which has none). */
+export const storedPolicyId = (
+  policy: { id: string } | null | undefined,
+): string | null =>
+  policy && /^[0-9a-f]{24}$/i.test(policy.id) ? policy.id : null;

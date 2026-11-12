@@ -5,11 +5,13 @@ import type { McpScope, RiskLevel } from "../mcp/registry/tool-types.js";
 import { runAsAgent } from "./activity.service.js";
 import {
   authorize,
+  observeThreats,
   recordDecision,
   resolveProjectId,
   type AuthorizeInput,
 } from "./guard.js";
 import type { IAgentDocument } from "./model.js";
+import { countryHeader, effectiveScopes, noteElevationUse } from "./advanced.service.js";
 import { snapshotBefore } from "./undo.service.js";
 
 /**
@@ -25,6 +27,10 @@ export interface RestAction {
   scope: McpScope;
   /** Agents may never call this endpoint (credential and agent management). */
   forbidden: boolean;
+  /** An agent changing agent governance or vendors: always held for a person. */
+  holdForPerson: boolean;
+  /** An agent asking for just-in-time access: needs no scope and is never held. */
+  selfService: boolean;
   refs: { projectId?: string; taskId?: string; epicId?: string };
 }
 
@@ -46,15 +52,52 @@ const VERBS: Record<string, string> = {
 };
 
 /** Endpoints only a person may use. GET /api/agents/approvals/:id stays open so agents can poll. */
+/**
+ * Governance actions only a person may take, even with approval: deciding an
+ * approval (no self-approval), approving a vendor, and anything that mints a
+ * credential (agent keys, key rotation, webhook signing secrets), since the
+ * replayed result would hand the new secret to the agent.
+ */
+const isPeopleOnlyGovernance = (
+  domain: string,
+  segments: string[],
+  method: string,
+): boolean => {
+  const path = segments.join("/");
+  // Webhook URLs (a Slack URL is itself a credential) and signing secrets: people only, even to read.
+  if (domain === "agent" && /^webhooks(\/|$)/.test(path)) return true;
+  if (method === "GET" || method === "HEAD") return false;
+  if (domain === "agent") {
+    return (
+      /^approvals\/[^/]+\/(approve|reject|scope-down)$/.test(path) ||
+      /^incidents\/[^/]+\/(resume|revoke|resolve|expand|notify)$/.test(path) ||
+      // No agent grants itself access, decides a playbook, relabels data or approves a policy change.
+      /^elevations\/[^/]+\/(approve|reject|revoke)$/.test(path) ||
+      /^playbook-runs\/[^/]+\/(continue|cancel)$/.test(path) ||
+      /^policies\/proposals\/[^/]+\/(approve|reject)$/.test(path) ||
+      path === "classification" ||
+      path === "key-lifecycle/run" ||
+      path === "keys" ||
+      /^[^/]+\/(rotate|replace-with-key|pending-key\/reveal)$/.test(path)
+    );
+  }
+  if (domain === "vendor") return /^[^/]+\/status$/.test(path);
+  return false;
+};
+
+/** Governance calls that only check something (no change), so need no hold. */
+const isGovernanceDryRun = (domain: string, segments: string[]): boolean =>
+  domain === "agent" &&
+  ["policies/test", "policies/simulate", "prompt-checks"].includes(segments.join("/"));
+
 const isForbiddenForAgents = (
   domain: string,
   segments: string[],
   method: string,
 ): boolean => {
-  if (domain === "agent")
-    return !(method === "GET" && segments[0] === "approvals");
-  // Vendor approval is for people: an agent must not approve its own vendor.
-  if (domain === "vendor") return true;
+  // Agents can read agent governance and ask for changes (held for a person,
+  // see holdForPerson); only these stay with people.
+  if (isPeopleOnlyGovernance(domain, segments, method)) return true;
   if (method === "GET" || method === "HEAD") return false;
   // Anything that signs in, pairs a device or mints a key: an agent must not
   // be able to turn itself into a broader credential.
@@ -125,7 +168,8 @@ export function describeRestCall(method: string, path: string): RestAction {
     if (domain === "auth" || domain === "agent") risk = "security_critical";
   }
 
-  const scope = scopeFor(domain, risk);
+  const selfService = domain === "agent" && method === "POST" && rest.join("/") === "elevations";
+  const scope = selfService ? "work:read" : scopeFor(domain, risk);
 
   const refs: RestAction["refs"] = {};
   rest.forEach((segment, index) => {
@@ -142,6 +186,13 @@ export function describeRestCall(method: string, path: string): RestAction {
     risk,
     scope,
     forbidden: isForbiddenForAgents(domain, rest, method),
+    holdForPerson:
+      (domain === "agent" || domain === "vendor") &&
+      method !== "GET" &&
+      method !== "HEAD" &&
+      !isGovernanceDryRun(domain, rest) &&
+      !selfService,
+    selfService,
     refs,
   };
 }
@@ -163,24 +214,53 @@ export async function guardAgentRequest(
   const path = req.originalUrl;
   const call = describeRestCall(method, path);
 
-  if (call.forbidden) {
-    res.status(403).json({
-      error: "agent_forbidden",
-      message: "Agents cannot manage credentials, sign-in or agent governance.",
-    });
-    return;
-  }
-  if (!agent.scopes.includes(call.scope)) {
-    res.status(403).json({
-      error: "agent_scope",
-      message: `This agent lacks the "${call.scope}" scope needed for ${call.action}.`,
-    });
-    return;
-  }
-
   const body = (
     req.body && typeof req.body === "object" ? req.body : {}
   ) as Record<string, unknown>;
+  // Rotating a webhook's signing secret returns the new secret: people only.
+  const rotatesWebhookSecret =
+    call.domain === "agent" && /\/webhooks\//.test(path) && body.rotateSecret === true;
+  const ip = req.ip ?? null;
+  if (call.forbidden || rotatesWebhookSecret) {
+    // Trying people-only actions repeatedly is a privilege-escalation signal.
+    observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
+    res.status(403).json({
+      error: "agent_forbidden",
+      message:
+        call.domain === "agent" || call.domain === "vendor"
+          ? "Only a person can decide approvals, approve vendors or create keys and secrets. Ask a workspace admin."
+          : "Agents cannot manage credentials or sign-in.",
+    });
+    return;
+  }
+  // Standing scopes plus any just-in-time grant still running.
+  const scopes = agent.scopes.includes(call.scope) ? agent.scopes : await effectiveScopes(agent);
+  if (!scopes.includes(call.scope)) {
+    observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
+    res.status(403).json({
+      error: "agent_scope",
+      message: `This agent lacks the "${call.scope}" scope needed for ${call.action}. It can ask for it for a limited time: POST /api/agents/elevations with { scopes: ["${call.scope}"], reason, durationMinutes }.`,
+      requestAccess: { method: "POST", path: "/api/agents/elevations", scopes: [call.scope] },
+    });
+    return;
+  }
+  if (!agent.scopes.includes(call.scope)) void noteElevationUse(agent, call.scope).catch(() => undefined);
+
+  // Asking for access is always allowed (and logged); a person or the
+  // low-risk rule decides the request itself.
+  if (call.selfService) {
+    const started = Date.now();
+    res.on("finish", () => {
+      recordDecision(
+        { agent, userId, channel: "rest", action: call.action, domain: call.domain, risk: "write", input: body, request: { method, path }, ip },
+        { effect: "allow", policy: null, advisory: [], projectId: null, system: { decidedBy: "system", rule: "Just-in-time access request" } },
+        { statusCode: res.statusCode, error: res.statusCode >= 400 ? `HTTP ${res.statusCode}` : null, durationMs: Date.now() - started },
+      );
+    });
+    runAsAgent(agent, () => next());
+    return;
+  }
+
   const query = req.query as Record<string, unknown>;
   // Records named in the path are the ones being changed; body and query ids
   // only count when the path names none.
@@ -211,6 +291,10 @@ export async function guardAgentRequest(
     projectId,
     resolvedProjects: resolution,
     request: { method, path },
+    alwaysHold: call.holdForPerson,
+    ip,
+    country: firstString(req.headers[countryHeader()]) ?? null,
+    taskId: pathNamesRecord ? (call.refs.taskId ?? null) : (firstString(body.taskId, query.taskId) ?? null),
   };
   const decision = await authorize(guardInput);
 
@@ -240,6 +324,7 @@ export async function guardAgentRequest(
       error: "approval_required",
       message: `${call.action} needs approval under policy "${decision.policy.name}". It runs automatically once a workspace or project admin approves it.`,
       approvalId,
+      recommendation: decision.approval.recommendation ?? null,
       statusUrl: `/api/agents/approvals/${approvalId}`,
       expiresAt: decision.approval.expiresAt,
     });

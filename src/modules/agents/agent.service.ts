@@ -201,6 +201,8 @@ class AgentService {
     projectIds?: unknown;
     expiresAt?: unknown;
     legacy?: boolean;
+    operatedBy?: "internal" | "vendor";
+    vendorId?: string | null;
   }): Promise<{ agent: IAgentDocument; key: string }> {
     const name = String(input.name ?? "").trim();
     if (!name) throw new AppError(400, "Name is required", "BAD_REQUEST");
@@ -220,7 +222,8 @@ class AgentService {
       : [];
     const canAdmin = await this.isWorkspaceAdminAnywhere(input.ownerUserId);
     let scopes = sanitizeScopes(input.scopes, STANDARD_AGENT_SCOPES);
-    if (!canAdmin)
+    // Third parties never administer the workspace.
+    if (!canAdmin || input.operatedBy === "vendor")
       scopes = scopes.filter((scope) => scope !== "workspace:admin");
 
     const key = generateAgentKey();
@@ -231,22 +234,37 @@ class AgentService {
       kind: "api_key",
       name,
       keyHash: hashKey(key),
+      keyIssuedAt: new Date(),
       keyPrefix: displayPrefix(key),
       scopes,
       projectIds,
       expiresAt,
       legacy: Boolean(input.legacy),
+      operatedBy: input.operatedBy ?? "internal",
+      vendorId: input.vendorId ?? null,
     });
     return { agent, key };
   }
 
-  /** Issues a new secret for an API-key agent; the old one stops working at once. */
-  public async rotateKey(agent: IAgentDocument): Promise<string> {
+  /**
+   * Issues a new secret for an API-key agent. The old one stops working at
+   * once, or after `graceHours` so integrations can switch over.
+   */
+  public async rotateKey(agent: IAgentDocument, graceHours = 0): Promise<string> {
     if (agent.kind !== "api_key") {
       throw new AppError(400, "Only API keys can be rotated", "BAD_REQUEST");
     }
     const key = generateAgentKey();
+    if (graceHours > 0 && agent.keyHash) {
+      agent.previousKeyHash = agent.keyHash;
+      agent.previousKeyExpiresAt = new Date(Date.now() + graceHours * 3600_000);
+    } else {
+      agent.previousKeyHash = null;
+      agent.previousKeyExpiresAt = null;
+    }
+    agent.rotationNotifiedAt = null;
     agent.keyHash = hashKey(key);
+    agent.keyIssuedAt = new Date();
     agent.keyPrefix = displayPrefix(key);
     await agent.save();
     this.invalidate(agent._id.toString());
@@ -294,7 +312,14 @@ class AgentService {
     }
 
     let resolved: ResolvedAgent | null = null;
-    const agent = await AgentModel.findOne({ keyHash: hash, kind: "api_key" });
+    // The current key, or the previous one during its grace period after a rotation.
+    const agent =
+      (await AgentModel.findOne({ keyHash: hash, kind: "api_key" })) ??
+      (await AgentModel.findOne({
+        previousKeyHash: hash,
+        kind: "api_key",
+        previousKeyExpiresAt: { $gt: new Date() },
+      }));
     if (agent) {
       const user = await UserModel.findById(agent.ownerUserId);
       resolved = user ? { agent, user } : null;

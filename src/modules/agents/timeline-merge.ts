@@ -1,7 +1,7 @@
 /** One row of the unified activity timeline. */
 export interface TimelineItem {
   id: string;
-  kind: "work" | "agent" | "approval" | "event";
+  kind: "work" | "agent" | "approval" | "event" | "detection" | "incident" | "system";
   at: string;
   title: string;
   detail?: string;
@@ -9,6 +9,11 @@ export interface TimelineItem {
   projectId?: string | null;
   /** Portal path that opens the related task, agent, approval or event view. */
   link?: string;
+  /** Who decided an agent action: a policy, the system (default rule, DLP, threat, safety net) or a person. */
+  decidedBy?: "policy" | "system" | "person" | null;
+  outcome?: string | null;
+  tier?: string | null;
+  severity?: string | null;
 }
 
 

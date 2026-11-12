@@ -275,6 +275,69 @@ describe("REST call naming", () => {
     );
   });
 
+  test("agents are governed inside agent governance, not locked out", () => {
+    const id = "6a1f00000000000000000001";
+    const call = (method: string, path: string) => describeRestCall(method, path);
+    // Reading governance is allowed.
+    for (const path of ["/api/agents", "/api/agents/policies", `/api/agents/${id}`, "/api/vendors"]) {
+      assert.equal(call("GET", path).forbidden, false, path);
+      assert.equal(call("GET", path).holdForPerson, false, path);
+    }
+    // Changes are always held for a person.
+    for (const [method, path] of [
+      ["POST", "/api/agents/policies"],
+      ["PATCH", `/api/agents/policies/${id}`],
+      ["POST", `/api/agents/${id}/suspend`],
+      ["POST", "/api/agents/kill-switch"],
+      ["PATCH", "/api/agents/settings"],
+      ["POST", "/api/vendors"],
+    ] as const) {
+      assert.equal(call(method, path).forbidden, false, path);
+      assert.equal(call(method, path).holdForPerson, true, path);
+    }
+    // Dry runs change nothing, so need no hold.
+    assert.equal(call("POST", "/api/agents/policies/test").holdForPerson, false);
+    // People only: deciding approvals, approving vendors, minting credentials.
+    for (const [method, path] of [
+      ["POST", `/api/agents/approvals/${id}/approve`],
+      ["POST", `/api/agents/approvals/${id}/reject`],
+      ["POST", `/api/vendors/${id}/status`],
+      ["POST", "/api/agents/keys"],
+      ["POST", `/api/agents/${id}/rotate`],
+      ["POST", `/api/agents/${id}/replace-with-key`],
+      ["POST", "/api/agents/webhooks"],
+      // Webhook URLs can be credentials (Slack): not even readable.
+      ["GET", "/api/agents/webhooks"],
+      ["PATCH", `/api/agents/webhooks/${id}`],
+      ["POST", `/api/agents/incidents/${id}/resume`],
+      ["POST", `/api/agents/approvals/${id}/scope-down`],
+      // No agent grants itself access, runs a playbook decision, relabels data or approves policy changes.
+      ["POST", `/api/agents/elevations/${id}/approve`],
+      ["POST", `/api/agents/elevations/${id}/reject`],
+      ["POST", `/api/agents/elevations/${id}/revoke`],
+      ["POST", `/api/agents/playbook-runs/${id}/continue`],
+      ["POST", `/api/agents/playbook-runs/${id}/cancel`],
+      ["POST", `/api/agents/policies/proposals/${id}/approve`],
+      ["PUT", "/api/agents/classification"],
+      ["POST", "/api/agents/key-lifecycle/run"],
+      ["POST", `/api/agents/${id}/pending-key/reveal`],
+    ] as const) {
+      assert.equal(call(method, path).forbidden, true, path);
+    }
+  });
+
+  test("an agent asks for just-in-time access itself; it needs no scope and is never held", () => {
+    const ask = describeRestCall("POST", "/api/agents/elevations");
+    assert.equal(ask.forbidden, false);
+    assert.equal(ask.selfService, true);
+    assert.equal(ask.holdForPerson, false);
+    assert.equal(ask.scope, "work:read");
+    // Simulating a policy is a dry run; creating a playbook is held for a person.
+    assert.equal(describeRestCall("POST", "/api/agents/policies/simulate").holdForPerson, false);
+    assert.equal(describeRestCall("POST", "/api/agents/playbooks").holdForPerson, true);
+    assert.equal(describeRestCall("POST", `/api/agents/policies/${id}/rollback`).holdForPerson, true);
+  });
+
   test("assigns risk, scope and project references", () => {
     const del = describeRestCall("DELETE", `/api/projects/${pid}/epics/${id}`);
     assert.equal(del.risk, "destructive");

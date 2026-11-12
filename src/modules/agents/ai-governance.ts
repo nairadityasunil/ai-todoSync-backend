@@ -10,6 +10,9 @@ import agentService, { agentBlockReason } from "./agent.service.js";
 import { authorize } from "./guard.js";
 import { AgentModel, type IAgentDocument } from "./model.js";
 import { maskText } from "./redaction.js";
+import { raiseAlert } from "./activity.service.js";
+import { scanForDlp } from "./hybrid.js";
+import { governanceSettings } from "./hybrid.service.js";
 
 /**
  * Governance for project AI: each AI provider used by a workspace is an
@@ -175,6 +178,8 @@ export async function governAiCall(input: {
       input: { source: input.source, provider: input.providerId },
       projectId,
       noHold: true,
+      // The prompt itself is checked (DLP, data labels) but never stored.
+      content: input.messages.map((m) => m.content),
     };
     const decision = await authorize(guardInput);
     if (decision.effect !== "allow") {
@@ -199,7 +204,54 @@ export async function governAiCall(input: {
     });
   }
 
-  const masked = await maskingEnabled(workspaceId).catch(() => false);
+  let masked = await maskingEnabled(workspaceId).catch(() => false);
+
+  // Data loss prevention on the prompt. AI calls cannot wait for an approval,
+  // so in enforce mode secrets are blocked (or masked when masking is on) and
+  // personal data is masked automatically.
+  const settings = await governanceSettings(workspaceId).catch(() => null);
+  if (settings && settings.dlpMode !== "off") {
+    const findings = scanForDlp(input.messages.map((m) => m.content));
+    if (findings.length) {
+      const high = findings.filter((f) => f.confidence === "high");
+      const enforce = settings.dlpMode === "enforce";
+      const blocked = enforce && high.length > 0 && !masked;
+      void raiseAlert({
+        workspaceId,
+        agentId: agent?._id.toString() ?? null,
+        type: "dlp",
+        severity: high.length ? "critical" : "warning",
+        title: blocked ? "AI prompt blocked by DLP" : enforce ? "Sensitive data masked in an AI prompt" : "Sensitive data sent in an AI prompt",
+        detail: `${findings.map((f) => f.label.toLowerCase()).join(", ")} in a ${input.source} prompt${agent ? ` to ${agent.name}` : ""}.`,
+        dedupeKey: `dlp:ai:${workspaceId}:${input.source}:${Math.floor(Date.now() / 600_000)}`,
+      }).catch(() => undefined);
+      if (agent) {
+        activityService.record({
+          agent,
+          userId,
+          channel: "rest",
+          action: `ai:${input.source}`,
+          domain: "ai",
+          risk: "read",
+          input: { source: input.source, provider: input.providerId },
+          projectId,
+          outcome: blocked ? "blocked" : "allowed",
+          decidedBy: "system",
+          rule: blocked ? "Data loss prevention: secret in prompt" : enforce ? "Data loss prevention: masked before sending" : "Data loss prevention: monitored",
+          dlp: findings,
+          statusCode: blocked ? 403 : null,
+        });
+      }
+      if (blocked) {
+        throw new HttpError(
+          403,
+          `Blocked by data loss prevention: the prompt contains ${high.map((f) => f.label.toLowerCase()).join(", ")}. Remove it, or turn on AI data masking to send it masked.`,
+        );
+      }
+      if (enforce) masked = true;
+    }
+  }
+
   if (!masked) return { messages: input.messages, agent, masked: false };
   return {
     messages: input.messages.map((message) => ({
@@ -212,4 +264,28 @@ export async function governAiCall(input: {
     agent,
     masked: true,
   };
+}
+
+/**
+ * DLP on model output: a credential the model echoes back (e.g. from context)
+ * is masked in the response and raises an alert.
+ */
+export function reportOutputExposure(
+  workspaceId: string,
+  agentId: string | null,
+  response: { content: string },
+): void {
+  if (!workspaceId || typeof response?.content !== "string") return;
+  const findings = scanForDlp(response.content).filter((f) => f.type === "credential");
+  if (!findings.length) return;
+  response.content = maskText(response.content);
+  void raiseAlert({
+    workspaceId,
+    agentId,
+    type: "dlp",
+    severity: "critical",
+    title: "Credential found in an AI response",
+    detail: "The AI output contained an API key or token. It was redacted before it was returned or stored.",
+    dedupeKey: `dlp:output:${workspaceId}:${Math.floor(Date.now() / 600_000)}`,
+  }).catch(() => undefined);
 }

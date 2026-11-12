@@ -1,3 +1,4 @@
+import { NEW_WORKSPACE_GOVERNANCE } from "../../agents/hybrid.js";
 import { Types } from "mongoose";
 import WorkspaceModel, {
   IWorkspaceDocument,
@@ -78,6 +79,7 @@ class WorkspaceService {
       name,
       slug,
       ownerId: userId,
+      settings: { governance: { ...NEW_WORKSPACE_GOVERNANCE } },
     });
 
     await WorkspaceMemberModel.create({
@@ -108,6 +110,7 @@ class WorkspaceService {
       name: payload.name.trim(),
       slug,
       ownerId: userId,
+      settings: { governance: { ...NEW_WORKSPACE_GOVERNANCE } },
     });
 
     await WorkspaceMemberModel.create({

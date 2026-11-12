@@ -6,13 +6,35 @@ import ActivityLogModel from "../audit/models/activity-log.model.js";
 import ProjectModel from "../project/models/project.model.js";
 import projectService from "../project/services/project.service.js";
 import SdkIntegrationModel from "../sdk-integrations/model.js";
-import { AgentActivityModel, AgentApprovalModel, AgentModel } from "./model.js";
+import {
+  AgentActivityModel,
+  AgentAlertModel,
+  AgentApprovalModel,
+  AgentIncidentModel,
+  AgentModel,
+  GovernanceEventModel,
+} from "./model.js";
 
 import { mergeTimeline, type TimelineItem } from "./timeline-merge.js";
 
 export type { TimelineItem };
 
 export type TimelineKind = TimelineItem["kind"];
+
+const ALERT_LABELS: Record<string, string> = {
+  unregistered_agent: "Shadow AI detected",
+  threat: "Threat detected",
+  dlp: "Data loss prevention",
+  compliance_drift: "Compliance drift",
+  critical_risk: "Critical risk",
+  volume_spike: "Unusual volume",
+  off_hours: "Unusual timing",
+  new_tool: "New action",
+  permission_errors: "Permission errors",
+  bulk_destructive: "Bulk deletes",
+  policy_block: "Blocked by policy",
+  rate_limited: "Rate limited",
+};
 
 export interface TimelineQuery {
   userId: string;
@@ -26,6 +48,12 @@ export interface TimelineQuery {
   since?: Date;
   until?: Date;
   limit: number;
+  /** Agent actions of these risk tiers only (low, medium, high, critical). */
+  tiers?: string[];
+  /** Agent actions decided by a policy, the system or a person. */
+  decidedBy?: "policy" | "system" | "person";
+  /** Agent actions with this outcome (allowed, blocked, pending_approval). */
+  outcome?: string;
 }
 
 const iso = (value: Date | string) => new Date(value).toISOString();
@@ -89,7 +117,7 @@ export async function buildTimeline(q: TimelineQuery): Promise<TimelineItem[]> {
     : {};
 
   const [work, agentRows, approvals, events] = await Promise.all([
-    wants("work") && projectIds.length
+    wants("work") && projectIds.length && !q.tiers?.length && !q.decidedBy && !q.outcome
       ? ActivityLogModel.find({
           projectId: { $in: projectIds },
           ...(q.personId ? { userId: q.personId } : {}),
@@ -107,6 +135,9 @@ export async function buildTimeline(q: TimelineQuery): Promise<TimelineItem[]> {
           ...agentFilter,
           ...projectFilter,
           ...created,
+          ...(q.tiers?.length ? { tier: { $in: q.tiers } } : {}),
+          ...(q.decidedBy ? { decidedBy: q.decidedBy } : {}),
+          ...(q.outcome ? { outcome: q.outcome } : {}),
         })
           .select("-undo -input")
           .sort({ createdAt: -1 })
@@ -114,9 +145,12 @@ export async function buildTimeline(q: TimelineQuery): Promise<TimelineItem[]> {
           .populate("agentId", "name")
           .lean()
       : [],
-    wants("approval") && !q.personId
+    wants("approval") && !q.personId && q.decidedBy !== "policy" && (!q.outcome || q.outcome === "pending_approval")
       ? AgentApprovalModel.find({
           workspaceId: workspace,
+          ...(q.tiers?.length ? { tier: { $in: q.tiers } } : {}),
+          ...(q.outcome ? { status: "pending" } : {}),
+          ...(q.decidedBy ? { status: { $ne: "pending" }, decidedBySystem: q.decidedBy === "system" ? true : { $ne: true } } : {}),
           $or: [
             { ownerUserId: new Types.ObjectId(q.userId) },
             { workspaceId: { $in: q.adminWorkspaceIds } },
@@ -162,6 +196,44 @@ export async function buildTimeline(q: TimelineQuery): Promise<TimelineItem[]> {
       : [],
   ]);
 
+  // Detections (alerts), incidents and governance events: admins see the workspace's; others their own agents'.
+  const isAdmin = q.adminWorkspaceIds.some((id) => id.equals(workspace));
+  const ownAgentIds = isAdmin
+    ? null
+    : (await AgentModel.find({ ownerUserId: new Types.ObjectId(q.userId) }).select("_id").lean()).map((a) => a._id);
+  const scopeToAgents = (field: string) => (ownAgentIds ? { [field]: { $in: ownAgentIds } } : {});
+  const onlyActions = Boolean(q.tiers?.length || q.decidedBy || q.outcome || q.personId);
+  const [alerts, incidents, govEvents] = await Promise.all([
+    wants("detection") && !onlyActions && !q.projectId
+      ? AgentAlertModel.find({ workspaceId: workspace, ...scopeToAgents("agentId"), ...(q.agentId ? { agentId: new Types.ObjectId(q.agentId) } : {}), ...created })
+          .sort({ createdAt: -1 })
+          .limit(q.limit)
+          .populate("agentId", "name")
+          .lean()
+      : [],
+    wants("incident") && !onlyActions && !q.projectId
+      ? AgentIncidentModel.find({ workspaceId: workspace, ...scopeToAgents("agentIds"), ...(q.agentId ? { agentIds: new Types.ObjectId(q.agentId) } : {}), ...created })
+          .sort({ createdAt: -1 })
+          .limit(q.limit)
+          .lean()
+      : [],
+    wants("system") && !q.projectId && !q.tiers?.length && !q.outcome && (!q.decidedBy || q.decidedBy !== "policy")
+      ? GovernanceEventModel.find({
+          workspaceId: workspace,
+          ...scopeToAgents("agentId"),
+          ...(q.agentId ? { agentId: new Types.ObjectId(q.agentId) } : {}),
+          ...(q.decidedBy ? { actor: q.decidedBy } : {}),
+          ...(q.personId ? { userId: new Types.ObjectId(q.personId) } : {}),
+          ...created,
+        })
+          .sort({ createdAt: -1 })
+          .limit(q.limit)
+          .populate("agentId", "name")
+          .populate("userId", "name email")
+          .lean()
+      : [],
+  ]);
+
   const items: TimelineItem[][] = [
     work.map((row) => {
       const agent = (row.metadata as { agent?: { id?: string; name?: string } } | undefined)?.agent;
@@ -186,10 +258,17 @@ export async function buildTimeline(q: TimelineQuery): Promise<TimelineItem[]> {
       id: `agent:${row._id}`,
       kind: "agent" as const,
       at: iso(row.createdAt),
-      title: `${row.action} · ${row.outcome}`,
-      detail: [row.policyName ? `policy “${row.policyName}”` : null, row.projectId ? projectName.get(String(row.projectId)) : null]
+      title: `${row.action} · ${row.outcome === "pending_approval" ? "held for approval" : row.outcome}`,
+      detail: [
+        row.decidedBy === "system" ? `System decided${row.rule ? `: ${row.rule}` : ""}` : row.decidedBy === "person" ? row.rule ?? "Decided by a person" : row.policyName ? `policy “${row.policyName}”` : null,
+        (row.dlp ?? []).length ? `DLP: ${(row.dlp ?? []).map((f: { label: string }) => f.label.toLowerCase()).join(", ")}` : null,
+        row.projectId ? projectName.get(String(row.projectId)) : null,
+      ]
         .filter(Boolean)
         .join(" · ") || undefined,
+      decidedBy: (row.decidedBy as TimelineItem["decidedBy"]) ?? (row.policyName ? "policy" : null),
+      outcome: row.outcome,
+      tier: row.tier ?? null,
       actor: { type: "agent" as const, id: refId(row.agentId), name: refName(row.agentId, "Agent") },
       projectId: row.projectId ? String(row.projectId) : null,
       link: `/agents/inventory?agent=${refId(row.agentId) ?? ""}`,
@@ -202,10 +281,54 @@ export async function buildTimeline(q: TimelineQuery): Promise<TimelineItem[]> {
         row.status === "pending"
           ? `Approval needed: ${row.action}`
           : `${row.action} ${row.status}${row.decidedBy ? ` by ${refName(row.decidedBy, "someone")}` : ""}`,
-      detail: row.policyName ? `policy “${row.policyName}”` : undefined,
+      detail: [
+        row.policyName ? `policy “${row.policyName}”` : null,
+        row.recommendation ? `recommended: ${row.recommendation.decision}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") || undefined,
       actor: { type: "agent" as const, id: refId(row.agentId), name: refName(row.agentId, "Agent") },
       projectId: row.projectId ? String(row.projectId) : null,
       link: "/agents/approvals",
+      decidedBy: row.status === "pending" ? null : row.decidedBySystem ? ("system" as const) : ("person" as const),
+      tier: row.tier ?? null,
+    })),
+    alerts.map((row) => ({
+      id: `detection:${row._id}`,
+      kind: "detection" as const,
+      at: iso(row.createdAt),
+      title: row.title,
+      detail: [ALERT_LABELS[row.type] ?? row.type, row.detail].filter(Boolean).join(" · "),
+      actor: row.agentId
+        ? { type: "agent" as const, id: refId(row.agentId), name: refName(row.agentId, "Agent") }
+        : { type: "person" as const, name: "System" },
+      link: row.agentId ? `/agents/inventory?agent=${refId(row.agentId)}` : "/agents",
+      decidedBy: "system" as const,
+      severity: row.severity,
+    })),
+    incidents.map((row) => ({
+      id: `incident:${row._id}`,
+      kind: "incident" as const,
+      at: iso((row as unknown as { createdAt: Date }).createdAt),
+      title: `Incident: ${row.title}`,
+      detail: `${row.status}${row.resolution ? ` (${row.resolution.replace("_", " ")})` : ""} · ${row.summary}`,
+      actor: { type: "person" as const, name: "System" },
+      link: `/agents/incidents?incident=${row._id}`,
+      decidedBy: "system" as const,
+      severity: row.severity,
+    })),
+    govEvents.map((row) => ({
+      id: `system:${row._id}`,
+      kind: "system" as const,
+      at: iso(row.createdAt),
+      title: row.title,
+      detail: [row.actor === "system" ? "System decided" : "Person", row.detail].filter(Boolean).join(" · "),
+      actor:
+        row.actor === "system"
+          ? { type: "person" as const, name: "System" }
+          : { type: "person" as const, id: refId(row.userId), name: refName(row.userId, "Someone") },
+      link: row.incidentId ? `/agents/incidents?incident=${row.incidentId}` : row.agentId ? `/agents/inventory?agent=${refId(row.agentId)}` : "/agents",
+      decidedBy: row.actor === "system" ? ("system" as const) : ("person" as const),
     })),
     events.map(({ log, integration, nameByRef }) => ({
       id: `event:${log._id}`,
