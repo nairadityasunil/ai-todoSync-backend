@@ -25,6 +25,7 @@ import {
   isBulkRead,
   maxTier,
   recommend,
+  regionAllowed,
   scanForDlp,
   tierFor,
   type DlpFinding,
@@ -356,6 +357,23 @@ async function decide(
   }
 
   const settings = await governanceSettings(workspaceId);
+
+  // Compliance enforcement: a third party that keeps data outside the allowed
+  // regions may not receive data (AI calls) or change anything. A vendor with
+  // no recorded location is flagged by the compliance check instead.
+  if (settings.complianceEnforce && settings.allowedDataRegions.length > 0 && agent.vendorId && (agent.kind === "ai_provider" || input.risk !== "read")) {
+    const vendor = await vendorService.statusOf(agent.vendorId.toString());
+    if (vendor?.location && !regionAllowed(vendor.location, settings.allowedDataRegions)) {
+      return {
+        effect: "deny",
+        policy: null,
+        advisory: [],
+        projectId,
+        reason: `Blocked by compliance: ${vendor.name} keeps data in ${vendor.location}, outside the allowed regions (${settings.allowedDataRegions.join(", ")}).`,
+        system: { decidedBy: "system", tier: "high", rule: "Compliance: data residency" },
+      };
+    }
+  }
   const taskId = input.taskId ?? (typeof input.input.taskId === "string" ? input.input.taskId : null);
   const classification = await classificationFor({ projectIds: resolved.touched, taskId }).catch(() => "internal" as Classification);
 

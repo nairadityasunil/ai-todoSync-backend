@@ -517,6 +517,7 @@ export type AgentAlertType =
   | "critical_risk"
   | "bulk_destructive"
   | "volume_spike"
+  | "cost_spike"
   | "off_hours"
   | "new_tool"
   | "permission_errors"
