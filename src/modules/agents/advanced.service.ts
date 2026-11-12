@@ -312,6 +312,10 @@ export async function requestElevation(
   // One open request per agent and scope set at a time.
   const open = await AgentElevationModel.findOne({ agentId: agent._id, status: "pending", scopes: { $all: scopes, $size: scopes.length } });
   if (open) return open;
+  // Requests skip the rate limiter (they are not work), so cap how many wait at once.
+  if ((await AgentElevationModel.countDocuments({ agentId: agent._id, status: "pending" })) >= 5) {
+    throw new AppError(429, "This agent already has 5 access requests waiting for a person.", "TOO_MANY_REQUESTS");
+  }
   const now = new Date();
   const auto = tier === "low" && settings.jitAutoGrantLowRisk;
   const elevation = await AgentElevationModel.create({

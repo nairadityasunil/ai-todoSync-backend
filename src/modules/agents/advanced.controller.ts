@@ -5,6 +5,7 @@ import type { AuthenticatedRequest } from "../../types/auth.js";
 import { AppError } from "../../utils/app-error.js";
 import projectService from "../project/services/project.service.js";
 import ProjectModel from "../project/models/project.model.js";
+import ProjectMemberModel from "../project/models/project-member.model.js";
 import TaskModel from "../task/models/task.model.js";
 import { CLASSIFICATIONS, diffPolicies, isClassification, PLAYBOOK_STEP_TYPES, PLAYBOOK_TEMPLATES, PLAYBOOK_TRIGGERS, type PolicySnapshot } from "./advanced.js";
 import {
@@ -145,13 +146,26 @@ class AdvancedGovernanceController {
   /* ------------------------- Data labels ---------------------------- */
 
   public getClassification = async (req: AuthenticatedRequest, res: Response) => {
-    userIdOf(req);
+    const userId = userIdOf(req);
     const projectIds = (str(req.query.projectIds) ?? str(req.query.projectId) ?? "").split(",").filter((id) => Types.ObjectId.isValid(id)).slice(0, 200);
     const taskIds = (str(req.query.taskIds) ?? str(req.query.taskId) ?? "").split(",").filter((id) => Types.ObjectId.isValid(id)).slice(0, 500);
-    const [projects, tasks] = await Promise.all([
+    const [allProjects, allTasks] = await Promise.all([
       projectIds.length ? ProjectModel.find({ _id: { $in: projectIds } }).select("classification").lean() : [],
-      taskIds.length ? TaskModel.find({ _id: { $in: taskIds } }).select("classification projectId").lean() : [],
+      taskIds.length ? TaskModel.find({ _id: { $in: taskIds } }).select("classification projectId userId").lean() : [],
     ]);
+    // Only projects (and their tasks) the caller belongs to, and their own personal tasks.
+    const member = new Set(
+      (
+        await ProjectMemberModel.find({
+          userId,
+          projectId: { $in: [...new Set([...allProjects.map((p) => String(p._id)), ...allTasks.filter((t) => t.projectId).map((t) => String(t.projectId))])] },
+        })
+          .select("projectId")
+          .lean()
+      ).map((m) => String(m.projectId)),
+    );
+    const projects = allProjects.filter((p) => member.has(String(p._id)));
+    const tasks = allTasks.filter((t) => (t.projectId ? member.has(String(t.projectId)) : String(t.userId) === userId));
     res.json({
       success: true,
       data: {

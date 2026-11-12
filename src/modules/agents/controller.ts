@@ -974,6 +974,8 @@ class AgentController {
       return;
     }
     await recordVersion({ workspaceId: policy.workspaceId, policyId: policy._id, action: "deleted", status: "applied", snapshot: null, previous: snapshotOf(policy), userId });
+    // Changes proposed to a removed policy no longer apply.
+    await AgentPolicyVersionModel.updateMany({ policyId: policy._id, status: "proposed" }, { $set: { status: "withdrawn", reviewedAt: new Date() } });
     await policy.deleteOne();
     invalidatePolicies(policy.workspaceId.toString());
     scheduleComplianceCheck(policy.workspaceId.toString(), "policy change");

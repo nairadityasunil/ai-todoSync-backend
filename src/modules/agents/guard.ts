@@ -253,6 +253,24 @@ const STRICTNESS = { allow: 0, require_approval: 1, deny: 2 } as const;
 export async function authorize(
   input: AuthorizeInput,
 ): Promise<AuthorizeResult> {
+  const result = await decide(input);
+  // Related actions by several agents (reads included) form one incident.
+  // Only actions that go ahead count: held or blocked attempts are not access.
+  if (result.effect === "allow") {
+    void observeCorrelation({
+      agent: input.agent,
+      action: input.action,
+      risk: input.risk,
+      projectId: result.projectId,
+      isBulk: Boolean(input.request && isBulkRead(input.request.method, input.request.path)),
+    }).catch(() => undefined);
+  }
+  return result;
+}
+
+async function decide(
+  input: AuthorizeInput,
+): Promise<AuthorizeResult> {
   const { agent } = input;
   const workspaceId = agent.workspaceId ? agent.workspaceId.toString() : null;
 
@@ -292,15 +310,6 @@ export async function authorize(
           epicId: input.input.epicId,
         });
   const { projectId } = resolved;
-
-  // Related actions by several agents (reads included) form one incident.
-  void observeCorrelation({
-    agent,
-    action: input.action,
-    risk: input.risk,
-    projectId,
-    isBulk: Boolean(input.request && isBulkRead(input.request.method, input.request.path)),
-  }).catch(() => undefined);
 
   // Third-party status: blocked or restricted vendors limit their agents.
   const vendorDecision = await vendorService.decide(agent, input.risk);
