@@ -125,9 +125,12 @@ class AgentActivityService {
           type: "policy_block",
           severity: "info",
           title: `${entry.agent.name} was blocked`,
+          // Name the real reason: a policy, a system rule (DLP, residency, data label…), or project scope.
           detail: entry.policy
             ? `"${entry.action}" was blocked by policy "${entry.policy.name}".`
-            : `"${entry.action}" was outside the agent's allowed projects.`,
+            : entry.rule
+              ? `"${entry.action}" was blocked: ${entry.rule}.`
+              : `"${entry.action}" was outside the agent's allowed projects.`,
           dedupeKey: `policy_block:${agentId}:${entry.action}:${bucket}`,
         });
       }
