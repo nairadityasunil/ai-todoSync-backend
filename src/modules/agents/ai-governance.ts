@@ -182,13 +182,24 @@ export async function governAiCall(input: {
       content: input.messages.map((m) => m.content),
     };
     const decision = await authorize(guardInput);
+    // Who decided and why, so the activity log explains every AI decision.
+    const why = {
+      decidedBy: decision.system?.decidedBy ?? (decision.policy ? "policy" as const : null),
+      rule: decision.system?.rule ?? null,
+      tier: decision.system?.tier ?? null,
+      dlp: decision.system?.dlp ?? [],
+      classification: decision.system?.classification ?? null,
+      signals: decision.system?.signals ?? [],
+    };
     if (decision.effect !== "allow") {
       const reason =
         decision.effect === "deny" ? decision.reason : "Blocked by policy.";
       activityService.record({
         ...guardInput,
+        ...why,
         outcome: "blocked",
         policy: decision.policy,
+        error: reason,
         statusCode:
           decision.effect === "deny" && decision.retryAfterSec ? 429 : 403,
       });
@@ -199,6 +210,7 @@ export async function governAiCall(input: {
     }
     activityService.record({
       ...guardInput,
+      ...why,
       outcome: "allowed",
       advisory: decision.advisory,
     });
