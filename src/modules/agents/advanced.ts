@@ -34,7 +34,10 @@ export const BASELINE_WINDOW_DAYS = 14;
 export const percentile = (values: number[], p: number): number => {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil((p / 100) * sorted.length) - 1),
+  );
   return sorted[index];
 };
 
@@ -47,7 +50,10 @@ export interface BaselineRow {
 }
 
 /** Baseline from an agent's recent activity (changes only; reads are rarely logged). */
-export function computeBaseline(rows: BaselineRow[], now = new Date()): BaselineStats {
+export function computeBaseline(
+  rows: BaselineRow[],
+  now = new Date(),
+): BaselineStats {
   const changes = rows.filter((r) => r.risk !== "read");
   const hours = new Map<number, number>();
   const days = new Map<string, number>();
@@ -60,7 +66,8 @@ export function computeBaseline(rows: BaselineRow[], now = new Date()): Baseline
     if (t < first) first = t;
     if (row.outcome === "blocked" || row.outcome === "error") errors += 1;
     actions.set(row.action, (actions.get(row.action) ?? 0) + 1);
-    if (row.projectId) projects.set(row.projectId, (projects.get(row.projectId) ?? 0) + 1);
+    if (row.projectId)
+      projects.set(row.projectId, (projects.get(row.projectId) ?? 0) + 1);
   }
   for (const row of changes) {
     const hour = Math.floor(row.at.getTime() / 3600_000);
@@ -68,8 +75,14 @@ export function computeBaseline(rows: BaselineRow[], now = new Date()): Baseline
     const day = row.at.toISOString().slice(0, 10);
     days.set(day, (days.get(day) ?? 0) + 1);
   }
-  const span = rows.length ? Math.floor((now.getTime() - first) / 86_400_000) : 0;
-  const top = (m: Map<string, number>, n: number) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([k]) => k);
+  const span = rows.length
+    ? Math.floor((now.getTime() - first) / 86_400_000)
+    : 0;
+  const top = (m: Map<string, number>, n: number) =>
+    [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([k]) => k);
   return {
     days: span,
     sample: changes.length,
@@ -79,7 +92,9 @@ export function computeBaseline(rows: BaselineRow[], now = new Date()): Baseline
     dailyP95: percentile([...days.values()], 95),
     actions: top(actions, 100),
     projects: top(projects, 100),
-    errorRate: rows.length ? Math.round((errors / rows.length) * 1000) / 1000 : 0,
+    errorRate: rows.length
+      ? Math.round((errors / rows.length) * 1000) / 1000
+      : 0,
     ready: span >= BASELINE_MIN_DAYS && rows.length >= 10,
   };
 }
@@ -105,29 +120,56 @@ export const ANOMALY_RULES = {
 
 /** Compares one call with the agent's baseline. Reads are never scored. */
 export function scoreAnomaly(
-  baseline: Pick<BaselineStats, "ready" | "hourlyP95" | "actions" | "projects"> | null | undefined,
-  current: { changesLastHour: number; action: string; projectId?: string | null; risk: RiskLevel },
+  baseline:
+    | Pick<BaselineStats, "ready" | "hourlyP95" | "actions" | "projects">
+    | null
+    | undefined,
+  current: {
+    changesLastHour: number;
+    action: string;
+    projectId?: string | null;
+    risk: RiskLevel;
+  },
 ): AnomalyResult {
-  const none: AnomalyResult = { score: 0, reasons: [], boost: null, volumeRatio: 0 };
+  const none: AnomalyResult = {
+    score: 0,
+    reasons: [],
+    boost: null,
+    volumeRatio: 0,
+  };
   if (!baseline?.ready || current.risk === "read") return none;
   let score = 0;
   const reasons: string[] = [];
   const usual = Math.max(1, baseline.hourlyP95);
   const ratio = current.changesLastHour / usual;
-  if (ratio >= ANOMALY_RULES.volumeRatio && current.changesLastHour >= ANOMALY_RULES.volumeMinimum) {
+  if (
+    ratio >= ANOMALY_RULES.volumeRatio &&
+    current.changesLastHour >= ANOMALY_RULES.volumeMinimum
+  ) {
     score += ratio >= ANOMALY_RULES.volumeRatio * 2 ? 60 : 40;
-    reasons.push(`Volume is ${Math.round(ratio)}× baseline (${current.changesLastHour} changes in the last hour; usually up to ${usual})`);
+    reasons.push(
+      `Volume is ${Math.round(ratio)}× baseline (${current.changesLastHour} changes in the last hour; usually up to ${usual})`,
+    );
   }
   if (!baseline.actions.includes(current.action)) {
     score += 20;
     reasons.push(`First time this agent runs ${current.action}`);
   }
-  if (current.projectId && baseline.projects.length && !baseline.projects.includes(current.projectId)) {
+  if (
+    current.projectId &&
+    baseline.projects.length &&
+    !baseline.projects.includes(current.projectId)
+  ) {
     score += 15;
     reasons.push("A project this agent has not worked in before");
   }
   score = Math.min(100, score);
-  const boost = score >= ANOMALY_RULES.highScore ? "high" : score >= ANOMALY_RULES.holdScore ? "medium" : null;
+  const boost =
+    score >= ANOMALY_RULES.highScore
+      ? "high"
+      : score >= ANOMALY_RULES.holdScore
+        ? "medium"
+        : null;
   return { score, reasons, boost, volumeRatio: Math.round(ratio * 10) / 10 };
 }
 
@@ -162,10 +204,18 @@ export class ChangeCounter {
 export type CorrelationClass = "people" | "export" | "delete";
 
 /** Which sensitive kind of action a call is, for correlation (null: not sensitive). */
-export function correlationClass(input: { action: string; risk: RiskLevel; isBulk: boolean }): CorrelationClass | null {
+export function correlationClass(input: {
+  action: string;
+  risk: RiskLevel;
+  isBulk: boolean;
+}): CorrelationClass | null {
   if (input.risk === "destructive") return "delete";
   if (input.isBulk || /:export$|export/.test(input.action)) return "export";
-  if (input.risk === "read" && /(member|user|invitation|people)[^:]*:(list|get)$/.test(input.action)) return "people";
+  if (
+    input.risk === "read" &&
+    /(member|user|invitation|people)[^:]*:(list|get)$/.test(input.action)
+  )
+    return "people";
   return null;
 }
 
@@ -187,15 +237,38 @@ export const CORRELATION_RULES = {
 
 /** Sliding window per workspace of sensitive actions by different agents. */
 export class CorrelationWindows {
-  private events = new Map<string, Array<{ at: number; agentId: string; agentName: string; cls: CorrelationClass; projectId: string | null }>>();
+  private events = new Map<
+    string,
+    Array<{
+      at: number;
+      agentId: string;
+      agentName: string;
+      cls: CorrelationClass;
+      projectId: string | null;
+    }>
+  >();
   private fired = new Map<string, number>();
   constructor(private readonly now: () => number = Date.now) {}
 
-  observe(input: { workspaceId: string; agentId: string; agentName: string; cls: CorrelationClass; projectId?: string | null }): CorrelationSignal[] {
+  observe(input: {
+    workspaceId: string;
+    agentId: string;
+    agentName: string;
+    cls: CorrelationClass;
+    projectId?: string | null;
+  }): CorrelationSignal[] {
     const r = CORRELATION_RULES;
     const cutoff = this.now() - r.windowMs;
-    const list = (this.events.get(input.workspaceId) ?? []).filter((e) => e.at >= cutoff);
-    list.push({ at: this.now(), agentId: input.agentId, agentName: input.agentName, cls: input.cls, projectId: input.projectId ?? null });
+    const list = (this.events.get(input.workspaceId) ?? []).filter(
+      (e) => e.at >= cutoff,
+    );
+    list.push({
+      at: this.now(),
+      agentId: input.agentId,
+      agentName: input.agentName,
+      cls: input.cls,
+      projectId: input.projectId ?? null,
+    });
     this.events.set(input.workspaceId, list.slice(-2000));
     if (this.events.size > 20_000) this.events.clear();
     const out: CorrelationSignal[] = [];
@@ -205,22 +278,45 @@ export class CorrelationWindows {
       this.fired.set(key, this.now());
       return true;
     };
-    const names = (ids: string[]) => ids.map((id) => list.find((e) => e.agentId === id)?.agentName ?? id);
+    const names = (ids: string[]) =>
+      ids.map((id) => list.find((e) => e.agentId === id)?.agentName ?? id);
     const agents = [...new Set(list.map((e) => e.agentId))];
-    if (agents.length >= r.agents && agents.includes(input.agentId) && fire(`ws:${input.workspaceId}`)) {
+    if (
+      agents.length >= r.agents &&
+      agents.includes(input.agentId) &&
+      fire(`ws:${input.workspaceId}`)
+    ) {
       const kinds = [...new Set(list.map((e) => e.cls))];
-      const label: Record<CorrelationClass, string> = { people: "listed people", export: "exported data", delete: "deleted records" };
+      const label: Record<CorrelationClass, string> = {
+        people: "listed people",
+        export: "exported data",
+        delete: "deleted records",
+      };
       out.push({
         type: "coordinated_access",
-        severity: kinds.includes("delete") || kinds.includes("export") ? "critical" : "warning",
+        severity:
+          kinds.includes("delete") || kinds.includes("export")
+            ? "critical"
+            : "warning",
         agentIds: agents,
         title: `Possible coordinated access by ${agents.length} agents`,
         detail: `${names(agents).join(", ")} ${kinds.map((k) => label[k]).join(", ")} within 10 minutes.`,
       });
     }
     if (input.cls === "delete" && input.projectId) {
-      const deleters = [...new Set(list.filter((e) => e.cls === "delete" && e.projectId === input.projectId).map((e) => e.agentId))];
-      if (deleters.length >= r.deleteAgents && fire(`del:${input.workspaceId}:${input.projectId}`)) {
+      const deleters = [
+        ...new Set(
+          list
+            .filter(
+              (e) => e.cls === "delete" && e.projectId === input.projectId,
+            )
+            .map((e) => e.agentId),
+        ),
+      ];
+      if (
+        deleters.length >= r.deleteAgents &&
+        fire(`del:${input.workspaceId}:${input.projectId}`)
+      ) {
         out.push({
           type: "coordinated_delete",
           severity: "critical",
@@ -280,29 +376,53 @@ export function sessionRisk(signals: SessionSignals): SessionRisk {
     reasons.push("Used from several addresses at once");
   }
   const level = score >= 60 ? "high" : score >= 30 ? "elevated" : "normal";
-  return { score: Math.min(100, score), level, reasons, boost: level === "high" ? "high" : level === "elevated" ? "medium" : null };
+  return {
+    score: Math.min(100, score),
+    level,
+    reasons,
+    boost: level === "high" ? "high" : level === "elevated" ? "medium" : null,
+  };
 }
 
 /* -------------------------- Data classification -------------------------- */
 
-export const CLASSIFICATIONS = ["public", "internal", "confidential", "restricted"] as const;
+export const CLASSIFICATIONS = [
+  "public",
+  "internal",
+  "confidential",
+  "restricted",
+] as const;
 export type Classification = (typeof CLASSIFICATIONS)[number];
 export const DEFAULT_CLASSIFICATION: Classification = "internal";
 
-const CLASS_RANK: Record<Classification, number> = { public: 0, internal: 1, confidential: 2, restricted: 3 };
+const CLASS_RANK: Record<Classification, number> = {
+  public: 0,
+  internal: 1,
+  confidential: 2,
+  restricted: 3,
+};
 
 export const isClassification = (value: unknown): value is Classification =>
-  typeof value === "string" && (CLASSIFICATIONS as readonly string[]).includes(value);
+  typeof value === "string" &&
+  (CLASSIFICATIONS as readonly string[]).includes(value);
 
 /** A task's label, else its project's, else the default. */
-export function effectiveClassification(task?: string | null, project?: string | null): Classification {
+export function effectiveClassification(
+  task?: string | null,
+  project?: string | null,
+): Classification {
   if (isClassification(task)) return task;
   if (isClassification(project)) return project;
   return DEFAULT_CLASSIFICATION;
 }
 
-export const strictestClassification = (labels: Classification[]): Classification =>
-  labels.reduce((a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a), "public" as Classification);
+export const strictestClassification = (
+  labels: Classification[],
+): Classification =>
+  labels.reduce(
+    (a, b) => (CLASS_RANK[b] > CLASS_RANK[a] ? b : a),
+    "public" as Classification,
+  );
 
 export interface LabelVerdict {
   effect: "allow" | "require_approval" | "deny";
@@ -329,15 +449,36 @@ export function labelVerdict(input: {
   const { label } = input;
   const isRead = input.risk === "read";
   if (label === "restricted") {
-    if (input.toModel) return { effect: "deny", boost: null, reason: "Blocked: restricted data never goes to an external model." };
-    if (input.leaves) return { effect: "deny", boost: null, reason: "Blocked: restricted data cannot be exported or sent outside Pristine." };
+    if (input.toModel)
+      return {
+        effect: "deny",
+        boost: null,
+        reason: "Blocked: restricted data never goes to an external model.",
+      };
+    if (input.leaves)
+      return {
+        effect: "deny",
+        boost: null,
+        reason:
+          "Blocked: restricted data cannot be exported or sent outside Pristine.",
+      };
     return { effect: "allow", boost: isRead ? null : "high" };
   }
   if (label === "confidential") {
     if (input.toModel && input.dlpFindings > 0) {
-      return { effect: "deny", boost: null, reason: "Blocked: confidential data with personal or secret data cannot go to an external model." };
+      return {
+        effect: "deny",
+        boost: null,
+        reason:
+          "Blocked: confidential data with personal or secret data cannot go to an external model.",
+      };
     }
-    if (input.leaves) return { effect: "require_approval", boost: null, reason: "Held: confidential data is leaving Pristine." };
+    if (input.leaves)
+      return {
+        effect: "require_approval",
+        boost: null,
+        reason: "Held: confidential data is leaving Pristine.",
+      };
     return { effect: "allow", boost: isRead ? null : "medium" };
   }
   return { effect: "allow", boost: null };
@@ -345,18 +486,33 @@ export function labelVerdict(input: {
 
 /* --------------------------- Just-in-time access -------------------------- */
 
-const READ_SCOPES: McpScope[] = ["work:read", "collaboration:read", "analytics:read", "prompt:read"];
+const READ_SCOPES: McpScope[] = [
+  "work:read",
+  "collaboration:read",
+  "analytics:read",
+  "prompt:read",
+];
 
 /** Risk of granting these scopes for a while; workspace:admin is never granted just in time. */
-export function elevationTier(scopes: McpScope[], agentRiskLevel?: string | null, isVendor = false): RiskTier | "forbidden" {
+export function elevationTier(
+  scopes: McpScope[],
+  agentRiskLevel?: string | null,
+  isVendor = false,
+): RiskTier | "forbidden" {
   if (scopes.includes("workspace:admin")) return "forbidden";
-  let tier: RiskTier = scopes.every((s) => READ_SCOPES.includes(s)) ? "low" : "medium";
+  let tier: RiskTier = scopes.every((s) => READ_SCOPES.includes(s))
+    ? "low"
+    : "medium";
   if (agentRiskLevel === "high" || agentRiskLevel === "critical") tier = "high";
   if (isVendor && tier === "low") tier = "medium";
   return tier;
 }
 
-export const clampMinutes = (value: unknown, max: number, fallback = 30): number => {
+export const clampMinutes = (
+  value: unknown,
+  max: number,
+  fallback = 30,
+): number => {
   const n = Math.round(Number(value));
   if (!Number.isFinite(n) || n <= 0) return Math.min(fallback, max);
   return Math.min(max, Math.max(5, n));
@@ -386,7 +542,10 @@ export function rotationStep(input: {
   const warnDays = Math.max(1, Math.min(7, Math.round(input.maxAgeDays / 10)));
   if (now < dueAt - warnDays * 86_400_000) return "none";
   if (input.mode === "auto" && now >= dueAt - 86_400_000) {
-    const risky = input.riskLevel === "high" || input.riskLevel === "critical" || input.isVendor;
+    const risky =
+      input.riskLevel === "high" ||
+      input.riskLevel === "critical" ||
+      input.isVendor;
     if (risky) return input.alreadyNotified ? "none" : "confirm";
     return "rotate";
   }
@@ -403,6 +562,8 @@ export interface PolicySnapshot {
   priority: number;
   enabled: boolean;
   match: Record<string, unknown>;
+  /** The regulation pack item that installed the policy, if any. */
+  pack?: { id: string; item: string } | null;
 }
 
 export interface PolicyChange {
@@ -412,18 +573,24 @@ export interface PolicyChange {
 }
 
 const normalizeValue = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.length ? [...value].map(String).sort() : undefined;
+  if (Array.isArray(value))
+    return value.length ? [...value].map(String).sort() : undefined;
   if (value && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
       .map(([k, v]) => [k, normalizeValue(v)] as const)
       .filter(([, v]) => v !== undefined && v !== null && v !== "");
-    return entries.length ? Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b))) : undefined;
+    return entries.length
+      ? Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)))
+      : undefined;
   }
   return value === null || value === "" ? undefined : value;
 };
 
 /** Field-by-field differences between two policy versions (match fields flattened). */
-export function diffPolicies(before: PolicySnapshot | null, after: PolicySnapshot | null): PolicyChange[] {
+export function diffPolicies(
+  before: PolicySnapshot | null,
+  after: PolicySnapshot | null,
+): PolicyChange[] {
   const flat = (p: PolicySnapshot | null): Record<string, unknown> => {
     if (!p) return {};
     const out: Record<string, unknown> = {
@@ -434,7 +601,8 @@ export function diffPolicies(before: PolicySnapshot | null, after: PolicySnapsho
       priority: p.priority,
       enabled: p.enabled,
     };
-    for (const [key, value] of Object.entries(p.match ?? {})) out[`match.${key}`] = normalizeValue(value);
+    for (const [key, value] of Object.entries(p.match ?? {}))
+      out[`match.${key}`] = normalizeValue(value);
     return out;
   };
   const a = flat(before);
@@ -442,7 +610,11 @@ export function diffPolicies(before: PolicySnapshot | null, after: PolicySnapsho
   const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
   return keys
     .filter((key) => JSON.stringify(a[key]) !== JSON.stringify(b[key]))
-    .map((key) => ({ field: key, before: a[key] ?? null, after: b[key] ?? null }));
+    .map((key) => ({
+      field: key,
+      before: a[key] ?? null,
+      after: b[key] ?? null,
+    }));
 }
 
 /* ------------------------------- Simulation ------------------------------- */
@@ -457,9 +629,20 @@ export interface SimulationSummary {
   changed: Record<string, number>;
 }
 
-export function summarizeSimulation(rows: Array<{ before: Effect; after: Effect }>): SimulationSummary {
-  const zero = (): Record<Effect, number> => ({ allow: 0, deny: 0, require_approval: 0 });
-  const summary: SimulationSummary = { total: rows.length, current: zero(), proposed: zero(), changed: {} };
+export function summarizeSimulation(
+  rows: Array<{ before: Effect; after: Effect }>,
+): SimulationSummary {
+  const zero = (): Record<Effect, number> => ({
+    allow: 0,
+    deny: 0,
+    require_approval: 0,
+  });
+  const summary: SimulationSummary = {
+    total: rows.length,
+    current: zero(),
+    proposed: zero(),
+    changed: {},
+  };
   for (const row of rows) {
     summary.current[row.before] += 1;
     summary.proposed[row.after] += 1;
@@ -501,7 +684,10 @@ export function playbookMatches(
   trigger: { types: string[]; minSeverity: "info" | "warning" | "critical" },
   alert: { type: string; severity: "info" | "warning" | "critical" },
 ): boolean {
-  return trigger.types.includes(alert.type) && SEVERITY_RANK[alert.severity] >= SEVERITY_RANK[trigger.minSeverity];
+  return (
+    trigger.types.includes(alert.type) &&
+    SEVERITY_RANK[alert.severity] >= SEVERITY_RANK[trigger.minSeverity]
+  );
 }
 
 export const PLAYBOOK_TEMPLATES: Array<{
@@ -514,28 +700,41 @@ export const PLAYBOOK_TEMPLATES: Array<{
   {
     key: "critical_threat",
     name: "Critical threat",
-    description: "Suspend the agent, open an incident and notify security; a person then confirms a permanent revoke.",
-    trigger: { types: ["threat", "coordinated_access"], minSeverity: "critical" },
-    steps: ["suspend_agent", "create_incident", "notify", "wait_for_approval", "revoke_agent"],
+    description:
+      "Suspend the agent, open an incident and notify security; a person then confirms a permanent revoke.",
+    trigger: {
+      types: ["threat", "coordinated_access"],
+      minSeverity: "critical",
+    },
+    steps: [
+      "suspend_agent",
+      "create_incident",
+      "notify",
+      "wait_for_approval",
+      "revoke_agent",
+    ],
   },
   {
     key: "data_leak",
     name: "Sensitive data leaving",
-    description: "On a critical DLP finding, the agent's next change needs a person, and security is notified.",
+    description:
+      "On a critical DLP finding, the agent's next change needs a person, and security is notified.",
     trigger: { types: ["dlp"], minSeverity: "critical" },
     steps: ["require_reapproval", "notify"],
   },
   {
     key: "anomaly",
     name: "Unusual behaviour",
-    description: "When an agent strays far from its baseline, its next change needs a person.",
+    description:
+      "When an agent strays far from its baseline, its next change needs a person.",
     trigger: { types: ["anomaly"], minSeverity: "warning" },
     steps: ["require_reapproval", "notify"],
   },
   {
     key: "compliance_drift",
     name: "Compliance drift",
-    description: "Open an incident and notify the compliance owner when a control slips.",
+    description:
+      "Open an incident and notify the compliance owner when a control slips.",
     trigger: { types: ["compliance_drift"], minSeverity: "warning" },
     steps: ["create_incident", "notify"],
   },

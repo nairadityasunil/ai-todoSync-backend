@@ -89,51 +89,116 @@ export const EXISTING_WORKSPACE_GOVERNANCE: GovernanceSettings = {
   incidentAutoContain: true,
 };
 
-const oneOf = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
-  typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
-const bool = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
-const intIn = (value: unknown, min: number, max: number, fallback: number): number => {
+const oneOf = <T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  fallback: T,
+): T =>
+  typeof value === "string" && (allowed as readonly string[]).includes(value)
+    ? (value as T)
+    : fallback;
+const bool = (value: unknown, fallback: boolean): boolean =>
+  typeof value === "boolean" ? value : fallback;
+const intIn = (
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number,
+): number => {
   const n = Number(value);
-  return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback;
+  return Number.isFinite(n)
+    ? Math.min(max, Math.max(min, Math.round(n)))
+    : fallback;
 };
 
 /** Stored settings (possibly partial or missing) with defaults filled in. */
 export function normalizeGovernance(stored: unknown): GovernanceSettings {
-  if (!stored || typeof stored !== "object") return { ...EXISTING_WORKSPACE_GOVERNANCE };
+  if (!stored || typeof stored !== "object")
+    return { ...EXISTING_WORKSPACE_GOVERNANCE };
   const s = stored as Record<string, unknown>;
   const base = EXISTING_WORKSPACE_GOVERNANCE;
   return {
-    mode: oneOf(s.mode, ["advisory", "auto_low_risk", "full_enforce"] as const, base.mode),
-    autoApproveRepeatDays: intIn(s.autoApproveRepeatDays, 0, 90, base.autoApproveRepeatDays),
-    criticalAutoSuspend: typeof s.criticalAutoSuspend === "boolean" ? s.criticalAutoSuspend : base.criticalAutoSuspend,
-    dlpMode: oneOf(s.dlpMode, ["off", "monitor", "enforce"] as const, base.dlpMode),
-    threatDetection: typeof s.threatDetection === "boolean" ? s.threatDetection : base.threatDetection,
-    incidentAutoContain: typeof s.incidentAutoContain === "boolean" ? s.incidentAutoContain : base.incidentAutoContain,
+    mode: oneOf(
+      s.mode,
+      ["advisory", "auto_low_risk", "full_enforce"] as const,
+      base.mode,
+    ),
+    autoApproveRepeatDays: intIn(
+      s.autoApproveRepeatDays,
+      0,
+      90,
+      base.autoApproveRepeatDays,
+    ),
+    criticalAutoSuspend:
+      typeof s.criticalAutoSuspend === "boolean"
+        ? s.criticalAutoSuspend
+        : base.criticalAutoSuspend,
+    dlpMode: oneOf(
+      s.dlpMode,
+      ["off", "monitor", "enforce"] as const,
+      base.dlpMode,
+    ),
+    threatDetection:
+      typeof s.threatDetection === "boolean"
+        ? s.threatDetection
+        : base.threatDetection,
+    incidentAutoContain:
+      typeof s.incidentAutoContain === "boolean"
+        ? s.incidentAutoContain
+        : base.incidentAutoContain,
     keyMaxAgeDays: intIn(s.keyMaxAgeDays, 0, 3650, base.keyMaxAgeDays),
-    complianceEnforce: typeof s.complianceEnforce === "boolean" ? s.complianceEnforce : base.complianceEnforce,
-    complianceReportSchedule: oneOf(s.complianceReportSchedule, ["off", "weekly", "monthly"] as const, base.complianceReportSchedule),
+    complianceEnforce:
+      typeof s.complianceEnforce === "boolean"
+        ? s.complianceEnforce
+        : base.complianceEnforce,
+    complianceReportSchedule: oneOf(
+      s.complianceReportSchedule,
+      ["off", "weekly", "monthly"] as const,
+      base.complianceReportSchedule,
+    ),
     allowedDataRegions: Array.isArray(s.allowedDataRegions)
-      ? s.allowedDataRegions.filter((r): r is string => typeof r === "string" && r.trim() !== "").map((r) => r.trim().slice(0, 40)).slice(0, 20)
+      ? s.allowedDataRegions
+          .filter((r): r is string => typeof r === "string" && r.trim() !== "")
+          .map((r) => r.trim().slice(0, 40))
+          .slice(0, 20)
       : base.allowedDataRegions,
     anomalyDetection: bool(s.anomalyDetection, base.anomalyDetection),
     correlation: bool(s.correlation, base.correlation),
     sessionRisk: bool(s.sessionRisk, base.sessionRisk),
-    classificationEnforce: bool(s.classificationEnforce, base.classificationEnforce),
+    classificationEnforce: bool(
+      s.classificationEnforce,
+      base.classificationEnforce,
+    ),
     jitEnabled: bool(s.jitEnabled, base.jitEnabled),
     jitMaxMinutes: intIn(s.jitMaxMinutes, 5, 480, base.jitMaxMinutes),
     jitAutoGrantLowRisk: bool(s.jitAutoGrantLowRisk, base.jitAutoGrantLowRisk),
-    keyRotation: oneOf(s.keyRotation, ["off", "notify", "auto"] as const, base.keyRotation),
+    keyRotation: oneOf(
+      s.keyRotation,
+      ["off", "notify", "auto"] as const,
+      base.keyRotation,
+    ),
     keyGraceHours: intIn(s.keyGraceHours, 0, 336, base.keyGraceHours),
     vendorKeyMaxDays: intIn(s.vendorKeyMaxDays, 1, 365, base.vendorKeyMaxDays),
-    policyChangeApproval: bool(s.policyChangeApproval, base.policyChangeApproval),
+    policyChangeApproval: bool(
+      s.policyChangeApproval,
+      base.policyChangeApproval,
+    ),
   };
 }
 
 /* ------------------------------ Risk tiers ------------------------------ */
 
-const TIER_ORDER: Record<RiskTier, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+const TIER_ORDER: Record<RiskTier, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
 export const maxTier = (...tiers: RiskTier[]): RiskTier =>
-  tiers.reduce((a, b) => (TIER_ORDER[b] > TIER_ORDER[a] ? b : a), "low" as RiskTier);
+  tiers.reduce(
+    (a, b) => (TIER_ORDER[b] > TIER_ORDER[a] ? b : a),
+    "low" as RiskTier,
+  );
 
 /** How risky the action itself is. */
 export function actionTier(risk: RiskLevel): RiskTier {
@@ -156,13 +221,26 @@ export function actionTier(risk: RiskLevel): RiskTier {
  * risk level when that is high or critical. A critical agent's writes are critical; its reads stay as they are
  * (looking is not acting), unless the agent is critical and the read is bulk.
  */
-export function tierFor(input: { risk: RiskLevel; agentRiskLevel?: string | null; boost?: RiskTier | null }): RiskTier {
-  const agentLevel = (["low", "medium", "high", "critical"] as const).includes(input.agentRiskLevel as RiskTier)
+export function tierFor(input: {
+  risk: RiskLevel;
+  agentRiskLevel?: string | null;
+  boost?: RiskTier | null;
+}): RiskTier {
+  const agentLevel = (["low", "medium", "high", "critical"] as const).includes(
+    input.agentRiskLevel as RiskTier,
+  )
     ? (input.agentRiskLevel as RiskTier)
     : "low";
   const fromAction = actionTier(input.risk);
   // A medium agent score is normal for any key that can write; only high and critical agents raise the tier.
-  const fromAgent = input.risk === "read" ? (agentLevel === "critical" ? "medium" : "low") : agentLevel === "medium" ? "low" : agentLevel;
+  const fromAgent =
+    input.risk === "read"
+      ? agentLevel === "critical"
+        ? "medium"
+        : "low"
+      : agentLevel === "medium"
+        ? "low"
+        : agentLevel;
   return maxTier(fromAction, fromAgent, input.boost ?? "low");
 }
 
@@ -177,26 +255,54 @@ export interface DefaultDecision {
 }
 
 /** What the system decides when no explicit policy matches. */
-export function defaultDecision(settings: Pick<GovernanceSettings, "mode" | "criticalAutoSuspend">, tier: RiskTier, isRead: boolean): DefaultDecision {
+export function defaultDecision(
+  settings: Pick<GovernanceSettings, "mode" | "criticalAutoSuspend">,
+  tier: RiskTier,
+  isRead: boolean,
+): DefaultDecision {
   const label = `${tier} risk`;
   if (settings.mode === "advisory") {
-    const would = tier === "low" ? undefined : tier === "critical" ? "deny" : "require_approval";
-    return { effect: "allow", suspend: false, rule: `Default rule (advisory): ${label}, allowed and logged`, wouldHave: would };
+    const would =
+      tier === "low"
+        ? undefined
+        : tier === "critical"
+          ? "deny"
+          : "require_approval";
+    return {
+      effect: "allow",
+      suspend: false,
+      rule: `Default rule (advisory): ${label}, allowed and logged`,
+      wouldHave: would,
+    };
   }
   if (tier === "critical") {
     return {
       effect: "deny",
       suspend: settings.criticalAutoSuspend,
-      rule: settings.criticalAutoSuspend ? `Default rule: ${label}, blocked and agent suspended for review` : `Default rule: ${label}, blocked`,
+      rule: settings.criticalAutoSuspend
+        ? `Default rule: ${label}, blocked and agent suspended for review`
+        : `Default rule: ${label}, blocked`,
     };
   }
   if (tier === "low" && (settings.mode === "auto_low_risk" || isRead)) {
-    return { effect: "allow", suspend: false, rule: `Default rule: ${label}, allowed automatically` };
+    return {
+      effect: "allow",
+      suspend: false,
+      rule: `Default rule: ${label}, allowed automatically`,
+    };
   }
   if (settings.mode === "full_enforce" && isRead) {
-    return { effect: "allow", suspend: false, rule: `Default rule: ${label} read, allowed` };
+    return {
+      effect: "allow",
+      suspend: false,
+      rule: `Default rule: ${label} read, allowed`,
+    };
   }
-  return { effect: "require_approval", suspend: false, rule: `Default rule: ${label}, needs a person` };
+  return {
+    effect: "require_approval",
+    suspend: false,
+    rule: `Default rule: ${label}, needs a person`,
+  };
 }
 
 /* --------------------------- Recommendations --------------------------- */
@@ -227,7 +333,9 @@ export function recommend(input: {
   }
   if (input.tier === "high" || input.tier === "critical") {
     score -= 1;
-    reasons.push(`${input.tier[0].toUpperCase()}${input.tier.slice(1)}-risk action`);
+    reasons.push(
+      `${input.tier[0].toUpperCase()}${input.tier.slice(1)}-risk action`,
+    );
   }
   if (input.risk === "destructive") {
     score -= 1;
@@ -243,11 +351,15 @@ export function recommend(input: {
   }
   if (input.approvedBefore > 0) {
     score += 2;
-    reasons.push(`A person approved this action for this agent ${input.approvedBefore} time(s) recently`);
+    reasons.push(
+      `A person approved this action for this agent ${input.approvedBefore} time(s) recently`,
+    );
   }
   if (input.rejectedBefore > 0) {
     score -= 2;
-    reasons.push(`A person rejected this action for this agent ${input.rejectedBefore} time(s) recently`);
+    reasons.push(
+      `A person rejected this action for this agent ${input.rejectedBefore} time(s) recently`,
+    );
   }
   if (input.dlpFindings > 0) {
     score -= 2;
@@ -261,12 +373,22 @@ export function recommend(input: {
     score -= 1;
     reasons.push(signal);
   }
-  return { decision: score > 0 ? "approve" : "reject", reasons: reasons.length ? reasons : ["No strong signal either way"] };
+  return {
+    decision: score > 0 ? "approve" : "reject",
+    reasons: reasons.length ? reasons : ["No strong signal either way"],
+  };
 }
 
 /* ---------------------------------- DLP --------------------------------- */
 
-export type DlpFindingType = "credential" | "card_number" | "email" | "phone" | "national_id" | "bulk_export" | "external_destination";
+export type DlpFindingType =
+  | "credential"
+  | "card_number"
+  | "email"
+  | "phone"
+  | "national_id"
+  | "bulk_export"
+  | "external_destination";
 export interface DlpFinding {
   type: DlpFindingType;
   label: string;
@@ -274,12 +396,48 @@ export interface DlpFinding {
   count: number;
 }
 
-const CREDENTIAL = /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9]{16,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|\bpk_agent_[A-Za-z0-9_-]{16,}\b|\bAIza[0-9A-Za-z_-]{30,}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g;
+const CREDENTIAL =
+  /\b(?:sk|pk|rk)[-_](?:live|test|proj|ant)?[-_]?[A-Za-z0-9]{16,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|\bpk_agent_[A-Za-z0-9_-]{16,}\b|\bAIza[0-9A-Za-z_-]{30,}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/g;
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const CARD = /\b(?:\d[ -]?){13,19}\b/g;
 const PHONE = /(?<![\w.])\+?[\d(][\d\s().-]{8,}\d(?![\w.])/g;
 const US_SSN = /\b\d{3}-\d{2}-\d{4}\b/g;
+/** India: Aadhaar (12 digits, never starting 0 or 1; checked with Verhoeff) and PAN (e.g. ABCPE1234F). */
+const AADHAAR = /(?<!\+)\b[2-9]\d{3}[ -]?\d{4}[ -]?\d{4}\b/g;
+const PAN = /\b[A-Z]{3}[ABCFGHJLPT][A-Z]\d{4}[A-Z]\b/g;
 const URL = /\bhttps?:\/\/([a-z0-9.-]+\.[a-z]{2,})(?::\d+)?/gi;
+
+const VERHOEFF_D = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [1, 2, 3, 4, 0, 6, 7, 8, 9, 5],
+  [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+  [3, 4, 0, 1, 2, 8, 9, 5, 6, 7],
+  [4, 0, 1, 2, 3, 9, 5, 6, 7, 8],
+  [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+  [6, 5, 9, 8, 7, 1, 0, 4, 3, 2],
+  [7, 6, 5, 9, 8, 2, 1, 0, 4, 3],
+  [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+  [9, 8, 7, 6, 5, 4, 3, 2, 1, 0],
+];
+const VERHOEFF_P = [
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  [1, 5, 7, 6, 2, 8, 3, 0, 9, 4],
+  [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+  [8, 9, 1, 6, 0, 4, 3, 5, 2, 7],
+  [9, 4, 5, 3, 1, 2, 6, 8, 7, 0],
+  [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+  [2, 7, 9, 3, 8, 0, 6, 4, 1, 5],
+  [7, 0, 4, 6, 9, 1, 3, 2, 5, 8],
+];
+
+/** Verhoeff check (used by Aadhaar numbers), so random 12-digit numbers are not flagged. */
+export function verhoeff(digits: string): boolean {
+  let c = 0;
+  const reversed = digits.split("").reverse();
+  for (let i = 0; i < reversed.length; i += 1)
+    c = VERHOEFF_D[c][VERHOEFF_P[i % 8][Number(reversed[i])]];
+  return c === 0;
+}
 
 /** Luhn check, so order numbers and ids are not mistaken for card numbers. */
 export function luhn(digits: string): boolean {
@@ -300,37 +458,75 @@ export function luhn(digits: string): boolean {
 const collectStrings = (value: unknown, out: string[], depth = 0): void => {
   if (depth > 6 || out.length > 2000) return;
   if (typeof value === "string") out.push(value);
-  else if (Array.isArray(value)) value.forEach((v) => collectStrings(v, out, depth + 1));
-  else if (value && typeof value === "object") Object.values(value as Record<string, unknown>).forEach((v) => collectStrings(v, out, depth + 1));
+  else if (Array.isArray(value))
+    value.forEach((v) => collectStrings(v, out, depth + 1));
+  else if (value && typeof value === "object")
+    Object.values(value as Record<string, unknown>).forEach((v) =>
+      collectStrings(v, out, depth + 1),
+    );
 };
 
 /**
  * Scans what an agent sends (request body, tool input, AI prompt) for secrets
  * and personal data, and for links to hosts outside the allowed list.
  */
-export function scanForDlp(value: unknown, options: { allowedHosts?: string[] } = {}): DlpFinding[] {
+export function scanForDlp(
+  value: unknown,
+  options: { allowedHosts?: string[] } = {},
+): DlpFinding[] {
   const strings: string[] = [];
   collectStrings(value, strings);
   const text = strings.join("\n").slice(0, 200_000);
   const findings: DlpFinding[] = [];
-  const add = (type: DlpFindingType, label: string, confidence: "high" | "medium", count: number) => {
+  const add = (
+    type: DlpFindingType,
+    label: string,
+    confidence: "high" | "medium",
+    count: number,
+  ) => {
     if (count > 0) findings.push({ type, label, confidence, count });
   };
-  add("credential", "API key, token or private key", "high", (text.match(CREDENTIAL) ?? []).length);
-  add("card_number", "Payment card number", "high", (text.match(CARD) ?? []).filter((c) => luhn(c.replace(/\D/g, ""))).length);
-  add("national_id", "National ID number", "high", (text.match(US_SSN) ?? []).length);
+  add(
+    "credential",
+    "API key, token or private key",
+    "high",
+    (text.match(CREDENTIAL) ?? []).length,
+  );
+  add(
+    "card_number",
+    "Payment card number",
+    "high",
+    (text.match(CARD) ?? []).filter((c) => luhn(c.replace(/\D/g, ""))).length,
+  );
+  add(
+    "national_id",
+    "National ID number",
+    "high",
+    (text.match(US_SSN) ?? []).length +
+      (text.match(AADHAAR) ?? []).filter((n) => verhoeff(n.replace(/\D/g, "")))
+        .length +
+      (text.match(PAN) ?? []).length,
+  );
   const emails = new Set((text.match(EMAIL) ?? []).map((e) => e.toLowerCase()));
   add("email", "Email address", "medium", emails.size);
-  const phones = (text.match(PHONE) ?? []).filter((p) => !/^\d{4}-\d{2}-\d{2}/.test(p) && p.replace(/\D/g, "").length >= 9);
+  const phones = (text.match(PHONE) ?? []).filter(
+    (p) => !/^\d{4}-\d{2}-\d{2}/.test(p) && p.replace(/\D/g, "").length >= 9,
+  );
   add("phone", "Phone number", "medium", phones.length);
   if (options.allowedHosts) {
     const allowed = options.allowedHosts.map((h) => h.toLowerCase());
     const external = new Set<string>();
     for (const match of text.matchAll(URL)) {
       const host = match[1].toLowerCase();
-      if (!allowed.some((a) => host === a || host.endsWith(`.${a}`))) external.add(host);
+      if (!allowed.some((a) => host === a || host.endsWith(`.${a}`)))
+        external.add(host);
     }
-    add("external_destination", `Link to an unapproved host (${[...external].slice(0, 3).join(", ")})`, "medium", external.size);
+    add(
+      "external_destination",
+      `Link to an unapproved host (${[...external].slice(0, 3).join(", ")})`,
+      "medium",
+      external.size,
+    );
   }
   return findings;
 }
@@ -352,13 +548,26 @@ export interface DlpVerdict {
 export function dlpVerdict(mode: DlpMode, findings: DlpFinding[]): DlpVerdict {
   if (mode !== "enforce" || findings.length === 0) return { effect: "allow" };
   const high = findings.filter((f) => f.confidence === "high");
-  if (high.length) return { effect: "deny", reason: `Blocked by DLP: contains ${high.map((f) => f.label.toLowerCase()).join(", ")}.` };
-  return { effect: "require_approval", reason: `Held by DLP: contains ${findings.map((f) => f.label.toLowerCase()).join(", ")}.` };
+  if (high.length)
+    return {
+      effect: "deny",
+      reason: `Blocked by DLP: contains ${high.map((f) => f.label.toLowerCase()).join(", ")}.`,
+    };
+  return {
+    effect: "require_approval",
+    reason: `Held by DLP: contains ${findings.map((f) => f.label.toLowerCase()).join(", ")}.`,
+  };
 }
 
 /* -------------------------------- Threats ------------------------------- */
 
-export type ThreatType = "key_abuse" | "privilege_escalation" | "rapid_enumeration" | "exfiltration" | "mass_delete" | "repeated_blocks";
+export type ThreatType =
+  | "key_abuse"
+  | "privilege_escalation"
+  | "rapid_enumeration"
+  | "exfiltration"
+  | "mass_delete"
+  | "repeated_blocks";
 
 export interface ThreatSignal {
   type: ThreatType;
@@ -384,7 +593,10 @@ export const THREAT_RULES = {
 
 /** Sliding windows of recent events per agent, kept in memory (per process). */
 export class ThreatWindows {
-  private events = new Map<string, Array<{ at: number; kind: string; value?: string }>>();
+  private events = new Map<
+    string,
+    Array<{ at: number; kind: string; value?: string }>
+  >();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -398,9 +610,15 @@ export class ThreatWindows {
     if (this.events.size > 20_000) this.events.clear();
   }
 
-  private count(agentId: string, kind: string, windowMs: number): Array<{ value?: string }> {
+  private count(
+    agentId: string,
+    kind: string,
+    windowMs: number,
+  ): Array<{ value?: string }> {
     const cutoff = this.now() - windowMs;
-    return (this.events.get(agentId) ?? []).filter((e) => e.kind === kind && e.at >= cutoff);
+    return (this.events.get(agentId) ?? []).filter(
+      (e) => e.kind === kind && e.at >= cutoff,
+    );
   }
 
   /** Records one call and returns the threats it completes (each only when its threshold is first reached). */
@@ -417,43 +635,102 @@ export class ThreatWindows {
     const out: ThreatSignal[] = [];
     const { agentId, agentName } = input;
     if (input.ip) {
-      const before = new Set(this.count(agentId, "ip", r.keyAbuseWindowMs).map((e) => e.value)).size;
+      const before = new Set(
+        this.count(agentId, "ip", r.keyAbuseWindowMs).map((e) => e.value),
+      ).size;
       this.push(agentId, "ip", input.ip);
-      const ips = new Set(this.count(agentId, "ip", r.keyAbuseWindowMs).map((e) => e.value));
+      const ips = new Set(
+        this.count(agentId, "ip", r.keyAbuseWindowMs).map((e) => e.value),
+      );
       if (ips.size === r.keyAbuseIps && before < r.keyAbuseIps) {
-        out.push({ type: "key_abuse", severity: "critical", title: `${agentName} is used from ${ips.size} addresses`, detail: `The same credential was used from ${[...ips].join(", ")} within 10 minutes. It may be leaked.` });
+        out.push({
+          type: "key_abuse",
+          severity: "critical",
+          title: `${agentName} is used from ${ips.size} addresses`,
+          detail: `The same credential was used from ${[...ips].join(", ")} within 10 minutes. It may be leaked.`,
+        });
       }
     }
-    const crossing = (kind: string, threshold: number, windowMs: number): boolean => {
+    const crossing = (
+      kind: string,
+      threshold: number,
+      windowMs: number,
+    ): boolean => {
       this.push(agentId, kind);
       return this.count(agentId, kind, windowMs).length === threshold;
     };
-    if (input.outcome === "escalation" && crossing("escalation", r.escalationAttempts, r.escalationWindowMs)) {
-      out.push({ type: "privilege_escalation", severity: "warning", title: `${agentName} keeps trying actions it is not allowed`, detail: `${r.escalationAttempts} attempts to use scopes or people-only actions within 10 minutes.` });
+    if (
+      input.outcome === "escalation" &&
+      crossing("escalation", r.escalationAttempts, r.escalationWindowMs)
+    ) {
+      out.push({
+        type: "privilege_escalation",
+        severity: "warning",
+        title: `${agentName} keeps trying actions it is not allowed`,
+        detail: `${r.escalationAttempts} attempts to use scopes or people-only actions within 10 minutes.`,
+      });
     }
-    if (input.outcome === "blocked" && crossing("blocked", r.blocks, r.blocksWindowMs)) {
-      out.push({ type: "repeated_blocks", severity: "critical", title: `${agentName} was blocked ${r.blocks} times in 10 minutes`, detail: "Repeated blocked actions usually mean a misbehaving or compromised agent." });
+    if (
+      input.outcome === "blocked" &&
+      crossing("blocked", r.blocks, r.blocksWindowMs)
+    ) {
+      out.push({
+        type: "repeated_blocks",
+        severity: "critical",
+        title: `${agentName} was blocked ${r.blocks} times in 10 minutes`,
+        detail:
+          "Repeated blocked actions usually mean a misbehaving or compromised agent.",
+      });
     }
-    if (input.isList && crossing("list", r.enumerationReads, r.enumerationWindowMs)) {
-      out.push({ type: "rapid_enumeration", severity: "warning", title: `${agentName} is listing records rapidly`, detail: `${r.enumerationReads} list calls within 5 minutes.` });
+    if (
+      input.isList &&
+      crossing("list", r.enumerationReads, r.enumerationWindowMs)
+    ) {
+      out.push({
+        type: "rapid_enumeration",
+        severity: "warning",
+        title: `${agentName} is listing records rapidly`,
+        detail: `${r.enumerationReads} list calls within 5 minutes.`,
+      });
     }
     if (input.isBulk && crossing("bulk", r.bulkReads, r.bulkWindowMs)) {
-      out.push({ type: "exfiltration", severity: "critical", title: `${agentName} is exporting data repeatedly`, detail: `${r.bulkReads} bulk reads or exports within 15 minutes: a possible data exfiltration pattern.` });
+      out.push({
+        type: "exfiltration",
+        severity: "critical",
+        title: `${agentName} is exporting data repeatedly`,
+        detail: `${r.bulkReads} bulk reads or exports within 15 minutes: a possible data exfiltration pattern.`,
+      });
     }
-    if (input.risk === "destructive" && input.outcome !== "blocked" && crossing("delete", r.massDeletes, r.massDeleteWindowMs)) {
-      out.push({ type: "mass_delete", severity: "critical", title: `${agentName} is deleting in bulk`, detail: `${r.massDeletes} deletes within 5 minutes.` });
+    if (
+      input.risk === "destructive" &&
+      input.outcome !== "blocked" &&
+      crossing("delete", r.massDeletes, r.massDeleteWindowMs)
+    ) {
+      out.push({
+        type: "mass_delete",
+        severity: "critical",
+        title: `${agentName} is deleting in bulk`,
+        detail: `${r.massDeletes} deletes within 5 minutes.`,
+      });
     }
     return out;
   }
 
   /** Distinct addresses the agent was used from within the window. */
-  distinctIps(agentId: string, windowMs = THREAT_RULES.keyAbuseWindowMs): number {
-    return new Set(this.count(agentId, "ip", windowMs).map((e) => e.value)).size;
+  distinctIps(
+    agentId: string,
+    windowMs = THREAT_RULES.keyAbuseWindowMs,
+  ): number {
+    return new Set(this.count(agentId, "ip", windowMs).map((e) => e.value))
+      .size;
   }
 
   /** True while the agent has a mass-delete signal (further deletes are blocked). */
   deletingInBulk(agentId: string): boolean {
-    return this.count(agentId, "delete", THREAT_RULES.massDeleteWindowMs).length >= THREAT_RULES.massDeletes;
+    return (
+      this.count(agentId, "delete", THREAT_RULES.massDeleteWindowMs).length >=
+      THREAT_RULES.massDeletes
+    );
   }
 
   reset(agentId?: string): void {
@@ -463,40 +740,67 @@ export class ThreatWindows {
 }
 
 /** What to change so it does not happen again, per trigger. */
-export function incidentSuggestions(trigger: string, action?: string | null): string[] {
+export function incidentSuggestions(
+  trigger: string,
+  action?: string | null,
+): string[] {
   const s: string[] = [];
   switch (trigger) {
     case "key_abuse":
-      s.push("Revoke the key and issue a new one; keep agent keys in a secret manager.", "Set a short expiry on agent keys.");
+      s.push(
+        "Revoke the key and issue a new one; keep agent keys in a secret manager.",
+        "Set a short expiry on agent keys.",
+      );
       break;
     case "privilege_escalation":
-      s.push("Reduce the agent's scopes to what it uses.", "Add a deny policy for the actions it tried.");
+      s.push(
+        "Reduce the agent's scopes to what it uses.",
+        "Add a deny policy for the actions it tried.",
+      );
       break;
     case "rapid_enumeration":
     case "exfiltration":
-      s.push("Limit the agent to the projects it needs.", "Set a per-minute rate limit on the agent.");
+      s.push(
+        "Limit the agent to the projects it needs.",
+        "Set a per-minute rate limit on the agent.",
+      );
       break;
     case "mass_delete":
-      s.push(`Add a policy: require approval for ${action ?? "deletes"}.`, "Set a per-minute rate limit on the agent.");
+      s.push(
+        `Add a policy: require approval for ${action ?? "deletes"}.`,
+        "Set a per-minute rate limit on the agent.",
+      );
       break;
     case "repeated_blocks":
-      s.push("Check what the agent is trying to do and fix its configuration, or revoke it.");
+      s.push(
+        "Check what the agent is trying to do and fix its configuration, or revoke it.",
+      );
       break;
     case "critical_risk":
-      s.push("Review the agent's risk factors and narrow its access before resuming it.");
+      s.push(
+        "Review the agent's risk factors and narrow its access before resuming it.",
+      );
       break;
     case "dlp":
-      s.push("Turn on AI data masking.", "Keep secrets out of agent inputs; use a secret manager.");
+      s.push(
+        "Turn on AI data masking.",
+        "Keep secrets out of agent inputs; use a secret manager.",
+      );
       break;
     default:
       s.push("Review the agent's recent activity and narrow its access.");
   }
-  s.push("Require a person to approve the agent's next action before it can act again.");
+  s.push(
+    "Require a person to approve the agent's next action before it can act again.",
+  );
   return s;
 }
 
 /** Whether a stated data location falls inside one of the allowed regions (case-insensitive, "EU" matches "EU (Frankfurt)"). */
 export function regionAllowed(location: string, regions: string[]): boolean {
   const where = location.toLowerCase();
-  return regions.some((region) => region.trim() !== "" && where.includes(region.trim().toLowerCase()));
+  return regions.some(
+    (region) =>
+      region.trim() !== "" && where.includes(region.trim().toLowerCase()),
+  );
 }
