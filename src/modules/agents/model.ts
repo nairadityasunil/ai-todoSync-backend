@@ -840,6 +840,8 @@ export interface IGovernanceEvent {
   incidentId?: Types.ObjectId | string | null;
   title: string;
   detail: string;
+  /** Portal path the timeline opens for this event (e.g. the task the system created). */
+  link?: string | null;
   createdAt: Date;
 }
 
@@ -855,6 +857,7 @@ const governanceEventSchema = new Schema<IGovernanceEventDocument>(
     incidentId: { type: Schema.Types.ObjectId, default: null },
     title: { type: String, required: true },
     detail: { type: String, default: "" },
+    link: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { versionKey: false },

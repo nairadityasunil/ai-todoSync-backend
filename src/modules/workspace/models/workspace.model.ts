@@ -59,6 +59,8 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
       // Hybrid governance (see agents/hybrid.ts). No defaults here: a missing
       // block marks a workspace created before hybrid governance.
       governance: { type: Schema.Types.Mixed, default: undefined },
+      // Telemetry automation (see telemetry/automation.ts).
+      automation: { type: Schema.Types.Mixed, default: undefined },
     },
   },
   { timestamps: true },

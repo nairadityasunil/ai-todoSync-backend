@@ -1030,13 +1030,11 @@ class AgentController {
         title: `Proposed a new policy "${data.name}"`,
         detail: "Waiting for another admin.",
       });
-      res
-        .status(202)
-        .json({
-          success: true,
-          message: "Proposed: another admin must approve it before it applies.",
-          data: { proposal: serializeVersion(proposal) },
-        });
+      res.status(202).json({
+        success: true,
+        message: "Proposed: another admin must approve it before it applies.",
+        data: { proposal: serializeVersion(proposal) },
+      });
       return;
     }
     const policy = await AgentPolicyModel.create({
@@ -1115,13 +1113,11 @@ class AgentController {
           .map((c) => c.field)
           .join(", "),
       });
-      res
-        .status(202)
-        .json({
-          success: true,
-          message: "Proposed: another admin must approve it before it applies.",
-          data: { proposal: serializeVersion(proposal) },
-        });
+      res.status(202).json({
+        success: true,
+        message: "Proposed: another admin must approve it before it applies.",
+        data: { proposal: serializeVersion(proposal) },
+      });
       return;
     }
     policy.set({ ...next, updatedBy: userId });
@@ -1161,13 +1157,11 @@ class AgentController {
         previous: snapshotOf(policy),
         userId,
       });
-      res
-        .status(202)
-        .json({
-          success: true,
-          message: "Proposed: another admin must approve the removal.",
-          data: { proposal: serializeVersion(proposal) },
-        });
+      res.status(202).json({
+        success: true,
+        message: "Proposed: another admin must approve the removal.",
+        data: { proposal: serializeVersion(proposal) },
+      });
       return;
     }
     await recordVersion({
@@ -1485,6 +1479,7 @@ class AgentController {
       "agent",
       "approval",
       "event",
+      "guide",
       "detection",
       "incident",
       "system",

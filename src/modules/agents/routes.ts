@@ -1,3 +1,4 @@
+import { automationChangedFor } from "../telemetry/hooks.js";
 import { Router } from "express";
 
 import type { Routes } from "../../interfaces/routes.interface.js";
@@ -21,6 +22,19 @@ class AgentRoutes implements Routes {
   private initializeRoutes(): void {
     const c = agentController;
     this.router.use(authMiddleware);
+    // After any change here (a key created, an agent blocked, an incident
+    // resolved, a vendor approved) re-check the tasks automation keeps.
+    this.router.use((req, res, next) => {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.on("finish", () => {
+          const userId = (
+            req as { user?: { _id?: { toString(): string } } }
+          ).user?._id?.toString();
+          if (res.statusCode < 400) automationChangedFor(userId);
+        });
+      }
+      next();
+    });
 
     this.router.get("/overview", c.overview);
     this.router.get("/catalog", c.catalog);

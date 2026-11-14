@@ -1,3 +1,4 @@
+import { automationChanged } from "../telemetry/hooks.js";
 import { Types } from "mongoose";
 
 import logger from "../../lib/logger.js";
@@ -34,13 +35,32 @@ export { driftedControls };
  * Runs the compliance checks, stores a snapshot for the trend, and raises a
  * drift alert for each control that has started failing.
  */
-export async function snapshotCompliance(workspaceId: string, reason: string, userId?: string | null): Promise<{ report: Report; drifted: Array<{ id: string; title: string; status: string }> }> {
+export async function snapshotCompliance(
+  workspaceId: string,
+  reason: string,
+  userId?: string | null,
+): Promise<{
+  report: Report;
+  drifted: Array<{ id: string; title: string; status: string }>;
+}> {
   const report = await complianceReport(workspaceId);
   const ws = new Types.ObjectId(workspaceId);
-  const previous = await ComplianceSnapshotModel.findOne({ workspaceId: ws }).sort({ createdAt: -1 }).lean();
-  const controls = report.controls.map((c) => ({ id: c.id, title: c.title, status: c.status }));
+  const previous = await ComplianceSnapshotModel.findOne({ workspaceId: ws })
+    .sort({ createdAt: -1 })
+    .lean();
+  const controls = report.controls.map((c) => ({
+    id: c.id,
+    title: c.title,
+    status: c.status,
+  }));
   const drifted = previous ? driftedControls(previous.controls, controls) : [];
-  await ComplianceSnapshotModel.create({ workspaceId: ws, score: report.score, controls });
+  await ComplianceSnapshotModel.create({
+    workspaceId: ws,
+    score: report.score,
+    controls,
+  });
+  // Failing controls open tasks; controls that pass again close theirs.
+  automationChanged(workspaceId);
   await logGovernanceEvent({
     workspaceId,
     type: "compliance_check",
@@ -64,7 +84,12 @@ export async function snapshotCompliance(workspaceId: string, reason: string, us
       workspaceId,
       severity: "warning",
       summary: `Compliance drift: "${control.title}" is now ${control.status}`,
-      data: { control: control.id, status: control.status, score: report.score, previousScore: previous?.score ?? null },
+      data: {
+        control: control.id,
+        status: control.status,
+        score: report.score,
+        previousScore: previous?.score ?? null,
+      },
     });
   }
   return { report, drifted };
@@ -89,7 +114,10 @@ export async function complianceTrend(workspaceId: string, days = 90) {
 
 const checks = new Map<string, ReturnType<typeof setTimeout>>();
 /** Re-checks compliance shortly after a key event (policy change, new agent, incident); debounced. */
-export function scheduleComplianceCheck(workspaceId: string | null | undefined, reason: string): void {
+export function scheduleComplianceCheck(
+  workspaceId: string | null | undefined,
+  reason: string,
+): void {
   if (!workspaceId) return;
   const existing = checks.get(workspaceId);
   if (existing) clearTimeout(existing);
@@ -98,33 +126,81 @@ export function scheduleComplianceCheck(workspaceId: string | null | undefined, 
     setTimeout(() => {
       checks.delete(workspaceId);
       void snapshotCompliance(workspaceId, reason).catch((error) =>
-        logger.warn("Compliance check failed", { message: error instanceof Error ? error.message : String(error) }),
+        logger.warn("Compliance check failed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
       );
     }, 30_000).unref(),
   );
 }
 
 /** Evidence pack (ZIP) for auditors: inventory, policies, approvals, shadow AI, DLP and threats, incidents, activity summary, controls. */
-export async function buildEvidencePack(workspaceId: string, range: { from: Date; to: Date }, userId?: string | null): Promise<{ filename: string; zip: Buffer; report: Report }> {
+export async function buildEvidencePack(
+  workspaceId: string,
+  range: { from: Date; to: Date },
+  userId?: string | null,
+): Promise<{ filename: string; zip: Buffer; report: Report }> {
   const ws = new Types.ObjectId(workspaceId);
   const window = { $gte: range.from, $lte: range.to };
-  const [report, workspace, agents, policies, approvals, alerts, incidents, activity, events, trend] = await Promise.all([
+  const [
+    report,
+    workspace,
+    agents,
+    policies,
+    approvals,
+    alerts,
+    incidents,
+    activity,
+    events,
+    trend,
+  ] = await Promise.all([
     complianceReport(workspaceId),
     WorkspaceModel.findById(ws).select("name settings").lean(),
-    AgentModel.find({ workspaceId: ws }).select("name kind status riskLevel riskScore scopes projectIds expiresAt keyIssuedAt lastSeenAt ownerUserId detectionSignals replacedByAgentId createdAt").lean(),
+    AgentModel.find({ workspaceId: ws })
+      .select(
+        "name kind status riskLevel riskScore scopes projectIds expiresAt keyIssuedAt lastSeenAt ownerUserId detectionSignals replacedByAgentId createdAt",
+      )
+      .lean(),
     AgentPolicyModel.find({ workspaceId: ws }).lean(),
-    AgentApprovalModel.find({ workspaceId: ws, createdAt: window }).select("-input -replayTokenHash -result").sort({ createdAt: 1 }).lean(),
-    AgentAlertModel.find({ workspaceId: ws, createdAt: window }).sort({ createdAt: 1 }).lean(),
-    AgentIncidentModel.find({ workspaceId: ws, createdAt: window }).sort({ createdAt: 1 }).lean(),
-    AgentActivityModel.aggregate<{ _id: { agentId: Types.ObjectId; outcome: string; decidedBy: string | null }; n: number }>([
+    AgentApprovalModel.find({ workspaceId: ws, createdAt: window })
+      .select("-input -replayTokenHash -result")
+      .sort({ createdAt: 1 })
+      .lean(),
+    AgentAlertModel.find({ workspaceId: ws, createdAt: window })
+      .sort({ createdAt: 1 })
+      .lean(),
+    AgentIncidentModel.find({ workspaceId: ws, createdAt: window })
+      .sort({ createdAt: 1 })
+      .lean(),
+    AgentActivityModel.aggregate<{
+      _id: {
+        agentId: Types.ObjectId;
+        outcome: string;
+        decidedBy: string | null;
+      };
+      n: number;
+    }>([
       { $match: { workspaceId: ws, createdAt: window } },
-      { $group: { _id: { agentId: "$agentId", outcome: "$outcome", decidedBy: "$decidedBy" }, n: { $sum: 1 } } },
+      {
+        $group: {
+          _id: {
+            agentId: "$agentId",
+            outcome: "$outcome",
+            decidedBy: "$decidedBy",
+          },
+          n: { $sum: 1 },
+        },
+      },
     ]),
-    GovernanceEventModel.find({ workspaceId: ws, createdAt: window }).sort({ createdAt: 1 }).lean(),
+    GovernanceEventModel.find({ workspaceId: ws, createdAt: window })
+      .sort({ createdAt: 1 })
+      .lean(),
     complianceTrend(workspaceId, 365),
   ]);
   const agentName = new Map(agents.map((a) => [String(a._id), a.name]));
-  const governance = normalizeGovernance((workspace?.settings as { governance?: unknown } | undefined)?.governance);
+  const governance = normalizeGovernance(
+    (workspace?.settings as { governance?: unknown } | undefined)?.governance,
+  );
   const d = (v: unknown) => (v ? new Date(v as string).toISOString() : "");
   const period = `${range.from.toISOString().slice(0, 10)} to ${range.to.toISOString().slice(0, 10)}`;
   const shadow = agents.filter((a) => a.kind === "detected");
@@ -154,46 +230,150 @@ export async function buildEvidencePack(workspaceId: string, range: { from: Date
     },
     {
       name: "controls.csv",
-      content: toCsv(["id", "framework", "title", "status", "evidence", "recommendation"], report.controls.map((c) => [c.id, c.framework, c.title, c.status, c.evidence, c.recommendation ?? ""])),
+      content: toCsv(
+        ["id", "framework", "title", "status", "evidence", "recommendation"],
+        report.controls.map((c) => [
+          c.id,
+          c.framework,
+          c.title,
+          c.status,
+          c.evidence,
+          c.recommendation ?? "",
+        ]),
+      ),
     },
-    { name: "score-trend.csv", content: toCsv(["date", "score"], trend.map((t) => [t.date, t.score])) },
+    {
+      name: "score-trend.csv",
+      content: toCsv(
+        ["date", "score"],
+        trend.map((t) => [t.date, t.score]),
+      ),
+    },
     {
       name: "agents.csv",
       content: toCsv(
-        ["id", "name", "kind", "status", "risk_level", "risk_score", "scopes", "projects", "key_issued", "expires", "last_seen", "created"],
-        agents.map((a) => [String(a._id), a.name, a.kind, a.status, a.riskLevel, a.riskScore, a.scopes.join(" "), a.projectIds.length || "all", d(a.keyIssuedAt), d(a.expiresAt), d(a.lastSeenAt), d((a as unknown as { createdAt?: Date }).createdAt)]),
+        [
+          "id",
+          "name",
+          "kind",
+          "status",
+          "risk_level",
+          "risk_score",
+          "scopes",
+          "projects",
+          "key_issued",
+          "expires",
+          "last_seen",
+          "created",
+        ],
+        agents.map((a) => [
+          String(a._id),
+          a.name,
+          a.kind,
+          a.status,
+          a.riskLevel,
+          a.riskScore,
+          a.scopes.join(" "),
+          a.projectIds.length || "all",
+          d(a.keyIssuedAt),
+          d(a.expiresAt),
+          d(a.lastSeenAt),
+          d((a as unknown as { createdAt?: Date }).createdAt),
+        ]),
       ),
     },
-    { name: "policies.json", content: JSON.stringify({ governance, policies }, null, 2) },
+    {
+      name: "policies.json",
+      content: JSON.stringify({ governance, policies }, null, 2),
+    },
     {
       name: "approvals.csv",
       content: toCsv(
-        ["requested", "agent", "action", "risk", "tier", "policy", "recommendation", "status", "decided", "decided_by_system"],
-        approvals.map((a) => [d((a as unknown as { createdAt: Date }).createdAt), agentName.get(String(a.agentId)) ?? String(a.agentId), a.action, a.risk, a.tier ?? "", a.policyName ?? "", a.recommendation?.decision ?? "", a.status, d(a.decidedAt), a.decidedBySystem ? "yes" : "no"]),
+        [
+          "requested",
+          "agent",
+          "action",
+          "risk",
+          "tier",
+          "policy",
+          "recommendation",
+          "status",
+          "decided",
+          "decided_by_system",
+        ],
+        approvals.map((a) => [
+          d((a as unknown as { createdAt: Date }).createdAt),
+          agentName.get(String(a.agentId)) ?? String(a.agentId),
+          a.action,
+          a.risk,
+          a.tier ?? "",
+          a.policyName ?? "",
+          a.recommendation?.decision ?? "",
+          a.status,
+          d(a.decidedAt),
+          a.decidedBySystem ? "yes" : "no",
+        ]),
       ),
     },
     {
       name: "shadow-ai.csv",
       content: toCsv(
         ["agent", "status", "signals", "found", "replaced_by_key"],
-        shadow.map((a) => [a.name, a.status, (a.detectionSignals ?? []).join(" "), d((a as unknown as { createdAt?: Date }).createdAt), a.replacedByAgentId ? agentName.get(String(a.replacedByAgentId)) ?? "yes" : ""]),
+        shadow.map((a) => [
+          a.name,
+          a.status,
+          (a.detectionSignals ?? []).join(" "),
+          d((a as unknown as { createdAt?: Date }).createdAt),
+          a.replacedByAgentId
+            ? (agentName.get(String(a.replacedByAgentId)) ?? "yes")
+            : "",
+        ]),
       ),
     },
     {
       name: "dlp-and-threats.csv",
       content: toCsv(
         ["at", "type", "severity", "agent", "title", "detail", "acknowledged"],
-        alerts.filter((a) => ["dlp", "threat", "unregistered_agent", "compliance_drift", "critical_risk"].includes(a.type)).map((a) => [d(a.createdAt), a.type, a.severity, a.agentId ? agentName.get(String(a.agentId)) ?? "" : "", a.title, a.detail, d(a.acknowledgedAt)]),
+        alerts
+          .filter((a) =>
+            [
+              "dlp",
+              "threat",
+              "unregistered_agent",
+              "compliance_drift",
+              "critical_risk",
+            ].includes(a.type),
+          )
+          .map((a) => [
+            d(a.createdAt),
+            a.type,
+            a.severity,
+            a.agentId ? (agentName.get(String(a.agentId)) ?? "") : "",
+            a.title,
+            a.detail,
+            d(a.acknowledgedAt),
+          ]),
       ),
     },
     { name: "incidents.json", content: JSON.stringify(incidents, null, 2) },
     {
       name: "activity-summary.csv",
-      content: toCsv(["agent", "outcome", "decided_by", "count"], activity.map((r) => [agentName.get(String(r._id.agentId)) ?? String(r._id.agentId), r._id.outcome, r._id.decidedBy ?? "", r.n])),
+      content: toCsv(
+        ["agent", "outcome", "decided_by", "count"],
+        activity.map((r) => [
+          agentName.get(String(r._id.agentId)) ?? String(r._id.agentId),
+          r._id.outcome,
+          r._id.decidedBy ?? "",
+          r.n,
+        ]),
+      ),
     },
     {
       name: "governance-events.csv",
-      content: toCsv(["at", "actor", "type", "title", "detail"], events.map((e) => [d(e.createdAt), e.actor, e.type, e.title, e.detail])),
+      content: toCsv(
+        ["at", "actor", "type", "title", "detail"],
+        events.map((e) => [d(e.createdAt), e.actor, e.type, e.title, e.detail]),
+      ),
     },
   ];
   await logGovernanceEvent({
@@ -204,26 +384,43 @@ export async function buildEvidencePack(workspaceId: string, range: { from: Date
     title: `Compliance evidence pack generated (${period})`,
     detail: `Score ${report.score}. ${agents.length} agents, ${approvals.length} approvals, ${incidents.length} incidents.`,
   });
-  return { filename: `compliance-evidence-${range.to.toISOString().slice(0, 10)}.zip`, zip: createZip(files), report };
+  return {
+    filename: `compliance-evidence-${range.to.toISOString().slice(0, 10)}.zip`,
+    zip: createZip(files),
+    report,
+  };
 }
 
 /** Weekly or monthly reports: a fresh check, a webhook with the summary, and an email to admins. */
 export async function runScheduledReports(now = new Date()): Promise<number> {
-  const workspaces = await WorkspaceModel.find({ "settings.governance.complianceReportSchedule": { $in: ["weekly", "monthly"] } })
+  const workspaces = await WorkspaceModel.find({
+    "settings.governance.complianceReportSchedule": {
+      $in: ["weekly", "monthly"],
+    },
+  })
     .select("name settings")
     .lean();
   let sent = 0;
   for (const workspace of workspaces) {
-    const schedule = normalizeGovernance((workspace.settings as { governance?: unknown } | undefined)?.governance).complianceReportSchedule;
+    const schedule = normalizeGovernance(
+      (workspace.settings as { governance?: unknown } | undefined)?.governance,
+    ).complianceReportSchedule;
     const since =
       schedule === "weekly"
         ? new Date(now.getTime() - 7 * 86_400_000)
         : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-    const already = await GovernanceEventModel.exists({ workspaceId: workspace._id, type: "scheduled_report", createdAt: { $gte: since } });
+    const already = await GovernanceEventModel.exists({
+      workspaceId: workspace._id,
+      type: "scheduled_report",
+      createdAt: { $gte: since },
+    });
     if (already) continue;
     const workspaceId = workspace._id.toString();
     try {
-      const { report, drifted } = await snapshotCompliance(workspaceId, `${schedule} report`);
+      const { report, drifted } = await snapshotCompliance(
+        workspaceId,
+        `${schedule} report`,
+      );
       const failing = report.controls.filter((c) => c.status !== "met");
       const summary = `${schedule === "weekly" ? "Weekly" : "Monthly"} compliance report for ${workspace.name}: score ${report.score}/100, ${failing.length} control(s) need attention.`;
       webhookService.emit({
@@ -231,16 +428,58 @@ export async function runScheduledReports(now = new Date()): Promise<number> {
         workspaceId,
         severity: failing.length ? "warning" : "info",
         summary,
-        data: { score: report.score, failing: failing.map((c) => ({ id: c.id, title: c.title, status: c.status })), drifted },
+        data: {
+          score: report.score,
+          failing: failing.map((c) => ({
+            id: c.id,
+            title: c.title,
+            status: c.status,
+          })),
+          drifted,
+        },
       });
-      const admins = await WorkspaceMemberModel.find({ workspaceId: workspace._id, role: { $in: ["OWNER", "ADMIN"] } }).select("userId").lean();
-      const users = await UserModel.find({ _id: { $in: admins.map((a) => a.userId) } }).select("email").lean();
-      const text = [summary, "", ...failing.map((c) => `- ${c.title}: ${c.status}. ${c.recommendation ?? ""}`), "", "Download the full evidence pack under Agent Governance → Settings → Compliance."].join("\n");
-      await Promise.all(users.map((u) => EmailService.sendEmail(u.email, `Pristine ${schedule} compliance report: ${report.score}/100`, text).catch(() => false)));
-      await logGovernanceEvent({ workspaceId, type: "scheduled_report", actor: "system", title: summary, detail: `Sent to ${users.length} admin(s) and the workspace's webhooks.` });
+      const admins = await WorkspaceMemberModel.find({
+        workspaceId: workspace._id,
+        role: { $in: ["OWNER", "ADMIN"] },
+      })
+        .select("userId")
+        .lean();
+      const users = await UserModel.find({
+        _id: { $in: admins.map((a) => a.userId) },
+      })
+        .select("email")
+        .lean();
+      const text = [
+        summary,
+        "",
+        ...failing.map(
+          (c) => `- ${c.title}: ${c.status}. ${c.recommendation ?? ""}`,
+        ),
+        "",
+        "Download the full evidence pack under Agent Governance → Settings → Compliance.",
+      ].join("\n");
+      await Promise.all(
+        users.map((u) =>
+          EmailService.sendEmail(
+            u.email,
+            `Pristine ${schedule} compliance report: ${report.score}/100`,
+            text,
+          ).catch(() => false),
+        ),
+      );
+      await logGovernanceEvent({
+        workspaceId,
+        type: "scheduled_report",
+        actor: "system",
+        title: summary,
+        detail: `Sent to ${users.length} admin(s) and the workspace's webhooks.`,
+      });
       sent += 1;
     } catch (error) {
-      logger.warn("Scheduled compliance report failed", { workspaceId, message: error instanceof Error ? error.message : String(error) });
+      logger.warn("Scheduled compliance report failed", {
+        workspaceId,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   return sent;
@@ -248,14 +487,19 @@ export async function runScheduledReports(now = new Date()): Promise<number> {
 
 /** Daily: a snapshot for every workspace that has agents (drift alerts come from comparing snapshots). */
 export async function monitorCompliance(): Promise<number> {
-  const ids = await AgentModel.distinct("workspaceId", { workspaceId: { $ne: null } });
+  const ids = await AgentModel.distinct("workspaceId", {
+    workspaceId: { $ne: null },
+  });
   let checked = 0;
   for (const id of ids) {
     try {
       await snapshotCompliance(String(id), "daily monitoring");
       checked += 1;
     } catch (error) {
-      logger.warn("Compliance monitoring failed", { workspaceId: String(id), message: error instanceof Error ? error.message : String(error) });
+      logger.warn("Compliance monitoring failed", {
+        workspaceId: String(id),
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   return checked;
@@ -269,7 +513,11 @@ export async function monitorCompliance(): Promise<number> {
 export async function detectCostDrift(now = new Date()): Promise<number> {
   const day = new Date(now.getTime() - 86_400_000);
   const week = new Date(now.getTime() - 8 * 86_400_000);
-  const logs = await PromptExecutionLogModel.find({ createdAt: { $gte: week }, agentId: { $ne: null }, status: "success" })
+  const logs = await PromptExecutionLogModel.find({
+    createdAt: { $gte: week },
+    agentId: { $ne: null },
+    status: "success",
+  })
     .select("agentId totalCost createdAt")
     .limit(200_000)
     .lean()
@@ -278,14 +526,16 @@ export async function detectCostDrift(now = new Date()): Promise<number> {
   for (const log of logs) {
     const key = String(log.agentId);
     const entry = byAgent.get(key) ?? { recent: 0, before: 0 };
-    if (new Date(log.createdAt as unknown as Date) >= day) entry.recent += Number(log.totalCost) || 0;
+    if (new Date(log.createdAt as unknown as Date) >= day)
+      entry.recent += Number(log.totalCost) || 0;
     else entry.before += Number(log.totalCost) || 0;
     byAgent.set(key, entry);
   }
   let raised = 0;
   for (const [agentId, spend] of byAgent) {
     const average = spend.before / 7;
-    if (spend.recent < 1 || spend.recent < 3 * Math.max(average, 0.01)) continue;
+    if (spend.recent < 1 || spend.recent < 3 * Math.max(average, 0.01))
+      continue;
     const agent = await AgentModel.findById(agentId);
     if (!agent) continue;
     await raiseAlert({

@@ -11,7 +11,11 @@ import {
   type AuthorizeInput,
 } from "./guard.js";
 import type { IAgentDocument } from "./model.js";
-import { countryHeader, effectiveScopes, noteElevationUse } from "./advanced.service.js";
+import {
+  countryHeader,
+  effectiveScopes,
+  noteElevationUse,
+} from "./advanced.service.js";
 import { snapshotBefore } from "./undo.service.js";
 
 /**
@@ -88,7 +92,9 @@ const isPeopleOnlyGovernance = (
 /** Governance calls that only check something (no change), so need no hold. */
 const isGovernanceDryRun = (domain: string, segments: string[]): boolean =>
   domain === "agent" &&
-  ["policies/test", "policies/simulate", "prompt-checks"].includes(segments.join("/"));
+  ["policies/test", "policies/simulate", "prompt-checks"].includes(
+    segments.join("/"),
+  );
 
 const isForbiddenForAgents = (
   domain: string,
@@ -168,7 +174,8 @@ export function describeRestCall(method: string, path: string): RestAction {
     if (domain === "auth" || domain === "agent") risk = "security_critical";
   }
 
-  const selfService = domain === "agent" && method === "POST" && rest.join("/") === "elevations";
+  const selfService =
+    domain === "agent" && method === "POST" && rest.join("/") === "elevations";
   const scope = selfService ? "work:read" : scopeFor(domain, risk);
 
   const refs: RestAction["refs"] = {};
@@ -187,7 +194,7 @@ export function describeRestCall(method: string, path: string): RestAction {
     scope,
     forbidden: isForbiddenForAgents(domain, rest, method),
     holdForPerson:
-      (domain === "agent" || domain === "vendor") &&
+      (domain === "agent" || domain === "vendor" || domain === "telemetry") &&
       method !== "GET" &&
       method !== "HEAD" &&
       !isGovernanceDryRun(domain, rest) &&
@@ -219,11 +226,22 @@ export async function guardAgentRequest(
   ) as Record<string, unknown>;
   // Rotating a webhook's signing secret returns the new secret: people only.
   const rotatesWebhookSecret =
-    call.domain === "agent" && /\/webhooks\//.test(path) && body.rotateSecret === true;
+    call.domain === "agent" &&
+    /\/webhooks\//.test(path) &&
+    body.rotateSecret === true;
   const ip = req.ip ?? null;
   if (call.forbidden || rotatesWebhookSecret) {
     // Trying people-only actions repeatedly is a privilege-escalation signal.
-    observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
+    observeThreats(
+      {
+        agent,
+        ip,
+        risk: call.risk,
+        action: call.action,
+        request: { method, path },
+      },
+      "escalation",
+    );
     res.status(403).json({
       error: "agent_forbidden",
       message:
@@ -234,17 +252,33 @@ export async function guardAgentRequest(
     return;
   }
   // Standing scopes plus any just-in-time grant still running.
-  const scopes = agent.scopes.includes(call.scope) ? agent.scopes : await effectiveScopes(agent);
+  const scopes = agent.scopes.includes(call.scope)
+    ? agent.scopes
+    : await effectiveScopes(agent);
   if (!scopes.includes(call.scope)) {
-    observeThreats({ agent, ip, risk: call.risk, action: call.action, request: { method, path } }, "escalation");
+    observeThreats(
+      {
+        agent,
+        ip,
+        risk: call.risk,
+        action: call.action,
+        request: { method, path },
+      },
+      "escalation",
+    );
     res.status(403).json({
       error: "agent_scope",
       message: `This agent lacks the "${call.scope}" scope needed for ${call.action}. It can ask for it for a limited time: POST /api/agents/elevations with { scopes: ["${call.scope}"], reason, durationMinutes }.`,
-      requestAccess: { method: "POST", path: "/api/agents/elevations", scopes: [call.scope] },
+      requestAccess: {
+        method: "POST",
+        path: "/api/agents/elevations",
+        scopes: [call.scope],
+      },
     });
     return;
   }
-  if (!agent.scopes.includes(call.scope)) void noteElevationUse(agent, call.scope).catch(() => undefined);
+  if (!agent.scopes.includes(call.scope))
+    void noteElevationUse(agent, call.scope).catch(() => undefined);
 
   // Asking for access is always allowed (and logged); a person or the
   // low-risk rule decides the request itself.
@@ -252,9 +286,29 @@ export async function guardAgentRequest(
     const started = Date.now();
     res.on("finish", () => {
       recordDecision(
-        { agent, userId, channel: "rest", action: call.action, domain: call.domain, risk: "write", input: body, request: { method, path }, ip },
-        { effect: "allow", policy: null, advisory: [], projectId: null, system: { decidedBy: "system", rule: "Just-in-time access request" } },
-        { statusCode: res.statusCode, error: res.statusCode >= 400 ? `HTTP ${res.statusCode}` : null, durationMs: Date.now() - started },
+        {
+          agent,
+          userId,
+          channel: "rest",
+          action: call.action,
+          domain: call.domain,
+          risk: "write",
+          input: body,
+          request: { method, path },
+          ip,
+        },
+        {
+          effect: "allow",
+          policy: null,
+          advisory: [],
+          projectId: null,
+          system: { decidedBy: "system", rule: "Just-in-time access request" },
+        },
+        {
+          statusCode: res.statusCode,
+          error: res.statusCode >= 400 ? `HTTP ${res.statusCode}` : null,
+          durationMs: Date.now() - started,
+        },
       );
     });
     runAsAgent(agent, () => next());
@@ -294,7 +348,9 @@ export async function guardAgentRequest(
     alwaysHold: call.holdForPerson,
     ip,
     country: firstString(req.headers[countryHeader()]) ?? null,
-    taskId: pathNamesRecord ? (call.refs.taskId ?? null) : (firstString(body.taskId, query.taskId) ?? null),
+    taskId: pathNamesRecord
+      ? (call.refs.taskId ?? null)
+      : (firstString(body.taskId, query.taskId) ?? null),
   };
   const decision = await authorize(guardInput);
 
