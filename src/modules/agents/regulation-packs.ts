@@ -1,4 +1,5 @@
 import type { GovernanceSettings } from "./hybrid.js";
+import { MORE_PACKS } from "./regulation-packs-more.js";
 import type { IPolicyMatch, PolicyEffect, PolicyMode } from "./model.js";
 
 /**
@@ -66,6 +67,8 @@ export interface RegulationPack {
   id: string;
   name: string;
   jurisdiction: string;
+  /** An AI law, or a general privacy law. */
+  category: "ai" | "privacy";
   /** Official title and citation of the law. */
   source: string;
   /** Official text. */
@@ -103,12 +106,13 @@ const unregisteredReadOnly = (name: string, basis: string): PackPolicy => ({
   match: { agentKinds: ["detected"], minRisk: "write" },
 });
 
-export const REGULATION_PACKS: RegulationPack[] = [
+const FIRST_PACKS: RegulationPack[] = [
   /* ---------------------------------------------------------------- */
   {
     id: "eu-ai-act",
     name: "EU AI Act",
     jurisdiction: "European Union",
+    category: "ai",
     source: "Regulation (EU) 2024/1689 (Artificial Intelligence Act)",
     url: "https://eur-lex.europa.eu/eli/reg/2024/1689/oj",
     scope:
@@ -247,6 +251,7 @@ export const REGULATION_PACKS: RegulationPack[] = [
     id: "ccpa-cpra",
     name: "California CCPA / CPRA",
     jurisdiction: "California, USA",
+    category: "privacy",
     source:
       "California Consumer Privacy Act of 2018, as amended by the California Privacy Rights Act (Cal. Civ. Code § 1798.100 et seq.) and its regulations (Cal. Code Regs. tit. 11, § 7000 et seq.)",
     url: "https://cppa.ca.gov/regulations/",
@@ -337,6 +342,7 @@ export const REGULATION_PACKS: RegulationPack[] = [
     id: "colorado-ai-act",
     name: "Colorado AI Act",
     jurisdiction: "Colorado, USA",
+    category: "ai",
     source:
       "Colorado Artificial Intelligence Act, SB 24-205 (C.R.S. § 6-1-1701 et seq.)",
     url: "https://leg.colorado.gov/bills/sb24-205",
@@ -403,6 +409,7 @@ export const REGULATION_PACKS: RegulationPack[] = [
     id: "india-dpdp",
     name: "India DPDP Act",
     jurisdiction: "India",
+    category: "privacy",
     source: "Digital Personal Data Protection Act, 2023 (Act No. 22 of 2023)",
     url: "https://www.meity.gov.in/data-protection-framework",
     scope:
@@ -527,6 +534,11 @@ export const REGULATION_PACKS: RegulationPack[] = [
       },
     ],
   },
+];
+
+export const REGULATION_PACKS: RegulationPack[] = [
+  ...FIRST_PACKS,
+  ...MORE_PACKS,
 ];
 
 export const packById = (id: string): RegulationPack | undefined =>

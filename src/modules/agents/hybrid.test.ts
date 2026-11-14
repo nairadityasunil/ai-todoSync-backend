@@ -224,6 +224,9 @@ describe("DLP: Indian identifiers", () => {
 
 describe("regulation packs", () => {
   test("every item cites a provision and has what its kind needs; ids are unique", () => {
+    assert.equal(REGULATION_PACKS.length, 15);
+    assert.equal(new Set(REGULATION_PACKS.map((p) => p.id)).size, 15);
+    const names = new Set<string>();
     for (const pack of REGULATION_PACKS) {
       assert.ok(
         pack.source && pack.url.startsWith("https://") && pack.scope,
@@ -237,6 +240,13 @@ describe("regulation packs", () => {
           item.basis.trim() && item.howCovered.trim(),
           `${pack.id}:${item.id}`,
         );
+        if (item.policy) {
+          assert.ok(
+            !names.has(item.policy.name),
+            `policy name reused: ${item.policy.name}`,
+          );
+          names.add(item.policy.name);
+        }
         if (item.kind === "policy")
           assert.ok(
             item.policy && item.policy.name.length <= 120,
