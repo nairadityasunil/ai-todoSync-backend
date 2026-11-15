@@ -1,7 +1,15 @@
 /** One row of the unified activity timeline. */
 export interface TimelineItem {
   id: string;
-  kind: "work" | "agent" | "approval" | "event" | "detection" | "incident" | "system";
+  kind:
+    | "work"
+    | "agent"
+    | "approval"
+    | "event"
+    | "guide"
+    | "detection"
+    | "incident"
+    | "system";
   at: string;
   title: string;
   detail?: string;
@@ -16,7 +24,6 @@ export interface TimelineItem {
   severity?: string | null;
 }
 
-
 /** Newest first, ties broken by id so pages are stable. */
 export function mergeTimeline(
   groups: TimelineItem[][],
@@ -24,7 +31,8 @@ export function mergeTimeline(
 ): TimelineItem[] {
   return groups
     .flat()
-    .sort((a, b) => (a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1))
+    .sort((a, b) =>
+      a.at === b.at ? (a.id < b.id ? 1 : -1) : a.at < b.at ? 1 : -1,
+    )
     .slice(0, limit);
 }
-

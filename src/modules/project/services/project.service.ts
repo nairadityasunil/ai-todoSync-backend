@@ -1,3 +1,4 @@
+import { projectCreated } from "../../telemetry/hooks.js";
 import type { IProjectDocument } from "../models/project.model.js";
 import type { ProjectRole } from "../models/project-member.model.js";
 import {
@@ -169,6 +170,18 @@ class ProjectService {
         projectId: project._id.toString(),
         metadata: { name: project.name },
       });
+
+      // A governance checklist for the new project (see telemetry/automation).
+      projectCreated(
+        {
+          id: project._id.toString(),
+          name: project.name,
+          workspaceId: project.workspaceId
+            ? project.workspaceId.toString()
+            : null,
+        },
+        userId,
+      );
 
       return this.toDto(project, "ADMIN");
     } catch (error) {

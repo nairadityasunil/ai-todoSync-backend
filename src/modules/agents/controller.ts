@@ -2,13 +2,30 @@ import { GovernanceEventModel } from "./model.js";
 import { diffPolicies } from "./advanced.js";
 import { AgentPolicyVersionModel } from "./advanced.model.js";
 import { rotateWithGrace } from "./advanced.service.js";
-import { ensureBaseVersion, recordVersion, serializeVersion, snapshotOf } from "./policy-versions.service.js";
+import {
+  ensureBaseVersion,
+  recordVersion,
+  serializeVersion,
+  snapshotOf,
+} from "./policy-versions.service.js";
 import { governanceSettings } from "./hybrid.service.js";
 import { VendorModel } from "../vendors/model.js";
-import { buildEvidencePack, complianceTrend, scheduleComplianceCheck, snapshotCompliance } from "./compliance.service.js";
+import {
+  buildEvidencePack,
+  complianceTrend,
+  scheduleComplianceCheck,
+  snapshotCompliance,
+} from "./compliance.service.js";
 import { normalizeGovernance } from "./hybrid.js";
-import { invalidateGovernanceSettings, logGovernanceEvent } from "./hybrid.service.js";
-import { buildTimeline, timelineAgents, type TimelineKind } from "./timeline.service.js";
+import {
+  invalidateGovernanceSettings,
+  logGovernanceEvent,
+} from "./hybrid.service.js";
+import {
+  buildTimeline,
+  timelineAgents,
+  type TimelineKind,
+} from "./timeline.service.js";
 import projectService from "../project/services/project.service.js";
 import type { Response } from "express";
 import { Types } from "mongoose";
@@ -50,6 +67,11 @@ import {
 } from "./model.js";
 import { evaluatePolicies, RISK_ORDER } from "./policy-engine.js";
 import { POLICY_TEMPLATES } from "./policy-templates.js";
+import {
+  applyPack,
+  listPacks,
+  removePack,
+} from "./regulation-packs.service.js";
 import { checkPrompt } from "./prompt-checks.js";
 import {
   monthStart,
@@ -271,7 +293,8 @@ const sanitizeMatch = (raw: unknown): IPolicyMatch => {
   };
 };
 
-export const sanitizePolicyInput = (body: Record<string, unknown>) => sanitizePolicy(body);
+export const sanitizePolicyInput = (body: Record<string, unknown>) =>
+  sanitizePolicy(body);
 
 const sanitizePolicy = (body: Record<string, unknown>) => {
   const name = str(body.name);
@@ -306,6 +329,15 @@ const sanitizePolicy = (body: Record<string, unknown>) => {
 /* Inventory                                                           */
 /* ------------------------------------------------------------------ */
 
+const packIdOf = (req: AuthenticatedRequest): string => {
+  const value = String(
+    (req.params as Record<string, string | undefined>).packId ?? "",
+  );
+  if (!/^[a-z0-9-]{1,40}$/.test(value))
+    throw new AppError(404, "Unknown regulation pack", "NOT_FOUND");
+  return value;
+};
+
 class AgentController {
   public overview = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
@@ -328,7 +360,11 @@ class AgentController {
         myAgents: mine,
         // Set when an agent is looking: its changes here are held for a person.
         viewerAgent: req.agent
-          ? { id: req.agent._id.toString(), name: req.agent.name, kind: req.agent.kind }
+          ? {
+              id: req.agent._id.toString(),
+              name: req.agent.name,
+              kind: req.agent.kind,
+            }
           : null,
       },
     });
@@ -400,23 +436,41 @@ class AgentController {
       );
     }
     // A key for a third party: limited to projects, short-lived, every change held.
-    const forVendor = body.operatedBy === "vendor" || body.operatedByVendor === true;
+    const forVendor =
+      body.operatedBy === "vendor" || body.operatedByVendor === true;
     let expiresAt = body.expiresAt;
     let vendorId: string | null = null;
     if (forVendor) {
-      const projects = Array.isArray(body.projectIds) ? body.projectIds.filter((id) => Types.ObjectId.isValid(String(id))) : [];
+      const projects = Array.isArray(body.projectIds)
+        ? body.projectIds.filter((id) => Types.ObjectId.isValid(String(id)))
+        : [];
       if (!projects.length)
-        throw new AppError(400, "A key for a third party must be limited to specific projects", "BAD_REQUEST");
-      const workspaceId = requestedWorkspace ?? (await agentService.defaultWorkspaceId(userId));
+        throw new AppError(
+          400,
+          "A key for a third party must be limited to specific projects",
+          "BAD_REQUEST",
+        );
+      const workspaceId =
+        requestedWorkspace ?? (await agentService.defaultWorkspaceId(userId));
       const maxDays = (await governanceSettings(workspaceId)).vendorKeyMaxDays;
       const limit = Date.now() + maxDays * 86_400_000;
-      const asked = body.expiresAt ? new Date(String(body.expiresAt)).getTime() : NaN;
+      const asked = body.expiresAt
+        ? new Date(String(body.expiresAt)).getTime()
+        : NaN;
       if (Number.isFinite(asked) && asked > limit)
-        throw new AppError(400, `Keys for third parties must expire within ${maxDays} days`, "BAD_REQUEST");
-      expiresAt = new Date(Number.isFinite(asked) ? asked : limit).toISOString();
+        throw new AppError(
+          400,
+          `Keys for third parties must expire within ${maxDays} days`,
+          "BAD_REQUEST",
+        );
+      expiresAt = new Date(
+        Number.isFinite(asked) ? asked : limit,
+      ).toISOString();
       const vendor = str(body.vendorId);
       if (vendor && Types.ObjectId.isValid(vendor)) {
-        const found = await VendorModel.findOne({ _id: vendor, workspaceId }).select("_id").lean();
+        const found = await VendorModel.findOne({ _id: vendor, workspaceId })
+          .select("_id")
+          .lean();
         if (!found) throw new AppError(404, "Vendor not found", "NOT_FOUND");
         vendorId = vendor;
       }
@@ -510,10 +564,25 @@ class AgentController {
     }
     // Marking an agent as a third party's only tightens rules; clearing it is an admin decision.
     if (body.operatedBy === "vendor" || body.operatedBy === "internal") {
-      if (body.operatedBy === "internal" && agent.operatedBy === "vendor" && !isAdmin)
-        throw new AppError(403, "Only a workspace admin can mark a third party's agent as internal", "FORBIDDEN");
-      if (body.operatedBy === "vendor" && (next.projectIds ?? agent.projectIds).length === 0)
-        throw new AppError(400, "Limit the agent to specific projects before marking it as a third party's", "BAD_REQUEST");
+      if (
+        body.operatedBy === "internal" &&
+        agent.operatedBy === "vendor" &&
+        !isAdmin
+      )
+        throw new AppError(
+          403,
+          "Only a workspace admin can mark a third party's agent as internal",
+          "FORBIDDEN",
+        );
+      if (
+        body.operatedBy === "vendor" &&
+        (next.projectIds ?? agent.projectIds).length === 0
+      )
+        throw new AppError(
+          400,
+          "Limit the agent to specific projects before marking it as a third party's",
+          "BAD_REQUEST",
+        );
       agent.operatedBy = body.operatedBy;
     }
     if (next.scopes) agent.scopes = next.scopes as IAgentDocument["scopes"];
@@ -549,7 +618,10 @@ class AgentController {
       );
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const grace = body.graceHours !== undefined ? Math.min(336, Math.max(0, Math.round(Number(body.graceHours) || 0))) : 0;
+    const grace =
+      body.graceHours !== undefined
+        ? Math.min(336, Math.max(0, Math.round(Number(body.graceHours) || 0)))
+        : 0;
     const key = await rotateWithGrace(agent, grace, { userId });
     // A key waiting to be collected is replaced by this one.
     if (agent.pendingKeyCiphertext) {
@@ -675,7 +747,8 @@ class AgentController {
     }
     await agent.save();
     agentService.invalidate(agent._id.toString());
-    if (status === "revoked") await approvalService.expireForAgents([agent._id]);
+    if (status === "revoked")
+      await approvalService.expireForAgents([agent._id]);
     if (agent.kind === "ai_provider") invalidateProviderAgents();
     await logGovernanceEvent({
       workspaceId: agent.workspaceId ? String(agent.workspaceId) : null,
@@ -862,8 +935,12 @@ class AgentController {
       .lean();
     const versions = new Map<string, { version: number; pending: number }>();
     for (const row of versionRows) {
-      const entry = versions.get(String(row.policyId)) ?? { version: 0, pending: 0 };
-      if (row.status === "applied") entry.version = Math.max(entry.version, row.version);
+      const entry = versions.get(String(row.policyId)) ?? {
+        version: 0,
+        pending: 0,
+      };
+      if (row.status === "applied")
+        entry.version = Math.max(entry.version, row.version);
       if (row.status === "proposed") entry.pending += 1;
       versions.set(String(row.policyId), entry);
     }
@@ -886,12 +963,55 @@ class AgentController {
     res.json({ success: true, data: POLICY_TEMPLATES });
   };
 
+  /** Pack ids are slugs like "eu-ai-act"; unknown ones are rejected by the service. */
+  public policyPacks = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    res.json({ success: true, data: await listPacks(workspaceId) });
+  };
+
+  public applyPolicyPack = async (req: AuthenticatedRequest, res: Response) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = await applyPack({
+      workspaceId,
+      userId,
+      packId: packIdOf(req),
+      start: body.start === "advisory" ? "advisory" : "recommended",
+      itemId: str(body.itemId) ?? undefined,
+    });
+    res.json({
+      success: true,
+      data: { result, packs: await listPacks(workspaceId) },
+    });
+  };
+
+  public removePolicyPack = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ) => {
+    const userId = userIdOf(req);
+    const workspaceId = await requireWorkspace(req, userId);
+    const result = await removePack({
+      workspaceId,
+      userId,
+      packId: packIdOf(req),
+    });
+    res.json({
+      success: true,
+      data: { result, packs: await listPacks(workspaceId) },
+    });
+  };
+
   public createPolicy = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);
     const data = sanitizePolicy((req.body ?? {}) as Record<string, unknown>);
     // Four eyes: with change approval on, a new policy waits for a second admin.
-    if ((await governanceSettings(workspaceId.toString())).policyChangeApproval) {
+    if (
+      (await governanceSettings(workspaceId.toString())).policyChangeApproval
+    ) {
       const proposal = await recordVersion({
         workspaceId,
         policyId: new Types.ObjectId(),
@@ -902,8 +1022,19 @@ class AgentController {
         userId,
         note: str((req.body as Record<string, unknown>)?.changeNote) ?? null,
       });
-      await logGovernanceEvent({ workspaceId: workspaceId.toString(), type: "policy_change_proposed", actor: "person", userId, title: `Proposed a new policy "${data.name}"`, detail: "Waiting for another admin." });
-      res.status(202).json({ success: true, message: "Proposed: another admin must approve it before it applies.", data: { proposal: serializeVersion(proposal) } });
+      await logGovernanceEvent({
+        workspaceId: workspaceId.toString(),
+        type: "policy_change_proposed",
+        actor: "person",
+        userId,
+        title: `Proposed a new policy "${data.name}"`,
+        detail: "Waiting for another admin.",
+      });
+      res.status(202).json({
+        success: true,
+        message: "Proposed: another admin must approve it before it applies.",
+        data: { proposal: serializeVersion(proposal) },
+      });
       return;
     }
     const policy = await AgentPolicyModel.create({
@@ -912,7 +1043,15 @@ class AgentController {
       createdBy: userId,
       updatedBy: userId,
     });
-    await recordVersion({ workspaceId, policyId: policy._id, action: "created", status: "applied", snapshot: snapshotOf(policy), previous: null, userId });
+    await recordVersion({
+      workspaceId,
+      policyId: policy._id,
+      action: "created",
+      status: "applied",
+      snapshot: snapshotOf(policy),
+      previous: null,
+      userId,
+    });
     invalidatePolicies(workspaceId.toString());
     scheduleComplianceCheck(workspaceId.toString(), "policy change");
     res.status(201).json({
@@ -944,18 +1083,55 @@ class AgentController {
     const previous = snapshotOf(policy);
     const snapshot = snapshotOf(next);
     if (diffPolicies(previous, snapshot).length === 0) {
-      res.json({ success: true, data: { ...policy.toObject(), id: policy._id.toString() } });
+      res.json({
+        success: true,
+        data: { ...policy.toObject(), id: policy._id.toString() },
+      });
       return;
     }
-    if ((await governanceSettings(policy.workspaceId.toString())).policyChangeApproval) {
-      const proposal = await recordVersion({ workspaceId: policy.workspaceId, policyId: policy._id, action: "updated", status: "proposed", snapshot, previous, userId, note: str(body.changeNote) ?? null });
-      await logGovernanceEvent({ workspaceId: policy.workspaceId.toString(), type: "policy_change_proposed", actor: "person", userId, title: `Proposed a change to policy "${policy.name}"`, detail: diffPolicies(previous, snapshot).map((c) => c.field).join(", ") });
-      res.status(202).json({ success: true, message: "Proposed: another admin must approve it before it applies.", data: { proposal: serializeVersion(proposal) } });
+    if (
+      (await governanceSettings(policy.workspaceId.toString()))
+        .policyChangeApproval
+    ) {
+      const proposal = await recordVersion({
+        workspaceId: policy.workspaceId,
+        policyId: policy._id,
+        action: "updated",
+        status: "proposed",
+        snapshot,
+        previous,
+        userId,
+        note: str(body.changeNote) ?? null,
+      });
+      await logGovernanceEvent({
+        workspaceId: policy.workspaceId.toString(),
+        type: "policy_change_proposed",
+        actor: "person",
+        userId,
+        title: `Proposed a change to policy "${policy.name}"`,
+        detail: diffPolicies(previous, snapshot)
+          .map((c) => c.field)
+          .join(", "),
+      });
+      res.status(202).json({
+        success: true,
+        message: "Proposed: another admin must approve it before it applies.",
+        data: { proposal: serializeVersion(proposal) },
+      });
       return;
     }
     policy.set({ ...next, updatedBy: userId });
     await policy.save();
-    await recordVersion({ workspaceId: policy.workspaceId, policyId: policy._id, action: "updated", status: "applied", snapshot, previous, userId, note: str(body.changeNote) ?? null });
+    await recordVersion({
+      workspaceId: policy.workspaceId,
+      policyId: policy._id,
+      action: "updated",
+      status: "applied",
+      snapshot,
+      previous,
+      userId,
+      note: str(body.changeNote) ?? null,
+    });
     invalidatePolicies(policy.workspaceId.toString());
     scheduleComplianceCheck(policy.workspaceId.toString(), "policy change");
     res.json({
@@ -968,14 +1144,40 @@ class AgentController {
     const userId = userIdOf(req);
     const policy = await this.loadPolicy(req, userId);
     await ensureBaseVersion(policy);
-    if ((await governanceSettings(policy.workspaceId.toString())).policyChangeApproval) {
-      const proposal = await recordVersion({ workspaceId: policy.workspaceId, policyId: policy._id, action: "deleted", status: "proposed", snapshot: null, previous: snapshotOf(policy), userId });
-      res.status(202).json({ success: true, message: "Proposed: another admin must approve the removal.", data: { proposal: serializeVersion(proposal) } });
+    if (
+      (await governanceSettings(policy.workspaceId.toString()))
+        .policyChangeApproval
+    ) {
+      const proposal = await recordVersion({
+        workspaceId: policy.workspaceId,
+        policyId: policy._id,
+        action: "deleted",
+        status: "proposed",
+        snapshot: null,
+        previous: snapshotOf(policy),
+        userId,
+      });
+      res.status(202).json({
+        success: true,
+        message: "Proposed: another admin must approve the removal.",
+        data: { proposal: serializeVersion(proposal) },
+      });
       return;
     }
-    await recordVersion({ workspaceId: policy.workspaceId, policyId: policy._id, action: "deleted", status: "applied", snapshot: null, previous: snapshotOf(policy), userId });
+    await recordVersion({
+      workspaceId: policy.workspaceId,
+      policyId: policy._id,
+      action: "deleted",
+      status: "applied",
+      snapshot: null,
+      previous: snapshotOf(policy),
+      userId,
+    });
     // Changes proposed to a removed policy no longer apply.
-    await AgentPolicyVersionModel.updateMany({ policyId: policy._id, status: "proposed" }, { $set: { status: "withdrawn", reviewedAt: new Date() } });
+    await AgentPolicyVersionModel.updateMany(
+      { policyId: policy._id, status: "proposed" },
+      { $set: { status: "withdrawn", reviewedAt: new Date() } },
+    );
     await policy.deleteOne();
     invalidatePolicies(policy.workspaceId.toString());
     scheduleComplianceCheck(policy.workspaceId.toString(), "policy change");
@@ -1088,7 +1290,10 @@ class AgentController {
   /** Reject and remove the scope the action needed from the agent. */
   public scopeDown = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
-    const result = await approvalService.scopeDown(param(req, "approvalId"), userId);
+    const result = await approvalService.scopeDown(
+      param(req, "approvalId"),
+      userId,
+    );
     res.json({ success: true, data: result });
   };
 
@@ -1175,29 +1380,64 @@ class AgentController {
     }
     const [trend, lastPack] = await Promise.all([
       complianceTrend(workspaceId.toString()),
-      GovernanceEventModel.findOne({ workspaceId, type: "evidence_pack" }).sort({ createdAt: -1 }).select("createdAt title").lean(),
+      GovernanceEventModel.findOne({ workspaceId, type: "evidence_pack" })
+        .sort({ createdAt: -1 })
+        .select("createdAt title")
+        .lean(),
     ]);
-    res.json({ success: true, data: { ...report, trend, lastEvidencePack: lastPack ? { at: lastPack.createdAt, title: lastPack.title } : null } });
+    res.json({
+      success: true,
+      data: {
+        ...report,
+        trend,
+        lastEvidencePack: lastPack
+          ? { at: lastPack.createdAt, title: lastPack.title }
+          : null,
+      },
+    });
   };
 
   /** Runs the checks now (on demand), stores a snapshot and reports drift. */
   public complianceCheck = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);
-    const { report, drifted } = await snapshotCompliance(workspaceId.toString(), "on demand", userId);
-    res.json({ success: true, data: { score: report.score, drifted, trend: await complianceTrend(workspaceId.toString()) } });
+    const { report, drifted } = await snapshotCompliance(
+      workspaceId.toString(),
+      "on demand",
+      userId,
+    );
+    res.json({
+      success: true,
+      data: {
+        score: report.score,
+        drifted,
+        trend: await complianceTrend(workspaceId.toString()),
+      },
+    });
   };
 
   /** Evidence pack (ZIP) for a date range (?from=&to=, default the last 30 days). */
-  public complianceEvidence = async (req: AuthenticatedRequest, res: Response) => {
+  public complianceEvidence = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ) => {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);
     const to = parseDate(req.query.to) ?? new Date();
-    const from = parseDate(req.query.from) ?? new Date(to.getTime() - 30 * 86_400_000);
-    if (from > to) throw new AppError(400, "from must be before to", "BAD_REQUEST");
-    const pack = await buildEvidencePack(workspaceId.toString(), { from, to }, userId);
+    const from =
+      parseDate(req.query.from) ?? new Date(to.getTime() - 30 * 86_400_000);
+    if (from > to)
+      throw new AppError(400, "from must be before to", "BAD_REQUEST");
+    const pack = await buildEvidencePack(
+      workspaceId.toString(),
+      { from, to },
+      userId,
+    );
     res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="${pack.filename}"`);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${pack.filename}"`,
+    );
     res.send(pack.zip);
   };
 
@@ -1234,7 +1474,16 @@ class AgentController {
     const userId = userIdOf(req);
     const workspaceId = await requireWorkspace(req, userId);
     const admin = await adminWorkspaces(userId);
-    const all: TimelineKind[] = ["work", "agent", "approval", "event", "detection", "incident", "system"];
+    const all: TimelineKind[] = [
+      "work",
+      "agent",
+      "approval",
+      "event",
+      "guide",
+      "detection",
+      "incident",
+      "system",
+    ];
     const requested = (str(req.query.kinds) ?? "")
       .split(",")
       .filter((kind): kind is TimelineKind => (all as string[]).includes(kind));
@@ -1253,11 +1502,19 @@ class AgentController {
       since: parseDate(req.query.since),
       until: parseDate(req.query.until),
       limit: Math.min(Math.max(Number(req.query.limit) || 60, 1), 200),
-      tiers: (str(req.query.tiers) ?? "").split(",").filter((t) => ["low", "medium", "high", "critical"].includes(t)),
-      decidedBy: ["policy", "system", "person"].includes(str(req.query.decidedBy) ?? "")
+      tiers: (str(req.query.tiers) ?? "")
+        .split(",")
+        .filter((t) => ["low", "medium", "high", "critical"].includes(t)),
+      decidedBy: ["policy", "system", "person"].includes(
+        str(req.query.decidedBy) ?? "",
+      )
         ? (str(req.query.decidedBy) as "policy" | "system" | "person")
         : undefined,
-      outcome: ["allowed", "blocked", "pending_approval"].includes(str(req.query.outcome) ?? "") ? str(req.query.outcome) : undefined,
+      outcome: ["allowed", "blocked", "pending_approval"].includes(
+        str(req.query.outcome) ?? "",
+      )
+        ? str(req.query.outcome)
+        : undefined,
     });
     res.json({ success: true, data: items });
   };
@@ -1468,7 +1725,8 @@ class AgentController {
           }))),
         activityRetentionDays: 90,
         governance: normalizeGovernance(
-          (workspace?.settings as { governance?: unknown } | undefined)?.governance,
+          (workspace?.settings as { governance?: unknown } | undefined)
+            ?.governance,
         ),
       },
     });
@@ -1541,12 +1799,20 @@ class AgentController {
       agentService.invalidate();
     }
     if (body.governance && typeof body.governance === "object") {
-      const current = await WorkspaceModel.findById(workspaceId).select("settings.governance").lean();
+      const current = await WorkspaceModel.findById(workspaceId)
+        .select("settings.governance")
+        .lean();
       const merged = normalizeGovernance({
-        ...normalizeGovernance((current?.settings as { governance?: unknown } | undefined)?.governance),
+        ...normalizeGovernance(
+          (current?.settings as { governance?: unknown } | undefined)
+            ?.governance,
+        ),
         ...(body.governance as Record<string, unknown>),
       });
-      await WorkspaceModel.updateOne({ _id: workspaceId }, { $set: { "settings.governance": merged } });
+      await WorkspaceModel.updateOne(
+        { _id: workspaceId },
+        { $set: { "settings.governance": merged } },
+      );
       invalidateGovernanceSettings(workspaceId.toString());
       scheduleComplianceCheck(workspaceId.toString(), "settings change");
       await logGovernanceEvent({

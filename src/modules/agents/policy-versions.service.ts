@@ -1,20 +1,49 @@
 import { Types } from "mongoose";
 
 import { AppError } from "../../utils/app-error.js";
-import { diffPolicies, summarizeSimulation, type Effect, type PolicySnapshot } from "./advanced.js";
-import { AgentPolicyVersionModel, type IAgentPolicyVersionDocument } from "./advanced.model.js";
+import {
+  diffPolicies,
+  summarizeSimulation,
+  type Effect,
+  type PolicySnapshot,
+} from "./advanced.js";
+import {
+  AgentPolicyVersionModel,
+  type IAgentPolicyVersionDocument,
+} from "./advanced.model.js";
 import { invalidatePolicies, loadPolicies } from "./guard.js";
 import { logGovernanceEvent } from "./hybrid.service.js";
-import { AgentActivityModel, AgentModel, AgentPolicyModel, type IAgentPolicyDocument } from "./model.js";
+import {
+  AgentActivityModel,
+  AgentModel,
+  AgentPolicyModel,
+  type IAgentPolicyDocument,
+} from "./model.js";
 import { evaluatePolicies, type PolicyLike } from "./policy-engine.js";
 
 /* ------------------------------------------------------------------ */
 /* Versions                                                             */
 /* ------------------------------------------------------------------ */
 
-export const snapshotOf = (policy: Pick<IAgentPolicyDocument, "name" | "description" | "effect" | "mode" | "priority" | "enabled" | "match"> | Record<string, unknown>): PolicySnapshot => {
+export const snapshotOf = (
+  policy:
+    | Pick<
+        IAgentPolicyDocument,
+        | "name"
+        | "description"
+        | "effect"
+        | "mode"
+        | "priority"
+        | "enabled"
+        | "match"
+      >
+    | Record<string, unknown>,
+): PolicySnapshot => {
   const p = policy as Record<string, unknown>;
-  const match = JSON.parse(JSON.stringify(p.match ?? {})) as Record<string, unknown>;
+  const match = JSON.parse(JSON.stringify(p.match ?? {})) as Record<
+    string,
+    unknown
+  >;
   return {
     name: String(p.name ?? ""),
     description: String(p.description ?? ""),
@@ -23,17 +52,33 @@ export const snapshotOf = (policy: Pick<IAgentPolicyDocument, "name" | "descript
     priority: Number(p.priority ?? 100),
     enabled: p.enabled !== false,
     match,
+    ...(packOf(p.pack) ? { pack: packOf(p.pack) } : {}),
   };
 };
 
+const packOf = (value: unknown): { id: string; item: string } | null => {
+  const v = value as { id?: unknown; item?: unknown } | null | undefined;
+  return v && typeof v.id === "string" && typeof v.item === "string"
+    ? { id: v.id, item: v.item }
+    : null;
+};
+
 async function nextVersion(policyId: Types.ObjectId | string): Promise<number> {
-  const last = await AgentPolicyVersionModel.findOne({ policyId }).sort({ version: -1 }).select("version").lean();
+  const last = await AgentPolicyVersionModel.findOne({ policyId })
+    .sort({ version: -1 })
+    .select("version")
+    .lean();
   return (last?.version ?? 0) + 1;
 }
 
 /** Policies created before versioning get their current state as version 1. */
-export async function ensureBaseVersion(policy: IAgentPolicyDocument): Promise<void> {
-  const exists = await AgentPolicyVersionModel.exists({ policyId: policy._id, status: "applied" });
+export async function ensureBaseVersion(
+  policy: IAgentPolicyDocument,
+): Promise<void> {
+  const exists = await AgentPolicyVersionModel.exists({
+    policyId: policy._id,
+    status: "applied",
+  });
   if (exists) return;
   await AgentPolicyVersionModel.create({
     workspaceId: policy.workspaceId,
@@ -44,7 +89,8 @@ export async function ensureBaseVersion(policy: IAgentPolicyDocument): Promise<v
     snapshot: snapshotOf(policy),
     previous: null,
     changedBy: policy.updatedBy ?? policy.createdBy,
-    createdAt: (policy as unknown as { createdAt?: Date }).createdAt ?? new Date(),
+    createdAt:
+      (policy as unknown as { createdAt?: Date }).createdAt ?? new Date(),
   });
 }
 
@@ -72,8 +118,16 @@ export async function recordVersion(input: {
 }
 
 /** Makes the live policy match a snapshot: update, re-create (same id) or delete. */
-export async function applySnapshot(workspaceId: Types.ObjectId | string, policyId: Types.ObjectId | string, snapshot: PolicySnapshot | null, userId: string): Promise<IAgentPolicyDocument | null> {
-  const existing = await AgentPolicyModel.findOne({ _id: policyId, workspaceId });
+export async function applySnapshot(
+  workspaceId: Types.ObjectId | string,
+  policyId: Types.ObjectId | string,
+  snapshot: PolicySnapshot | null,
+  userId: string,
+): Promise<IAgentPolicyDocument | null> {
+  const existing = await AgentPolicyModel.findOne({
+    _id: policyId,
+    workspaceId,
+  });
   let result: IAgentPolicyDocument | null = null;
   if (!snapshot) {
     if (existing) await existing.deleteOne();
@@ -81,23 +135,44 @@ export async function applySnapshot(workspaceId: Types.ObjectId | string, policy
     existing.set({ ...snapshot, updatedBy: userId });
     result = await existing.save();
   } else {
-    result = await AgentPolicyModel.create({ _id: new Types.ObjectId(String(policyId)), ...snapshot, workspaceId, createdBy: userId, updatedBy: userId });
+    result = await AgentPolicyModel.create({
+      _id: new Types.ObjectId(String(policyId)),
+      ...snapshot,
+      workspaceId,
+      createdBy: userId,
+      updatedBy: userId,
+    });
   }
   invalidatePolicies(String(workspaceId));
   return result;
 }
 
-export const serializeVersion = (v: IAgentPolicyVersionDocument | Record<string, unknown>) => {
-  const plain = (typeof (v as IAgentPolicyVersionDocument).toObject === "function" ? (v as IAgentPolicyVersionDocument).toObject() : v) as Record<string, unknown>;
+export const serializeVersion = (
+  v: IAgentPolicyVersionDocument | Record<string, unknown>,
+) => {
+  const plain = (
+    typeof (v as IAgentPolicyVersionDocument).toObject === "function"
+      ? (v as IAgentPolicyVersionDocument).toObject()
+      : v
+  ) as Record<string, unknown>;
   return {
     ...plain,
     id: String(plain._id),
-    changes: diffPolicies((plain.previous as PolicySnapshot | null) ?? null, (plain.snapshot as PolicySnapshot | null) ?? null),
+    changes: diffPolicies(
+      (plain.previous as PolicySnapshot | null) ?? null,
+      (plain.snapshot as PolicySnapshot | null) ?? null,
+    ),
   };
 };
 
-export async function listVersions(policyId: string, workspaceIds: Types.ObjectId[]) {
-  const versions = await AgentPolicyVersionModel.find({ policyId, workspaceId: { $in: workspaceIds } })
+export async function listVersions(
+  policyId: string,
+  workspaceIds: Types.ObjectId[],
+) {
+  const versions = await AgentPolicyVersionModel.find({
+    policyId,
+    workspaceId: { $in: workspaceIds },
+  })
     .sort({ version: -1 })
     .limit(100)
     .populate("changedBy", "name email")
@@ -107,14 +182,37 @@ export async function listVersions(policyId: string, workspaceIds: Types.ObjectI
 }
 
 /** Restores an applied version as a new version (also brings back a deleted policy). */
-export async function rollback(policyId: string, version: number, workspaceIds: Types.ObjectId[], userId: string) {
-  const target = await AgentPolicyVersionModel.findOne({ policyId, version, workspaceId: { $in: workspaceIds }, status: "applied" });
+export async function rollback(
+  policyId: string,
+  version: number,
+  workspaceIds: Types.ObjectId[],
+  userId: string,
+) {
+  const target = await AgentPolicyVersionModel.findOne({
+    policyId,
+    version,
+    workspaceId: { $in: workspaceIds },
+    status: "applied",
+  });
   if (!target) throw new AppError(404, "Version not found", "NOT_FOUND");
-  if (!target.snapshot) throw new AppError(400, "That version deleted the policy; pick an earlier one.", "BAD_REQUEST");
-  const current = await AgentPolicyModel.findOne({ _id: policyId, workspaceId: target.workspaceId });
+  if (!target.snapshot)
+    throw new AppError(
+      400,
+      "That version deleted the policy; pick an earlier one.",
+      "BAD_REQUEST",
+    );
+  const current = await AgentPolicyModel.findOne({
+    _id: policyId,
+    workspaceId: target.workspaceId,
+  });
   const previous = current ? snapshotOf(current) : null;
   const snapshot = target.snapshot as unknown as PolicySnapshot;
-  const policy = await applySnapshot(target.workspaceId, policyId, snapshot, userId);
+  const policy = await applySnapshot(
+    target.workspaceId,
+    policyId,
+    snapshot,
+    userId,
+  );
   const recorded = await recordVersion({
     workspaceId: target.workspaceId,
     policyId,
@@ -131,7 +229,9 @@ export async function rollback(policyId: string, version: number, workspaceIds: 
     actor: "person",
     userId,
     title: `Rolled back policy "${snapshot.name}" to version ${version}`,
-    detail: diffPolicies(previous, snapshot).map((c) => c.field).join(", "),
+    detail: diffPolicies(previous, snapshot)
+      .map((c) => c.field)
+      .join(", "),
   });
   return { policy, version: recorded };
 }
@@ -168,7 +268,10 @@ export async function simulate(input: SimulateInput) {
     };
   } else if (input.policyId && !input.remove) {
     // An existing policy (e.g. a simulation-only draft), as if enforced.
-    const stored = await AgentPolicyModel.findOne({ _id: input.policyId, workspaceId: input.workspaceId }).lean();
+    const stored = await AgentPolicyModel.findOne({
+      _id: input.policyId,
+      workspaceId: input.workspaceId,
+    }).lean();
     if (!stored) throw new AppError(404, "Policy not found", "NOT_FOUND");
     draftPolicy = {
       id: String(stored._id),
@@ -177,22 +280,39 @@ export async function simulate(input: SimulateInput) {
       mode: "enforce",
       priority: stored.priority,
       enabled: true,
-      match: { ...stored.match, agentIds: stored.match?.agentIds?.map(String), projectIds: stored.match?.projectIds?.map(String) },
+      match: {
+        ...stored.match,
+        agentIds: stored.match?.agentIds?.map(String),
+        projectIds: stored.match?.projectIds?.map(String),
+      },
     };
   }
   const current = live;
-  const proposed = [...live.filter((p) => p.id !== input.policyId), ...(draftPolicy ? [draftPolicy] : [])];
+  const proposed = [
+    ...live.filter((p) => p.id !== input.policyId),
+    ...(draftPolicy ? [draftPolicy] : []),
+  ];
 
-  const rows = await AgentActivityModel.find({ workspaceId: input.workspaceId, createdAt: { $gte: since } })
+  const rows = await AgentActivityModel.find({
+    workspaceId: input.workspaceId,
+    createdAt: { $gte: since },
+  })
     .select("agentId action domain risk projectId createdAt classification")
     .sort({ createdAt: -1 })
     .limit(10_000)
     .lean();
-  const agents = await AgentModel.find({ _id: { $in: [...new Set(rows.map((r) => String(r.agentId)))] } })
+  const agents = await AgentModel.find({
+    _id: { $in: [...new Set(rows.map((r) => String(r.agentId)))] },
+  })
     .select("name kind operatedBy")
     .lean();
   const agentById = new Map(agents.map((a) => [String(a._id), a]));
-  const results: Array<{ before: Effect; after: Effect; row: (typeof rows)[number]; policy: string | null }> = [];
+  const results: Array<{
+    before: Effect;
+    after: Effect;
+    row: (typeof rows)[number];
+    policy: string | null;
+  }> = [];
   for (const row of rows) {
     const agent = agentById.get(String(row.agentId));
     const context = {
@@ -203,12 +323,18 @@ export async function simulate(input: SimulateInput) {
       domain: row.domain,
       risk: row.risk,
       projectId: row.projectId ? String(row.projectId) : null,
-      classification: (row as { classification?: string | null }).classification ?? null,
+      classification:
+        (row as { classification?: string | null }).classification ?? null,
       now: row.createdAt,
     };
     const before = evaluatePolicies(current, context);
     const after = evaluatePolicies(proposed, context);
-    results.push({ before: before.effect, after: after.effect, row, policy: after.policy?.name ?? null });
+    results.push({
+      before: before.effect,
+      after: after.effect,
+      row,
+      policy: after.policy?.name ?? null,
+    });
   }
   const summary = summarizeSimulation(results);
   const samples = results

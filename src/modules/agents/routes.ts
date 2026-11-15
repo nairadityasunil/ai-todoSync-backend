@@ -1,3 +1,4 @@
+import { automationChangedFor } from "../telemetry/hooks.js";
 import { Router } from "express";
 
 import type { Routes } from "../../interfaces/routes.interface.js";
@@ -21,6 +22,19 @@ class AgentRoutes implements Routes {
   private initializeRoutes(): void {
     const c = agentController;
     this.router.use(authMiddleware);
+    // After any change here (a key created, an agent blocked, an incident
+    // resolved, a vendor approved) re-check the tasks automation keeps.
+    this.router.use((req, res, next) => {
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.on("finish", () => {
+          const userId = (
+            req as { user?: { _id?: { toString(): string } } }
+          ).user?._id?.toString();
+          if (res.statusCode < 400) automationChangedFor(userId);
+        });
+      }
+      next();
+    });
 
     this.router.get("/overview", c.overview);
     this.router.get("/catalog", c.catalog);
@@ -34,10 +48,17 @@ class AgentRoutes implements Routes {
     const a = advancedController;
     this.router.get("/policies", c.listPolicies);
     this.router.get("/policies/templates", c.policyTemplates);
+    // Regulation packs: real laws mapped to policies, settings and to-dos.
+    this.router.get("/policy-packs", c.policyPacks);
+    this.router.post("/policy-packs/:packId/apply", c.applyPolicyPack);
+    this.router.post("/policy-packs/:packId/remove", c.removePolicyPack);
     this.router.get("/policies/export", a.exportPolicies);
     this.router.post("/policies/simulate", a.simulate);
     this.router.get("/policies/proposals", a.proposals);
-    this.router.post("/policies/proposals/:versionId/approve", a.approveProposal);
+    this.router.post(
+      "/policies/proposals/:versionId/approve",
+      a.approveProposal,
+    );
     this.router.post("/policies/proposals/:versionId/reject", a.rejectProposal);
     this.router.get("/policies/:policyId/versions", a.versions);
     this.router.post("/policies/:policyId/rollback", a.rollback);

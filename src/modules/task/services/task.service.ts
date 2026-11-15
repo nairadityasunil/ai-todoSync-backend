@@ -811,6 +811,7 @@ class TaskService {
       order: task.order || 0,
       rolledOver: task.rolledOver,
       rolloverCount: task.rolloverCount,
+      source: task.source ?? "manual",
       projectId,
       epicId: task.epicId?.toString() ?? null,
       assignedTo: this.toTaskUser(task.assignedTo)!,

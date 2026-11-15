@@ -1,3 +1,4 @@
+import { automationChanged } from "../telemetry/hooks.js";
 import { Types } from "mongoose";
 
 import logger from "../../lib/logger.js";
@@ -22,15 +23,24 @@ import webhookService from "./webhooks.service.js";
 
 /* ------------------------------- Settings ------------------------------- */
 
-const settingsCache = new Map<string, { value: GovernanceSettings; at: number }>();
+const settingsCache = new Map<
+  string,
+  { value: GovernanceSettings; at: number }
+>();
 const SETTINGS_TTL_MS = 30_000;
 
-export async function governanceSettings(workspaceId: string | null | undefined): Promise<GovernanceSettings> {
+export async function governanceSettings(
+  workspaceId: string | null | undefined,
+): Promise<GovernanceSettings> {
   if (!workspaceId) return normalizeGovernance(null);
   const hit = settingsCache.get(workspaceId);
   if (hit && Date.now() - hit.at < SETTINGS_TTL_MS) return hit.value;
-  const workspace = await WorkspaceModel.findById(workspaceId).select("settings.governance").lean();
-  const value = normalizeGovernance((workspace?.settings as { governance?: unknown } | undefined)?.governance);
+  const workspace = await WorkspaceModel.findById(workspaceId)
+    .select("settings.governance")
+    .lean();
+  const value = normalizeGovernance(
+    (workspace?.settings as { governance?: unknown } | undefined)?.governance,
+  );
   settingsCache.set(workspaceId, { value, at: Date.now() });
   return value;
 }
@@ -52,31 +62,50 @@ export async function logGovernanceEvent(event: {
   incidentId?: string | null;
   title: string;
   detail?: string;
+  link?: string | null;
 }): Promise<void> {
   try {
     await GovernanceEventModel.create({
-      workspaceId: event.workspaceId ? new Types.ObjectId(event.workspaceId) : null,
+      workspaceId: event.workspaceId
+        ? new Types.ObjectId(event.workspaceId)
+        : null,
       type: event.type,
       actor: event.actor,
       userId: event.userId ? new Types.ObjectId(event.userId) : null,
       agentId: event.agentId ? new Types.ObjectId(event.agentId) : null,
-      incidentId: event.incidentId ? new Types.ObjectId(event.incidentId) : null,
+      incidentId: event.incidentId
+        ? new Types.ObjectId(event.incidentId)
+        : null,
       title: event.title.slice(0, 300),
       detail: (event.detail ?? "").slice(0, 2000),
+      link: event.link ?? null,
     });
   } catch (error) {
-    logger.warn("Could not record governance event", { message: error instanceof Error ? error.message : String(error) });
+    logger.warn("Could not record governance event", {
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
 /* ------------------------------ Safety nets ------------------------------ */
 
 /** Temporary suspend by the system. The owner or any admin can resume it at once. */
-export async function systemSuspend(agent: IAgentDocument, reason: string, incidentId?: string | null): Promise<boolean> {
+export async function systemSuspend(
+  agent: IAgentDocument,
+  reason: string,
+  incidentId?: string | null,
+): Promise<boolean> {
   if (agent.status !== "active") return false;
   const updated = await AgentModel.updateOne(
     { _id: agent._id, status: "active" },
-    { $set: { status: "suspended", suspendedBySystem: true, statusSetByAdmin: false, statusReason: `Suspended by the system: ${reason}`.slice(0, 300) } },
+    {
+      $set: {
+        status: "suspended",
+        suspendedBySystem: true,
+        statusSetByAdmin: false,
+        statusReason: `Suspended by the system: ${reason}`.slice(0, 300),
+      },
+    },
   );
   if (!updated.modifiedCount) return false;
   agent.status = "suspended";
@@ -112,7 +141,10 @@ export async function openIncident(input: {
 }): Promise<IAgentIncidentDocument | null> {
   try {
     const now = new Date();
-    const agentKey = input.agents.map((a) => a._id.toString()).sort().join(",");
+    const agentKey = input.agents
+      .map((a) => a._id.toString())
+      .sort()
+      .join(",");
     const dedupeKey = `${input.trigger}:${agentKey}`;
     let incident = await AgentIncidentModel.findOne({
       dedupeKey,
@@ -120,10 +152,17 @@ export async function openIncident(input: {
       createdAt: { $gte: new Date(now.getTime() - 3600_000) },
     });
     if (incident) {
-      incident.timeline.push({ at: now, actor: "system", action: "signal", detail: input.summary });
+      incident.timeline.push({
+        at: now,
+        actor: "system",
+        action: "signal",
+        detail: input.summary,
+      });
     } else {
       incident = new AgentIncidentModel({
-        workspaceId: input.workspaceId ? new Types.ObjectId(input.workspaceId) : null,
+        workspaceId: input.workspaceId
+          ? new Types.ObjectId(input.workspaceId)
+          : null,
         title: input.title,
         severity: input.severity,
         trigger: input.trigger,
@@ -131,7 +170,9 @@ export async function openIncident(input: {
         agentIds: input.agents.map((a) => a._id),
         action: input.action ?? null,
         summary: input.summary,
-        timeline: [{ at: now, actor: "system", action: "opened", detail: input.summary }],
+        timeline: [
+          { at: now, actor: "system", action: "opened", detail: input.summary },
+        ],
         suggestions: incidentSuggestions(input.trigger, input.action),
         // Keep the hour before the incident with it.
         windowFrom: new Date(now.getTime() - 3600_000),
@@ -141,13 +182,20 @@ export async function openIncident(input: {
     if (input.contain) {
       for (const agent of input.agents) {
         if (await systemSuspend(agent, input.title, incident._id.toString())) {
-          incident.timeline.push({ at: new Date(), actor: "system", action: "contained", detail: `Suspended ${agent.name} until a person reviews it.` });
+          incident.timeline.push({
+            at: new Date(),
+            actor: "system",
+            action: "contained",
+            detail: `Suspended ${agent.name} until a person reviews it.`,
+          });
           incident.status = "contained";
         }
       }
     }
     await incident.save();
-    const isNew = incident.timeline.length <= 2 && incident.timeline[0]?.action === "opened";
+    const isNew =
+      incident.timeline.length <= 2 &&
+      incident.timeline[0]?.action === "opened";
     if (isNew) {
       await logGovernanceEvent({
         workspaceId: input.workspaceId,
@@ -158,18 +206,31 @@ export async function openIncident(input: {
         title: `Incident opened: ${input.title}`,
         detail: input.summary,
       });
-      void import("./compliance.service.js").then((m) => m.scheduleComplianceCheck(input.workspaceId, "incident")).catch(() => undefined);
+      void import("./compliance.service.js")
+        .then((m) => m.scheduleComplianceCheck(input.workspaceId, "incident"))
+        .catch(() => undefined);
       webhookService.emit({
         type: "incident.opened",
         workspaceId: input.workspaceId,
         severity: input.severity,
         summary: `Incident: ${input.title}${incident.status === "contained" ? " (agent suspended)" : ""}`,
-        data: { incidentId: incident._id.toString(), trigger: input.trigger, agents: input.agents.map((a) => ({ id: a._id.toString(), name: a.name })), summary: input.summary },
+        data: {
+          incidentId: incident._id.toString(),
+          trigger: input.trigger,
+          agents: input.agents.map((a) => ({
+            id: a._id.toString(),
+            name: a.name,
+          })),
+          summary: input.summary,
+        },
       });
     }
+    automationChanged(input.workspaceId);
     return incident;
   } catch (error) {
-    logger.warn("Could not open incident", { message: error instanceof Error ? error.message : String(error) });
+    logger.warn("Could not open incident", {
+      message: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -182,7 +243,11 @@ export const threatWindows = new ThreatWindows();
  * Acts on threat signals: alert, raise the agent's risk, and for critical ones
  * open an incident that suspends the agent (when containment is on).
  */
-export async function handleThreats(agent: IAgentDocument, signals: ThreatSignal[], action?: string | null): Promise<void> {
+export async function handleThreats(
+  agent: IAgentDocument,
+  signals: ThreatSignal[],
+  action?: string | null,
+): Promise<void> {
   if (!signals.length) return;
   const workspaceId = agent.workspaceId ? String(agent.workspaceId) : null;
   const settings = await governanceSettings(workspaceId);
@@ -219,6 +284,9 @@ export async function handleThreats(agent: IAgentDocument, signals: ThreatSignal
 
 /** A person approved an agent after an incident: it may act on its own again. */
 export async function clearReapproval(agentId: string): Promise<void> {
-  await AgentModel.updateOne({ _id: agentId }, { $set: { reapprovalRequired: false } });
+  await AgentModel.updateOne(
+    { _id: agentId },
+    { $set: { reapprovalRequired: false } },
+  );
   agentService.invalidate(agentId);
 }

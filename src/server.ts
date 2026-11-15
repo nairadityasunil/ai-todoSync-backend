@@ -30,12 +30,14 @@ import PromptLibraryRoutes from "./modules/prompt/routes/prompt-library.routes.j
 import CompanionRoutes from "./modules/companion/routes/companion.routes.js";
 import McpRoutes from "./modules/mcp/mcp.routes.js";
 import AgentRoutes from "./modules/agents/routes.js";
+import TelemetryRoutes from "./modules/telemetry/routes.js";
 import VendorRoutes from "./modules/vendors/routes.js";
 import logger from "./lib/logger.js";
 
 const server = new App([
   new McpRoutes(),
   new AgentRoutes(),
+  new TelemetryRoutes(),
   new VendorRoutes(),
   new CompanionRoutes(),
   new PromptLibraryRoutes(),

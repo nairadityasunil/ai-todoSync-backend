@@ -1,10 +1,19 @@
-import { detectCostDrift, monitorCompliance, runScheduledReports } from "./compliance.service.js";
+import { runAutomation } from "../telemetry/automation.service.js";
+import {
+  detectCostDrift,
+  monitorCompliance,
+  runScheduledReports,
+} from "./compliance.service.js";
 import cron from "node-cron";
 
 import logger from "../../lib/logger.js";
 import { runExclusive } from "../../utils/job-lock.js";
 import approvalService from "./approval.service.js";
-import { expireElevations, recomputeAllBaselines, runKeyLifecycle } from "./advanced.service.js";
+import {
+  expireElevations,
+  recomputeAllBaselines,
+  runKeyLifecycle,
+} from "./advanced.service.js";
 import vendorService from "../vendors/service.js";
 import {
   detectAlerts,
@@ -14,6 +23,7 @@ import {
 
 const ALERTS_CRON = "*/5 * * * *";
 const RISK_CRON = "17 3 * * *";
+const TELEMETRY_CRON = "23 * * * *";
 
 const run =
   (name: string, ttlMs: number, job: () => Promise<unknown>) => async () => {
@@ -37,7 +47,16 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
       expiredApprovals: await approvalService.expireStale(),
       // Just-in-time grants end on time even if no call checks them.
       expiredElevations: await expireElevations(),
+      // Open, close and escalate the tasks automation keeps for governance.
+      automation: await runAutomation({ telemetry: false }),
     })),
+  ),
+  // Product telemetry rules, the feedback loop and event retention: hourly.
+  cron.schedule(
+    TELEMETRY_CRON,
+    run("telemetry-automation", 3_000_000, async () =>
+      runAutomation({ telemetry: true }),
+    ),
   ),
   // Hygiene first, so suspended agents are scored as such.
   cron.schedule(

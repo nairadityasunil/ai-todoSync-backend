@@ -75,7 +75,12 @@ export interface IAgent {
   pendingKeyCiphertext?: string | null;
   pendingKeyIssuedAt?: Date | null;
   /** Network addresses (and countries) this agent normally uses. */
-  knownIps?: Array<{ ip: string; country?: string | null; firstSeen: Date; lastSeen: Date }>;
+  knownIps?: Array<{
+    ip: string;
+    country?: string | null;
+    firstSeen: Date;
+    lastSeen: Date;
+  }>;
   expiresAt?: Date | null;
   /** Calls allowed per minute across REST, MCP and AI; null for no limit. */
   rateLimitPerMinute?: number | null;
@@ -149,7 +154,11 @@ const agentSchema = new Schema<IAgentDocument>(
     suspendedBySystem: { type: Boolean, default: false },
     reapprovalRequired: { type: Boolean, default: false },
     keyIssuedAt: { type: Date, default: null },
-    operatedBy: { type: String, enum: ["internal", "vendor"], default: "internal" },
+    operatedBy: {
+      type: String,
+      enum: ["internal", "vendor"],
+      default: "internal",
+    },
     previousKeyHash: { type: String, default: null },
     previousKeyExpiresAt: { type: Date, default: null },
     rotationNotifiedAt: { type: Date, default: null },
@@ -158,7 +167,12 @@ const agentSchema = new Schema<IAgentDocument>(
     knownIps: {
       type: [
         new Schema(
-          { ip: String, country: { type: String, default: null }, firstSeen: Date, lastSeen: Date },
+          {
+            ip: String,
+            country: { type: String, default: null },
+            firstSeen: Date,
+            lastSeen: Date,
+          },
           { _id: false },
         ),
       ],
@@ -253,6 +267,8 @@ export interface IAgentPolicy {
   priority: number;
   enabled: boolean;
   match: IPolicyMatch;
+  /** Set when a regulation pack installed this policy. */
+  pack?: { id: string; item: string } | null;
   createdBy: Types.ObjectId | string;
   updatedBy?: Types.ObjectId | string | null;
   createdAt: Date;
@@ -275,10 +291,24 @@ const agentPolicySchema = new Schema<IAgentPolicyDocument>(
       enum: ["allow", "deny", "require_approval"],
       required: true,
     },
-    mode: { type: String, enum: ["enforce", "advisory", "simulation"], default: "advisory" },
+    mode: {
+      type: String,
+      enum: ["enforce", "advisory", "simulation"],
+      default: "advisory",
+    },
     priority: { type: Number, default: 100 },
     enabled: { type: Boolean, default: true },
     match: { type: Schema.Types.Mixed, default: {} },
+    pack: {
+      type: new Schema(
+        {
+          id: { type: String, required: true },
+          item: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
@@ -325,7 +355,12 @@ export interface IAgentActivity {
   /** The rule behind a system decision, e.g. "Default rule: low risk, allowed automatically". */
   rule?: string | null;
   tier?: string | null;
-  dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
+  dlp?: Array<{
+    type: string;
+    label: string;
+    confidence: string;
+    count: number;
+  }>;
   threats?: string[];
   ip?: string | null;
   /** Label of the data touched. */
@@ -441,7 +476,12 @@ export interface IAgentApproval {
   expiresAt: Date;
   tier?: string | null;
   recommendation?: { decision: "approve" | "reject"; reasons: string[] } | null;
-  dlp?: Array<{ type: string; label: string; confidence: string; count: number }>;
+  dlp?: Array<{
+    type: string;
+    label: string;
+    confidence: string;
+    count: number;
+  }>;
   decidedBySystem?: boolean;
   classification?: string | null;
   signals?: string[];
@@ -759,7 +799,11 @@ const agentIncidentSchema = new Schema<IAgentIncidentDocument>(
     title: { type: String, required: true },
     severity: { type: String, enum: ["warning", "critical"], required: true },
     trigger: { type: String, required: true },
-    status: { type: String, enum: ["open", "contained", "resolved"], default: "open" },
+    status: {
+      type: String,
+      enum: ["open", "contained", "resolved"],
+      default: "open",
+    },
     agentIds: [{ type: Schema.Types.ObjectId, ref: "Agent" }],
     action: { type: String, default: null },
     summary: { type: String, default: "" },
@@ -796,6 +840,8 @@ export interface IGovernanceEvent {
   incidentId?: Types.ObjectId | string | null;
   title: string;
   detail: string;
+  /** Portal path the timeline opens for this event (e.g. the task the system created). */
+  link?: string | null;
   createdAt: Date;
 }
 
@@ -811,6 +857,7 @@ const governanceEventSchema = new Schema<IGovernanceEventDocument>(
     incidentId: { type: Schema.Types.ObjectId, default: null },
     title: { type: String, required: true },
     detail: { type: String, default: "" },
+    link: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { versionKey: false },
@@ -837,7 +884,8 @@ export interface IComplianceSnapshot {
   createdAt: Date;
 }
 
-export interface IComplianceSnapshotDocument extends IComplianceSnapshot, Document {}
+export interface IComplianceSnapshotDocument
+  extends IComplianceSnapshot, Document {}
 
 const complianceSnapshotSchema = new Schema<IComplianceSnapshotDocument>(
   {
@@ -854,7 +902,8 @@ complianceSnapshotSchema.index(
   { expireAfterSeconds: 400 * 86400 },
 );
 
-export const ComplianceSnapshotModel = mongoose.model<IComplianceSnapshotDocument>(
-  "ComplianceSnapshot",
-  complianceSnapshotSchema,
-);
+export const ComplianceSnapshotModel =
+  mongoose.model<IComplianceSnapshotDocument>(
+    "ComplianceSnapshot",
+    complianceSnapshotSchema,
+  );
