@@ -112,6 +112,10 @@ class HttpError extends Error {
   }
 }
 
+/** Long enough for a real name, short enough to fit in lists and the sidebar. */
+export const MAX_PROJECT_NAME_LENGTH = 80;
+const MAX_PROJECT_DESCRIPTION_LENGTH = 2000;
+
 class ProjectService {
   public async createProject(
     userId: string,
@@ -120,7 +124,7 @@ class ProjectService {
     const name = this.normalizeName(payload.name);
     const description =
       typeof payload.description === "string"
-        ? payload.description.trim()
+        ? payload.description.trim().slice(0, MAX_PROJECT_DESCRIPTION_LENGTH)
         : undefined;
 
     let targetWorkspaceId = payload.workspaceId;
@@ -269,7 +273,7 @@ class ProjectService {
     if (Object.prototype.hasOwnProperty.call(payload, "description")) {
       updates.description =
         typeof payload.description === "string"
-          ? payload.description.trim()
+          ? payload.description.trim().slice(0, MAX_PROJECT_DESCRIPTION_LENGTH)
           : "";
     }
 
@@ -635,6 +639,12 @@ class ProjectService {
 
     if (!name) {
       throw new HttpError(400, "Project name is required");
+    }
+    if (name.length > MAX_PROJECT_NAME_LENGTH) {
+      throw new HttpError(
+        400,
+        `Project name can be at most ${MAX_PROJECT_NAME_LENGTH} characters (this one has ${name.length}).`,
+      );
     }
 
     return name;

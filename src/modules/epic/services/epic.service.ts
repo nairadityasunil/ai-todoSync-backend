@@ -229,6 +229,12 @@ class EpicService {
     if (!name) {
       throw new HttpError(400, "Epic name is required");
     }
+    if (name.length > 120) {
+      throw new HttpError(
+        400,
+        `Epic name can be at most 120 characters (this one has ${name.length}).`,
+      );
+    }
 
     return name;
   }

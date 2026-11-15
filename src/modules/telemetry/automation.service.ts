@@ -367,7 +367,13 @@ export async function workspaceFindings(
     const agents = await AgentModel.find({
       workspaceId: ws,
       kind: "detected",
-      status: "active",
+      replacedByAgentId: null,
+      // Still unresolved while the system holds it suspended: only a
+      // person's decision (its own key, or a block) settles it.
+      $or: [
+        { status: "active" },
+        { status: "suspended", suspendedBySystem: true },
+      ],
     })
       .select("_id name ownerUserId userAgent")
       .lean();

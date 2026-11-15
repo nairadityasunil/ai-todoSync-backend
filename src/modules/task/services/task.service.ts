@@ -153,6 +153,8 @@ class HttpError extends Error {
   }
 }
 
+export const MAX_TASK_TITLE_LENGTH = 300;
+
 class TaskService {
   public async createTask(payload: CreateTaskPayload): Promise<TaskDto> {
     if (
@@ -162,6 +164,12 @@ class TaskService {
       payload.date === ""
     ) {
       throw new HttpError(400, "Title and date are required");
+    }
+    if (String(payload.title).trim().length > MAX_TASK_TITLE_LENGTH) {
+      throw new HttpError(
+        400,
+        `Task title can be at most ${MAX_TASK_TITLE_LENGTH} characters (this one has ${String(payload.title).trim().length}).`,
+      );
     }
 
     payload.projectId = this.normalizeNullableId(payload.projectId);
