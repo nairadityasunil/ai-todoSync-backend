@@ -7,6 +7,7 @@ import { AppError } from "../../utils/app-error.js";
 import { raiseAlert } from "../agents/activity.service.js";
 import { AgentModel } from "../agents/model.js";
 import { maskText } from "../agents/redaction.js";
+import SdkIntegrationModel from "../sdk-integrations/model.js";
 import UserModel from "../auth/models/user.model.js";
 import PromptExecutionLogModel from "../prompt/models/prompt-execution-log.model.js";
 import PromptLibraryModel from "../prompt/models/prompt-library.model.js";
@@ -559,6 +560,7 @@ async function sanitizeLinks(
     promptIds: current?.promptIds ?? [],
     vendorIds: current?.vendorIds ?? [],
     projectId: current?.projectId ?? null,
+    integrationIds: current?.integrationIds ?? [],
   };
   if (!raw || typeof raw !== "object") return base;
   const r = raw as Record<string, unknown>;
@@ -589,6 +591,19 @@ async function sanitizeLinks(
         .select("_id")
         .lean()
     ).map((v) => String(v._id));
+  const integrationIds = ids(r.integrationIds);
+  if (integrationIds) {
+    // Only apps owned by people in this workspace can be allowed to send interactions.
+    const memberIds = (await members(workspaceId)).map((m) => m.id);
+    base.integrationIds = (
+      await SdkIntegrationModel.find({
+        _id: { $in: integrationIds },
+        tenantId: { $in: memberIds },
+      })
+        .select("_id")
+        .lean()
+    ).map((i) => String(i._id));
+  }
   return base;
 }
 
@@ -1255,6 +1270,7 @@ export async function ingestRecords(
   actor: Actor,
   id: string,
   body: Record<string, unknown>,
+  source: "api" | "sdk" = "api",
 ) {
   if (!isId(id)) throw notFound("Use case");
   const uc = await AiUseCaseModel.findOne({
@@ -1331,14 +1347,119 @@ export async function ingestRecords(
       scores,
       flags,
       flagged: flags.length > 0,
+      recordId:
+        typeof r.recordId === "string" && r.recordId.trim()
+          ? r.recordId.trim().slice(0, 64)
+          : null,
+      source,
     };
   });
-  await AiRecordModel.insertMany(docs, { ordered: false });
-  await addToBuckets(uc.workspaceId, uc._id, docs);
+  // A retry of a batch that already arrived must not count its interactions twice.
+  const ids = docs
+    .map((d) => d.recordId)
+    .filter((x): x is string => Boolean(x));
+  const seen = ids.length
+    ? new Set(
+        (
+          await AiRecordModel.find({
+            useCaseId: uc._id,
+            recordId: { $in: ids },
+          })
+            .select("recordId")
+            .lean()
+        ).map((r) => r.recordId),
+      )
+    : new Set<string | null | undefined>();
+  const fresh = docs.filter((d) => !d.recordId || !seen.has(d.recordId));
+  if (fresh.length) {
+    await AiRecordModel.insertMany(fresh, { ordered: false });
+    await addToBuckets(uc.workspaceId, uc._id, fresh);
+  }
   return {
     accepted: docs.length,
-    flagged: docs.filter((d) => d.flagged).length,
+    duplicates: docs.length - fresh.length,
+    flagged: fresh.filter((d) => d.flagged).length,
   };
+}
+
+/**
+ * Interactions sent by an app's SDK. The integration's owner decides which
+ * workspace they belong to; each record names its use case by reference
+ * ("UC-12") or id, and an unknown use case refuses the whole call.
+ */
+export async function ingestFromIntegration(
+  integrationId: string,
+  body: unknown,
+) {
+  const integration = await SdkIntegrationModel.findById(integrationId)
+    .select("tenantId")
+    .lean();
+  if (!integration)
+    throw new AppError(401, "Unknown SDK integration", "UNAUTHORIZED");
+  const actor = await actorFor(String(integration.tenantId));
+  const list =
+    body &&
+    typeof body === "object" &&
+    Array.isArray((body as { records?: unknown }).records)
+      ? ((body as { records: unknown[] }).records as Array<
+          Record<string, unknown>
+        >)
+      : [];
+  if (!list.length)
+    throw bad('Send { "records": [{ "useCase": "UC-1", "input", "output" }] }');
+  if (list.length > MAX_RECORDS_PER_CALL)
+    throw bad(`Send at most ${MAX_RECORDS_PER_CALL} records per call`);
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  list.forEach((r, i) => {
+    const key =
+      typeof r?.useCase === "string" ? r.useCase.trim().slice(0, 40) : "";
+    if (!key)
+      throw bad(`Record ${i + 1}: useCase is required (for example "UC-1")`);
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  });
+  // Resolve every use case first, so an unknown one stores nothing.
+  const resolved = new Map<string, string>();
+  for (const key of groups.keys()) {
+    const found = /^[a-f0-9]{24}$/i.test(key)
+      ? await AiUseCaseModel.findOne({
+          _id: key,
+          workspaceId: actor.workspaceId,
+        })
+          .select("_id links")
+          .lean()
+      : await AiUseCaseModel.findOne({
+          ref: key.toUpperCase(),
+          workspaceId: actor.workspaceId,
+        })
+          .select("_id links")
+          .lean();
+    if (!found) throw notFound(`Use case ${key}`);
+    // An app's SDK key is public, so a use case only takes interactions from apps it names.
+    const allowed = (
+      (found.links as { integrationIds?: string[] } | undefined)
+        ?.integrationIds ?? []
+    ).map(String);
+    if (!allowed.includes(integrationId))
+      throw new AppError(
+        403,
+        `Use case ${key} does not accept interactions from this app. Allow the app under Linked assets on the use case's Factsheet tab in AI Governance.`,
+        "FORBIDDEN",
+      );
+    resolved.set(key, String(found._id));
+  }
+  const out: Record<
+    string,
+    { accepted: number; duplicates: number; flagged: number }
+  > = {};
+  for (const [key, records] of groups) {
+    out[key] = await ingestRecords(
+      actor,
+      resolved.get(key)!,
+      { records },
+      "sdk",
+    );
+  }
+  return { useCases: out };
 }
 
 const HOUR = 3600000;
@@ -1432,6 +1553,7 @@ export async function listRecords(
       output: r.output,
       feedback: r.feedback,
       flags: r.flags,
+      source: r.source ?? "api",
       relevance: r.scores?.relevance ?? null,
       faithfulness: r.scores?.faithfulness ?? null,
       correctness: r.scores?.correctness ?? null,
@@ -2192,7 +2314,18 @@ export async function assets(actor: Actor) {
       .limit(500)
       .lean(),
   ]);
+  const memberIds = (await members(actor.workspaceId)).map((m) => m.id);
+  const integrations = await SdkIntegrationModel.find({
+    tenantId: { $in: memberIds },
+  })
+    .select("name")
+    .limit(200)
+    .lean();
   return {
+    integrations: integrations.map((i) => ({
+      id: String(i._id),
+      name: String(i.name),
+    })),
     agents: agents.map((a) => ({
       id: String(a._id),
       name: a.name,
