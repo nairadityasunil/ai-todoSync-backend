@@ -1,3 +1,5 @@
+import { evaluateAlerts } from "../insights/service.js";
+import { monitorUseCases } from "../ai-governance/service.js";
 import { runAutomation } from "../telemetry/automation.service.js";
 import {
   detectCostDrift,
@@ -49,14 +51,18 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
       expiredElevations: await expireElevations(),
       // Open, close and escalate the tasks automation keeps for governance.
       automation: await runAutomation({ telemetry: false }),
+      // Metric alerts from Insights: open a task when one fires, close it when it recovers.
+      metricAlerts: await evaluateAlerts(),
     })),
   ),
   // Product telemetry rules, the feedback loop and event retention: hourly.
   cron.schedule(
     TELEMETRY_CRON,
-    run("telemetry-automation", 3_000_000, async () =>
-      runAutomation({ telemetry: true }),
-    ),
+    run("telemetry-automation", 3_000_000, async () => ({
+      automation: await runAutomation({ telemetry: true }),
+      // AI use cases: evaluate what is in validation and production, open and close issues, flag overdue reviews.
+      aiUseCases: await monitorUseCases(),
+    })),
   ),
   // Hygiene first, so suspended agents are scored as such.
   cron.schedule(

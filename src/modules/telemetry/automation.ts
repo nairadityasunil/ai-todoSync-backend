@@ -14,7 +14,11 @@ export type AutomationRule =
   | "incident"
   | "key_expiry"
   | "vendor_review"
-  | "project_governance";
+  | "project_governance"
+  /** A metric alert from Insights (not a switchable rule: each alert has its own on/off). */
+  | "metric_alert"
+  /** An issue on an AI use case (AI governance); follows the issue, not a switch. */
+  | "ai_governance";
 
 export const AUTOMATION_RULES: Array<{
   id: AutomationRule;
