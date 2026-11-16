@@ -560,6 +560,7 @@ async function sanitizeLinks(
     promptIds: current?.promptIds ?? [],
     vendorIds: current?.vendorIds ?? [],
     projectId: current?.projectId ?? null,
+    integrationIds: current?.integrationIds ?? [],
   };
   if (!raw || typeof raw !== "object") return base;
   const r = raw as Record<string, unknown>;
@@ -590,6 +591,19 @@ async function sanitizeLinks(
         .select("_id")
         .lean()
     ).map((v) => String(v._id));
+  const integrationIds = ids(r.integrationIds);
+  if (integrationIds) {
+    // Only apps owned by people in this workspace can be allowed to send interactions.
+    const memberIds = (await members(workspaceId)).map((m) => m.id);
+    base.integrationIds = (
+      await SdkIntegrationModel.find({
+        _id: { $in: integrationIds },
+        tenantId: { $in: memberIds },
+      })
+        .select("_id")
+        .lean()
+    ).map((i) => String(i._id));
+  }
   return base;
 }
 
@@ -1256,6 +1270,7 @@ export async function ingestRecords(
   actor: Actor,
   id: string,
   body: Record<string, unknown>,
+  source: "api" | "sdk" = "api",
 ) {
   if (!isId(id)) throw notFound("Use case");
   const uc = await AiUseCaseModel.findOne({
@@ -1336,6 +1351,7 @@ export async function ingestRecords(
         typeof r.recordId === "string" && r.recordId.trim()
           ? r.recordId.trim().slice(0, 64)
           : null,
+      source,
     };
   });
   // A retry of a batch that already arrived must not count its interactions twice.
@@ -1409,15 +1425,26 @@ export async function ingestFromIntegration(
           _id: key,
           workspaceId: actor.workspaceId,
         })
-          .select("_id")
+          .select("_id links")
           .lean()
       : await AiUseCaseModel.findOne({
           ref: key.toUpperCase(),
           workspaceId: actor.workspaceId,
         })
-          .select("_id")
+          .select("_id links")
           .lean();
     if (!found) throw notFound(`Use case ${key}`);
+    // An app's SDK key is public, so a use case only takes interactions from apps it names.
+    const allowed = (
+      (found.links as { integrationIds?: string[] } | undefined)
+        ?.integrationIds ?? []
+    ).map(String);
+    if (!allowed.includes(integrationId))
+      throw new AppError(
+        403,
+        `Use case ${key} does not accept interactions from this app. Allow the app under Linked assets on the use case's Factsheet tab in AI Governance.`,
+        "FORBIDDEN",
+      );
     resolved.set(key, String(found._id));
   }
   const out: Record<
@@ -1425,7 +1452,12 @@ export async function ingestFromIntegration(
     { accepted: number; duplicates: number; flagged: number }
   > = {};
   for (const [key, records] of groups) {
-    out[key] = await ingestRecords(actor, resolved.get(key)!, { records });
+    out[key] = await ingestRecords(
+      actor,
+      resolved.get(key)!,
+      { records },
+      "sdk",
+    );
   }
   return { useCases: out };
 }
@@ -1521,6 +1553,7 @@ export async function listRecords(
       output: r.output,
       feedback: r.feedback,
       flags: r.flags,
+      source: r.source ?? "api",
       relevance: r.scores?.relevance ?? null,
       faithfulness: r.scores?.faithfulness ?? null,
       correctness: r.scores?.correctness ?? null,
@@ -2281,7 +2314,18 @@ export async function assets(actor: Actor) {
       .limit(500)
       .lean(),
   ]);
+  const memberIds = (await members(actor.workspaceId)).map((m) => m.id);
+  const integrations = await SdkIntegrationModel.find({
+    tenantId: { $in: memberIds },
+  })
+    .select("name")
+    .limit(200)
+    .lean();
   return {
+    integrations: integrations.map((i) => ({
+      id: String(i._id),
+      name: String(i.name),
+    })),
     agents: agents.map((a) => ({
       id: String(a._id),
       name: a.name,

@@ -74,22 +74,26 @@ const client = () => {
 
 const memory = new Map<string, { window: number; count: number }>();
 
-const countInMemory = (agentId: string, window: number): number => {
+const countInMemory = (agentId: string, window: number, cost = 1): number => {
   const entry = memory.get(agentId);
   if (entry && entry.window === window) {
-    entry.count += 1;
+    entry.count += cost;
     return entry.count;
   }
   if (memory.size > 50_000) memory.clear();
-  memory.set(agentId, { window, count: 1 });
-  return 1;
+  memory.set(agentId, { window, count: cost });
+  return cost;
 };
 
-/** Counts one call for the agent and says whether it is within its limit. */
+/**
+ * Counts a call for the key (one by default, or `cost` for a batch) and says
+ * whether it is within its limit.
+ */
 export async function consume(
   agentId: string,
   limitPerMinute: number,
   now = Date.now(),
+  cost = 1,
 ): Promise<RateDecision> {
   const window = Math.floor(now / WINDOW_MS);
   const redisClient = client();
@@ -98,7 +102,7 @@ export async function consume(
       const key = `agent-rate:${agentId}:${window}`;
       const [[, count]] = (await redisClient
         .multi()
-        .incr(key)
+        .incrby(key, cost)
         .pexpire(key, WINDOW_MS * 2)
         .exec()) as [[Error | null, number]];
       return decide(Number(count), limitPerMinute, now);
@@ -106,5 +110,5 @@ export async function consume(
       // Fall through to the local count.
     }
   }
-  return decide(countInMemory(agentId, window), limitPerMinute, now);
+  return decide(countInMemory(agentId, window, cost), limitPerMinute, now);
 }

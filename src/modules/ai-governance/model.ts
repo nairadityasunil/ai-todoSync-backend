@@ -107,6 +107,8 @@ export interface IAiUseCase {
     promptIds: string[];
     vendorIds: string[];
     projectId: string | null;
+    /** Apps (SDK integrations) allowed to send interactions to this use case. None by default. */
+    integrationIds?: string[];
   };
   risks: UseCaseRisk[];
   approvals: UseCaseApproval[];
@@ -172,7 +174,13 @@ const useCaseSchema = new Schema<IAiUseCaseDocument>(
     factsheet: { type: Schema.Types.Mixed, default: {} },
     links: {
       type: Schema.Types.Mixed,
-      default: { agentIds: [], promptIds: [], vendorIds: [], projectId: null },
+      default: {
+        agentIds: [],
+        promptIds: [],
+        vendorIds: [],
+        projectId: null,
+        integrationIds: [],
+      },
     },
     risks: { type: Schema.Types.Mixed, default: [] } as never,
     approvals: { type: Schema.Types.Mixed, default: [] } as never,
@@ -214,6 +222,8 @@ export interface IAiRecord {
   flagged: boolean;
   /** Sent by the SDK so a retry after a lost response does not store the interaction twice. */
   recordId?: string | null;
+  /** Where it came from: an authenticated person or agent ("api"), or an app's SDK key ("sdk"). */
+  source?: "api" | "sdk";
 }
 export interface IAiRecordDocument extends IAiRecord, Document {}
 
@@ -239,6 +249,7 @@ const recordSchema = new Schema<IAiRecordDocument>(
     flags: { type: [String], default: [] },
     flagged: { type: Boolean, default: false },
     recordId: { type: String, default: null },
+    source: { type: String, enum: ["api", "sdk"], default: "api" },
   },
   { versionKey: false },
 );

@@ -4,6 +4,7 @@ import type { AuthenticatedRequest } from "../../types/auth.js";
 import { AppError } from "../../utils/app-error.js";
 import { userIdOf } from "../agents/http.js";
 import * as aiGovernance from "../ai-governance/service.js";
+import { checkIngestLimit } from "./ingest-limits.js";
 import * as service from "./service.js";
 
 const qs = (req: AuthenticatedRequest) => req.query as Record<string, unknown>;
@@ -16,6 +17,22 @@ class ObservabilityController {
     const integrationId = req.sdkIntegration?._id?.toString();
     if (!integrationId)
       throw new AppError(401, "An SDK integration is required", "UNAUTHORIZED");
+    const body = req.body as { logs?: unknown[] } | unknown[] | null;
+    const count = Array.isArray(body)
+      ? body.length
+      : Array.isArray(body?.logs)
+        ? body.logs.length
+        : 1;
+    const wait = await checkIngestLimit("logs", integrationId, count);
+    if (wait !== null) {
+      res.setHeader("Retry-After", String(wait));
+      res.status(429).json({
+        error:
+          "This app is sending logs faster than allowed. Try again shortly.",
+        retryAfterSeconds: wait,
+      });
+      return;
+    }
     const out = await service.ingestLogs(integrationId, req.body);
     res.status(202).json({ success: true, ...out });
   };
@@ -25,6 +42,21 @@ class ObservabilityController {
     const integrationId = req.sdkIntegration?._id?.toString();
     if (!integrationId)
       throw new AppError(401, "An SDK integration is required", "UNAUTHORIZED");
+    const records = (req.body as { records?: unknown[] } | null)?.records;
+    const wait = await checkIngestLimit(
+      "ai",
+      integrationId,
+      Array.isArray(records) ? records.length : 1,
+    );
+    if (wait !== null) {
+      res.setHeader("Retry-After", String(wait));
+      res.status(429).json({
+        error:
+          "This app is sending AI interactions faster than allowed. Try again shortly.",
+        retryAfterSeconds: wait,
+      });
+      return;
+    }
     const out = await aiGovernance.ingestFromIntegration(
       integrationId,
       req.body,
