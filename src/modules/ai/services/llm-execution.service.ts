@@ -16,7 +16,10 @@ import type {
 } from "../adapters/base.adapter.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import logger from "../../../lib/logger.js";
-import { governAiCall, reportOutputExposure } from "../../agents/ai-governance.js";
+import {
+  governAiCall,
+  reportOutputExposure,
+} from "../../agents/ai-governance.js";
 import { currentAgent } from "../../agents/activity.service.js";
 import costService from "../../agents/cost.service.js";
 
@@ -27,6 +30,16 @@ export interface LlmExecutionPayload {
   promptId?: string | null;
   promptVersion?: number | null;
   isProduction?: boolean;
+  /**
+   * The version the caller already chose (for example by serving the deployed
+   * version). The canary split is decided once, by the caller, so it is not
+   * drawn a second time here.
+   */
+  resolved?: {
+    versionNumber: number;
+    isCanary: boolean;
+    canaryDeploymentId?: string | null;
+  };
   source: "playground" | "project_ai" | "mcp" | "ai_planner" | "system";
   messages: LlmMessage[];
   provider?: string;
@@ -86,7 +99,11 @@ export class LlmExecutionService {
     let effectiveParameters = payload.parameters;
 
     // 2. Version Resolution & Canary Routing
-    if (payload.promptId) {
+    if (payload.promptId && payload.resolved) {
+      executedVersionNumber = payload.resolved.versionNumber;
+      isCanaryExecution = payload.resolved.isCanary;
+      activeCanaryId = payload.resolved.canaryDeploymentId ?? null;
+    } else if (payload.promptId) {
       try {
         const resolved = await promptVersionResolverService.resolveVersion(
           payload.promptId,
@@ -160,7 +177,11 @@ export class LlmExecutionService {
       const response = await adapter.execute(governed.messages, execOptions);
       const latencyMs = Date.now() - startTime;
       // DLP: a secret in the model's output is redacted for the caller and alerted.
-      reportOutputExposure(String(payload.workspaceId ?? ""), governed.agent?._id.toString() ?? null, response);
+      reportOutputExposure(
+        String(payload.workspaceId ?? ""),
+        governed.agent?._id.toString() ?? null,
+        response,
+      );
 
       // 6. Calculate Cost
       const cost = costControlService.calculateCost(

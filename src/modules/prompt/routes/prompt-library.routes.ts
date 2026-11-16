@@ -61,6 +61,14 @@ class PromptLibraryRoutes implements Routes {
       promptLibraryController.deployDirectToProduction,
     );
     this.router.post(
+      "/:promptId/deploy/rollback",
+      promptLibraryController.rollbackProduction,
+    );
+    this.router.get(
+      "/:promptId/deploy/history",
+      promptLibraryController.getDeploymentHistory,
+    );
+    this.router.post(
       "/:promptId/deploy/canary/start",
       promptLibraryController.startCanary,
     );

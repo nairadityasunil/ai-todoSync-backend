@@ -1,3 +1,4 @@
+import promptVersionResolverService from "../../../prompt/services/prompt-version-resolver.service.js";
 /**
  * Prompt Library domain MCP tools.
  * Allows AI clients to discover, read, and render prompts from the workspace prompt library.
@@ -156,6 +157,12 @@ toolRegistry.register({
     properties: {
       promptId: { type: "string" },
       workspaceId: { type: "string" },
+      environment: {
+        type: "string",
+        enum: ["production"],
+        description:
+          "Use 'production' to render what is deployed (the production version, or the canary candidate for its share of calls) instead of the latest draft.",
+      },
       variables: {
         type: "object",
       },
@@ -164,13 +171,30 @@ toolRegistry.register({
   requiredScope: "prompt:read",
   risk: "read",
   handler: async (userId, input) => {
-    const { promptId, workspaceId, variables } = input as {
+    const { promptId, workspaceId, variables, environment } = input as {
       promptId: string;
       workspaceId?: string;
+      environment?: "production";
       variables?: Record<string, unknown>;
     };
     const wsId = await resolveWorkspaceId(userId, workspaceId);
     const prompt = await promptService.getPromptDetails(wsId, userId, promptId);
+    if (environment === "production") {
+      const resolved =
+        await promptVersionResolverService.resolveVersion(promptId);
+      const deployed = promptService.substituteVariables(
+        resolved.version.body as string,
+        (resolved.version.variables as any) ?? [],
+        variables ?? {},
+      );
+      return {
+        promptId,
+        rendered: deployed,
+        environment: "production",
+        version: resolved.versionNumber,
+        isCanary: resolved.isCanary,
+      };
+    }
     const rendered = promptService.substituteVariables(
       prompt.body as string,
       (prompt.variables as any) ?? [],

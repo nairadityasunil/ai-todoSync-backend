@@ -305,4 +305,110 @@ describe("Prompt Version Environment & Deployment Lifecycle Tests", () => {
     });
     assert.equal(v2After?.environment, "development");
   });
+
+  test("10. Production rollback goes back to the previous production version and records why", async () => {
+    // History so far: v1 (direct), v2 (direct), v3 (canary). Production is v3.
+    const result = await promptLibraryService.rollbackProduction(
+      dummyWorkspaceId,
+      dummyUserId,
+      createdPromptId,
+      { reason: "Answers got worse" },
+    );
+    assert.equal(result.rolledBackFrom, 3);
+    assert.equal(result.productionVersion, 2, "previous production version");
+
+    const versions = await PromptVersionModel.find({
+      promptId: createdPromptId,
+    });
+    const env = Object.fromEntries(
+      versions.map((v) => [v.version, v.environment]),
+    );
+    assert.equal(env[2], "production");
+    assert.equal(env[3], "staging");
+    const library = await PromptLibraryModel.findById(createdPromptId);
+    assert.equal(library?.productionVersion, 2);
+
+    const history = await promptLibraryService.getDeploymentHistory(
+      dummyWorkspaceId,
+      dummyUserId,
+      createdPromptId,
+    );
+    assert.equal(history.productionVersion, 2);
+    assert.equal(history.history[0].action, "rolled_back");
+    assert.equal(history.history[0].reason, "Answers got worse");
+    assert.ok(history.history.some((e) => e.action === "canary_completed"));
+    assert.ok(history.history.some((e) => e.action === "canary_failed"));
+  });
+
+  test("11. Production rollback refuses the current version, unknown versions and a missing history", async () => {
+    await assert.rejects(
+      promptLibraryService.rollbackProduction(
+        dummyWorkspaceId,
+        dummyUserId,
+        createdPromptId,
+        { toVersion: 2 },
+      ),
+      /already in production/,
+    );
+    await assert.rejects(
+      promptLibraryService.rollbackProduction(
+        dummyWorkspaceId,
+        dummyUserId,
+        createdPromptId,
+        { toVersion: 99 },
+      ),
+      /not found/,
+    );
+    await assert.rejects(
+      promptLibraryService.rollbackProduction(
+        dummyWorkspaceId,
+        dummyUserId,
+        createdPromptId,
+        { toVersion: 0 },
+      ),
+      /version number/,
+    );
+  });
+
+  test("12. A canary is found from any document of the prompt, not only the first one", async () => {
+    // Every edit makes a new library document; the portal holds the newest one's id.
+    const child = await PromptLibraryModel.create({
+      workspaceId: dummyWorkspaceId,
+      name: "child document",
+      slug: `child-${Date.now()}`,
+      body: "child",
+      version: 9,
+      parentId: createdPromptId,
+      createdBy: dummyUserId,
+      updatedBy: dummyUserId,
+    } as never);
+    try {
+      await promptCanaryService.startCanary(
+        dummyWorkspaceId,
+        dummyUserId,
+        createdPromptId,
+        { candidateVersion: 3 },
+      );
+      const seen = new Set<number>();
+      await PromptCanaryDeploymentModel.updateOne(
+        { promptId: createdPromptId, status: "active" },
+        { $set: { "trafficWeight.canary": 100, "trafficWeight.legacy": 0 } },
+      );
+      for (let i = 0; i < 10; i++) {
+        const resolved = await promptVersionResolverService.resolveVersion(
+          String(child._id),
+        );
+        seen.add(resolved.versionNumber);
+        assert.equal(resolved.isCanary, true);
+        assert.ok(resolved.canaryDeploymentId);
+      }
+      assert.deepEqual([...seen], [3]);
+    } finally {
+      await PromptLibraryModel.findByIdAndDelete(child._id);
+      await PromptCanaryDeploymentModel.updateMany(
+        { promptId: createdPromptId, status: "active" },
+        { $set: { status: "cancelled" } },
+      );
+    }
+  });
 });

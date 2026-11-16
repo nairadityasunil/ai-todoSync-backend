@@ -2,6 +2,7 @@ import PromptLibraryModel from "../models/prompt-library.model.js";
 import PromptVersionModel from "../models/prompt-version.model.js";
 import PromptCanaryDeploymentModel from "../models/prompt-canary-deployment.model.js";
 import promptAuthorizationService from "./prompt-authorization.service.js";
+import deploymentHistory from "./prompt-deployment-history.service.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import { runInTransaction } from "../../../utils/transaction.js";
@@ -245,6 +246,7 @@ export class PromptVersionService {
       },
     );
 
+    const previousProduction = prompt.productionVersion ?? null;
     return runInTransaction(async (session) => {
       // 1. Demote current production version to staging
       await PromptVersionModel.updateMany(
@@ -274,6 +276,15 @@ export class PromptVersionService {
         `Prompt ${rootId} version ${versionNumber} directly deployed to production.`,
       );
 
+      await deploymentHistory.record({
+        workspaceId,
+        promptId: rootId,
+        action: "deployed",
+        version: versionNumber,
+        previousVersion: previousProduction,
+        by: userId,
+      });
+
       return {
         promptId: rootId,
         productionVersion: versionNumber,
@@ -281,6 +292,152 @@ export class PromptVersionService {
         environment: "production",
       };
     });
+  }
+
+  /**
+   * Puts an earlier version back in production. With no `toVersion` it goes back
+   * to the version that was in production before the current one. An active
+   * canary is cancelled first, the same way a direct deployment does.
+   */
+  public async rollbackProduction(
+    workspaceId: string,
+    userId: string,
+    promptId: string,
+    options: { toVersion?: number; reason?: string } = {},
+  ) {
+    await workspaceService.assertMembership(userId, workspaceId);
+    const prompt = await PromptLibraryModel.findOne({
+      _id: promptId,
+      workspaceId,
+    });
+    if (!prompt) {
+      throw new HttpError(404, "Prompt not found.");
+    }
+    await promptAuthorizationService.assertPromptAccess(
+      prompt,
+      userId,
+      workspaceId,
+    );
+    const rootId = prompt.parentId || prompt._id;
+    const current = prompt.productionVersion ?? 1;
+    const reason =
+      (options.reason ?? "").trim().slice(0, 500) || "Manual rollback";
+
+    let target = options.toVersion;
+    if (target !== undefined && (!Number.isInteger(target) || target < 1)) {
+      throw new HttpError(400, "toVersion must be a version number.");
+    }
+    if (target === undefined) {
+      const previous = await deploymentHistory.previousProductionVersion(
+        rootId,
+        current,
+      );
+      if (previous == null) {
+        throw new HttpError(
+          400,
+          "There is no earlier production version to roll back to. Choose one with toVersion.",
+        );
+      }
+      target = previous;
+    }
+    if (target === current) {
+      throw new HttpError(400, `Version ${target} is already in production.`);
+    }
+    const targetVersion = await PromptVersionModel.findOne({
+      promptId: rootId,
+      version: target,
+    });
+    if (!targetVersion) {
+      throw new HttpError(404, `Version ${target} not found.`);
+    }
+
+    const canaries = await PromptCanaryDeploymentModel.find({
+      promptId: rootId,
+      status: { $in: ["active", "paused"] },
+    });
+    for (const canary of canaries) {
+      canary.status = "cancelled";
+      canary.rollbackReason = `Cancelled by a production rollback to version ${target}`;
+      await canary.save();
+      await PromptVersionModel.updateOne(
+        { promptId: rootId, version: canary.candidateVersion },
+        { $set: { environment: "staging" } },
+      );
+      await deploymentHistory.record({
+        workspaceId,
+        promptId: rootId,
+        action: "canary_cancelled",
+        version: canary.candidateVersion,
+        previousVersion: current,
+        reason: canary.rollbackReason,
+        by: userId,
+      });
+    }
+
+    return runInTransaction(async (session) => {
+      await PromptVersionModel.updateMany(
+        { promptId: rootId, environment: "production" },
+        { $set: { environment: "staging" } },
+        { session },
+      );
+      targetVersion.environment = "production";
+      await targetVersion.save({ session });
+      await PromptLibraryModel.updateMany(
+        { $or: [{ _id: rootId }, { parentId: rootId }] },
+        {
+          $set: {
+            productionVersion: target,
+            isProductionPublished: true,
+            publishedAt: new Date(),
+          },
+        },
+        { session },
+      );
+      await deploymentHistory.record({
+        workspaceId,
+        promptId: rootId,
+        action: "rolled_back",
+        version: target as number,
+        previousVersion: current,
+        reason,
+        by: userId,
+      });
+      logger.info(
+        `Prompt ${rootId} rolled back from version ${current} to ${target}. Reason: ${reason}`,
+      );
+      return {
+        promptId: rootId,
+        productionVersion: target as number,
+        rolledBackFrom: current,
+        reason,
+        publishedAt: new Date(),
+      };
+    });
+  }
+
+  public async getDeploymentHistory(
+    workspaceId: string,
+    userId: string,
+    promptId: string,
+  ) {
+    await workspaceService.assertMembership(userId, workspaceId);
+    const prompt = await PromptLibraryModel.findOne({
+      _id: promptId,
+      workspaceId,
+    });
+    if (!prompt) {
+      throw new HttpError(404, "Prompt not found.");
+    }
+    await promptAuthorizationService.assertPromptAccess(
+      prompt,
+      userId,
+      workspaceId,
+    );
+    const rootId = prompt.parentId || prompt._id;
+    return {
+      productionVersion: prompt.productionVersion ?? 1,
+      history: await deploymentHistory.list(rootId),
+    };
   }
 
   public async publishProductionVersion(

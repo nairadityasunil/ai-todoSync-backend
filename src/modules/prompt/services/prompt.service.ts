@@ -54,6 +54,10 @@ export class PromptService {
   public moveToDevelopment = promptVersionService.moveToDevelopment;
   public deployDirectToProduction =
     promptVersionService.deployDirectToProduction;
+  public rollbackProduction =
+    promptVersionService.rollbackProduction.bind(promptVersionService);
+  public getDeploymentHistory =
+    promptVersionService.getDeploymentHistory.bind(promptVersionService);
   public startCanary =
     promptCanaryService.startCanary.bind(promptCanaryService);
   public advanceCanary =

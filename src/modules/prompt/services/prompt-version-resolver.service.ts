@@ -22,6 +22,11 @@ export class PromptVersionResolverService {
     options: { isProduction?: boolean; requestedVersion?: number } = {},
   ): Promise<ResolvedPromptVersionResult> {
     const { requestedVersion } = options;
+    // Versions and canaries belong to the root prompt, whichever copy of it the caller holds.
+    const library = await PromptLibraryModel.findById(promptId)
+      .select("parentId")
+      .lean();
+    if (library?.parentId) promptId = String(library.parentId);
 
     // 1. If explicit version requested
     if (
@@ -84,11 +89,11 @@ export class PromptVersionResolverService {
     }).sort({ version: -1 });
 
     if (!prodVersionDoc) {
-      const library = await PromptLibraryModel.findById(promptId);
-      if (library && library.productionVersion) {
+      const root = await PromptLibraryModel.findById(promptId);
+      if (root && root.productionVersion) {
         prodVersionDoc = await PromptVersionModel.findOne({
           promptId,
-          version: library.productionVersion,
+          version: root.productionVersion,
         });
       }
     }

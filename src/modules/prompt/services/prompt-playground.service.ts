@@ -4,6 +4,7 @@ import promptAuthorizationService from "./prompt-authorization.service.js";
 import promptVariableService from "./prompt-variable.service.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
 import llmExecutionService from "../../ai/services/llm-execution.service.js";
+import promptVersionResolverService from "./prompt-version-resolver.service.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import type {
   IPromptVariable,
@@ -13,6 +14,12 @@ import type {
 export interface PlaygroundRunPayload {
   promptId?: string;
   versionNumber?: number;
+  /**
+   * "production" runs what is deployed: the production version, or the canary
+   * candidate for the share of calls a canary sends to it. Without it the run
+   * uses the draft in the library (or `versionNumber`), as the editor does.
+   */
+  environment?: "production";
   body?: string;
   messages?: IPromptMessage[];
   variables?: Record<string, any>;
@@ -39,6 +46,8 @@ export interface PlaygroundRunResponse {
     timestamp: string;
     promptId?: string;
     versionNumber?: number;
+    environment?: "production";
+    isCanary?: boolean;
   };
 }
 
@@ -54,6 +63,35 @@ export class PromptPlaygroundService {
     let templateMessages: IPromptMessage[] = payload.messages || [];
     let promptVariables: IPromptVariable[] = [];
     let versionNum = payload.versionNumber;
+    let served: {
+      versionNumber: number;
+      isCanary: boolean;
+      canaryDeploymentId?: string | null;
+    } | null = null;
+    let servedModel: {
+      provider?: string;
+      modelName?: string;
+      parameters?: Record<string, unknown> | null;
+    } = {};
+
+    if (
+      payload.environment !== undefined &&
+      payload.environment !== "production"
+    ) {
+      throw new HttpError(400, 'environment must be "production".');
+    }
+    if (payload.environment === "production" && !payload.promptId) {
+      throw new HttpError(
+        400,
+        "promptId is required to run the deployed version.",
+      );
+    }
+    if (payload.environment === "production" && payload.versionNumber) {
+      throw new HttpError(
+        400,
+        "Choose either environment or versionNumber, not both.",
+      );
+    }
 
     if (payload.promptId) {
       const promptDoc = await PromptLibraryModel.findOne({
@@ -71,7 +109,30 @@ export class PromptPlaygroundService {
         workspaceId,
       );
 
-      if (versionNum) {
+      if (payload.environment === "production") {
+        // The deployed version, with the canary split applied: this is the call a canary measures.
+        const resolved = await promptVersionResolverService.resolveVersion(
+          payload.promptId,
+        );
+        served = {
+          versionNumber: resolved.versionNumber,
+          isCanary: resolved.isCanary,
+          canaryDeploymentId: resolved.canaryDeploymentId ?? null,
+        };
+        versionNum = resolved.versionNumber;
+        templateBody = resolved.version.body || "";
+        templateMessages = resolved.version.messages || [];
+        promptVariables = resolved.version.variables || [];
+        servedModel = {
+          provider: resolved.version.provider ?? undefined,
+          modelName: resolved.version.modelName ?? undefined,
+          parameters:
+            (resolved.version.parameters as unknown as Record<
+              string,
+              unknown
+            >) ?? null,
+        };
+      } else if (versionNum) {
         const verDoc = await PromptVersionModel.findOne({
           promptId: payload.promptId,
           version: versionNum,
@@ -124,22 +185,35 @@ export class PromptPlaygroundService {
       aiMessages = [{ role: "user", content: resolved as string }];
     }
 
-    const selectedProvider = payload.provider || "gemini";
-    const selectedModel = payload.modelName || "gemini-3.6-flash";
+    const selectedProvider =
+      payload.provider ||
+      (servedModel.provider as typeof payload.provider) ||
+      "gemini";
+    const selectedModel =
+      payload.modelName || servedModel.modelName || "gemini-3.6-flash";
+    const versionParams = (servedModel.parameters ?? {}) as {
+      temperature?: number;
+      maxTokens?: number;
+      topP?: number;
+    };
 
     const execResult = await llmExecutionService.execute({
       workspaceId,
       userId,
       promptId: payload.promptId || null,
-      promptVersion: versionNum || null,
+      // A deployed run is resolved above, once; the execution must not draw the canary split again.
+      promptVersion: served ? null : versionNum || null,
+      resolved: served ?? undefined,
       source: "playground",
       messages: aiMessages,
       provider: selectedProvider,
       modelName: selectedModel,
       parameters: {
-        temperature: payload.parameters?.temperature ?? 0.7,
-        maxTokens: payload.parameters?.maxTokens ?? 2048,
-        topP: payload.parameters?.topP ?? 0.95,
+        temperature:
+          payload.parameters?.temperature ?? versionParams.temperature ?? 0.7,
+        maxTokens:
+          payload.parameters?.maxTokens ?? versionParams.maxTokens ?? 2048,
+        topP: payload.parameters?.topP ?? versionParams.topP ?? 0.95,
       },
     });
 
@@ -157,6 +231,9 @@ export class PromptPlaygroundService {
         timestamp: new Date().toISOString(),
         promptId: payload.promptId,
         versionNumber: versionNum,
+        ...(served
+          ? { environment: "production" as const, isCanary: served.isCanary }
+          : {}),
       },
     };
   }

@@ -4,6 +4,7 @@ import PromptCanaryDeploymentModel, {
 import PromptLibraryModel from "../models/prompt-library.model.js";
 import PromptVersionModel from "../models/prompt-version.model.js";
 import promptAuthorizationService from "./prompt-authorization.service.js";
+import deploymentHistory from "./prompt-deployment-history.service.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
 import { runInTransaction } from "../../../utils/transaction.js";
@@ -124,6 +125,14 @@ export class PromptCanaryService {
     logger.info(
       `Canary deployment started for prompt ${rootId} (candidate v${payload.candidateVersion})`,
     );
+    await deploymentHistory.record({
+      workspaceId,
+      promptId: rootId,
+      action: "canary_started",
+      version: candidateVersionDoc.version,
+      previousVersion: legacyVersion,
+      by: userId,
+    });
     return canary;
   }
 
@@ -265,6 +274,15 @@ export class PromptCanaryService {
     logger.info(
       `Canary deployment rolled back for prompt ${rootId}. Reason: ${reason}`,
     );
+    await deploymentHistory.record({
+      workspaceId,
+      promptId: rootId,
+      action: "canary_rolled_back",
+      version: canary.candidateVersion,
+      previousVersion: canary.legacyVersion,
+      reason,
+      by: userId,
+    });
     return canary;
   }
 
@@ -302,6 +320,15 @@ export class PromptCanaryService {
     );
 
     logger.info(`Canary deployment cancelled for prompt ${rootId}`);
+    await deploymentHistory.record({
+      workspaceId,
+      promptId: rootId,
+      action: "canary_cancelled",
+      version: canary.candidateVersion,
+      previousVersion: canary.legacyVersion,
+      reason,
+      by: userId,
+    });
     return canary;
   }
 
@@ -367,6 +394,14 @@ export class PromptCanaryService {
       logger.info(
         `Canary deployment completed for prompt ${rootId}. Version ${canary.candidateVersion} is now production.`,
       );
+      await deploymentHistory.record({
+        workspaceId,
+        promptId: rootId,
+        action: "canary_completed",
+        version: canary.candidateVersion,
+        previousVersion: canary.legacyVersion,
+        by: userId,
+      });
       return canary;
     });
   }
@@ -459,6 +494,15 @@ export class PromptCanaryService {
         logger.warn(
           `Canary deployment FAILED automatically for prompt ${canary.promptId}: ${canary.rollbackReason}`,
         );
+        await deploymentHistory.record({
+          workspaceId: canary.workspaceId,
+          promptId: canary.promptId,
+          action: "canary_failed",
+          version: canary.candidateVersion,
+          previousVersion: canary.legacyVersion,
+          reason: canary.rollbackReason,
+          by: null,
+        });
       }
     }
   }

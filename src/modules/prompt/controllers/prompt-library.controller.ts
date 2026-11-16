@@ -1,3 +1,4 @@
+import promptVersionResolverService from "../services/prompt-version-resolver.service.js";
 import type { Response, NextFunction } from "express";
 import type { AuthenticatedRequest } from "../../../types/auth.js";
 import promptLibraryService, { HttpError } from "../services/prompt.service.js";
@@ -317,6 +318,34 @@ class PromptLibraryController {
         promptId,
       );
 
+      const wantsProduction =
+        req.body?.environment === "production" ||
+        req.query?.environment === "production";
+      if (wantsProduction) {
+        // What is deployed: the production version, or the canary candidate for its share of calls.
+        const resolved =
+          await promptVersionResolverService.resolveVersion(promptId);
+        const v = resolved.version;
+        const deployedTarget =
+          v.messages && v.messages.length > 0 ? v.messages : v.body;
+        const deployedRendered = promptLibraryService.substituteVariables(
+          deployedTarget,
+          v.variables,
+          req.body?.variables || {},
+        );
+        res.status(200).json({
+          status: "success",
+          data: deployedRendered,
+          meta: {
+            environment: "production",
+            version: resolved.versionNumber,
+            isCanary: resolved.isCanary,
+            canaryDeploymentId: resolved.canaryDeploymentId ?? null,
+          },
+        });
+        return;
+      }
+
       const target =
         prompt.messages && prompt.messages.length > 0
           ? prompt.messages
@@ -324,7 +353,7 @@ class PromptLibraryController {
       const rendered = promptLibraryService.substituteVariables(
         target,
         prompt.variables,
-        req.body.variables || {},
+        req.body?.variables || {},
       );
 
       res.status(200).json({ status: "success", data: rendered });
@@ -483,6 +512,61 @@ class PromptLibraryController {
         promptId,
         versionNumber,
         { acknowledgeChecks: req.body.acknowledgeChecks === true },
+      );
+      res.status(200).json({ status: "success", data: result });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  public rollbackProduction = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const userId = this.getUserId(req);
+      const workspaceId = this.getParam(req, "workspaceId");
+      const promptId = this.getParam(req, "promptId");
+      const toVersion =
+        req.body.toVersion === undefined || req.body.toVersion === null
+          ? undefined
+          : Number(req.body.toVersion);
+      if (
+        toVersion !== undefined &&
+        (!Number.isInteger(toVersion) || toVersion < 1)
+      ) {
+        throw new HttpError(400, "toVersion must be a version number.");
+      }
+      const result = await promptLibraryService.rollbackProduction(
+        workspaceId,
+        userId,
+        promptId,
+        {
+          toVersion,
+          reason:
+            typeof req.body.reason === "string" ? req.body.reason : undefined,
+        },
+      );
+      res.status(200).json({ status: "success", data: result });
+    } catch (err) {
+      next(err);
+    }
+  };
+
+  public getDeploymentHistory = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const userId = this.getUserId(req);
+      const workspaceId = this.getParam(req, "workspaceId");
+      const promptId = this.getParam(req, "promptId");
+      const result = await promptLibraryService.getDeploymentHistory(
+        workspaceId,
+        userId,
+        promptId,
       );
       res.status(200).json({ status: "success", data: result });
     } catch (err) {
