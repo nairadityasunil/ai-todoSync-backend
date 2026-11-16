@@ -7,6 +7,7 @@ import { AppError } from "../../utils/app-error.js";
 import { raiseAlert } from "../agents/activity.service.js";
 import { AgentModel } from "../agents/model.js";
 import { maskText } from "../agents/redaction.js";
+import SdkIntegrationModel from "../sdk-integrations/model.js";
 import UserModel from "../auth/models/user.model.js";
 import PromptExecutionLogModel from "../prompt/models/prompt-execution-log.model.js";
 import PromptLibraryModel from "../prompt/models/prompt-library.model.js";
@@ -1331,14 +1332,102 @@ export async function ingestRecords(
       scores,
       flags,
       flagged: flags.length > 0,
+      recordId:
+        typeof r.recordId === "string" && r.recordId.trim()
+          ? r.recordId.trim().slice(0, 64)
+          : null,
     };
   });
-  await AiRecordModel.insertMany(docs, { ordered: false });
-  await addToBuckets(uc.workspaceId, uc._id, docs);
+  // A retry of a batch that already arrived must not count its interactions twice.
+  const ids = docs
+    .map((d) => d.recordId)
+    .filter((x): x is string => Boolean(x));
+  const seen = ids.length
+    ? new Set(
+        (
+          await AiRecordModel.find({
+            useCaseId: uc._id,
+            recordId: { $in: ids },
+          })
+            .select("recordId")
+            .lean()
+        ).map((r) => r.recordId),
+      )
+    : new Set<string | null | undefined>();
+  const fresh = docs.filter((d) => !d.recordId || !seen.has(d.recordId));
+  if (fresh.length) {
+    await AiRecordModel.insertMany(fresh, { ordered: false });
+    await addToBuckets(uc.workspaceId, uc._id, fresh);
+  }
   return {
     accepted: docs.length,
-    flagged: docs.filter((d) => d.flagged).length,
+    duplicates: docs.length - fresh.length,
+    flagged: fresh.filter((d) => d.flagged).length,
   };
+}
+
+/**
+ * Interactions sent by an app's SDK. The integration's owner decides which
+ * workspace they belong to; each record names its use case by reference
+ * ("UC-12") or id, and an unknown use case refuses the whole call.
+ */
+export async function ingestFromIntegration(
+  integrationId: string,
+  body: unknown,
+) {
+  const integration = await SdkIntegrationModel.findById(integrationId)
+    .select("tenantId")
+    .lean();
+  if (!integration)
+    throw new AppError(401, "Unknown SDK integration", "UNAUTHORIZED");
+  const actor = await actorFor(String(integration.tenantId));
+  const list =
+    body &&
+    typeof body === "object" &&
+    Array.isArray((body as { records?: unknown }).records)
+      ? ((body as { records: unknown[] }).records as Array<
+          Record<string, unknown>
+        >)
+      : [];
+  if (!list.length)
+    throw bad('Send { "records": [{ "useCase": "UC-1", "input", "output" }] }');
+  if (list.length > MAX_RECORDS_PER_CALL)
+    throw bad(`Send at most ${MAX_RECORDS_PER_CALL} records per call`);
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  list.forEach((r, i) => {
+    const key =
+      typeof r?.useCase === "string" ? r.useCase.trim().slice(0, 40) : "";
+    if (!key)
+      throw bad(`Record ${i + 1}: useCase is required (for example "UC-1")`);
+    groups.set(key, [...(groups.get(key) ?? []), r]);
+  });
+  // Resolve every use case first, so an unknown one stores nothing.
+  const resolved = new Map<string, string>();
+  for (const key of groups.keys()) {
+    const found = /^[a-f0-9]{24}$/i.test(key)
+      ? await AiUseCaseModel.findOne({
+          _id: key,
+          workspaceId: actor.workspaceId,
+        })
+          .select("_id")
+          .lean()
+      : await AiUseCaseModel.findOne({
+          ref: key.toUpperCase(),
+          workspaceId: actor.workspaceId,
+        })
+          .select("_id")
+          .lean();
+    if (!found) throw notFound(`Use case ${key}`);
+    resolved.set(key, String(found._id));
+  }
+  const out: Record<
+    string,
+    { accepted: number; duplicates: number; flagged: number }
+  > = {};
+  for (const [key, records] of groups) {
+    out[key] = await ingestRecords(actor, resolved.get(key)!, { records });
+  }
+  return { useCases: out };
 }
 
 const HOUR = 3600000;

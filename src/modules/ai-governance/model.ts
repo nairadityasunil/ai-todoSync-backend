@@ -212,6 +212,8 @@ export interface IAiRecord {
   /** A human-readable list of what was found, for the flagged-records view. */
   flags: string[];
   flagged: boolean;
+  /** Sent by the SDK so a retry after a lost response does not store the interaction twice. */
+  recordId?: string | null;
 }
 export interface IAiRecordDocument extends IAiRecord, Document {}
 
@@ -236,11 +238,13 @@ const recordSchema = new Schema<IAiRecordDocument>(
     scores: { type: Schema.Types.Mixed, required: true },
     flags: { type: [String], default: [] },
     flagged: { type: Boolean, default: false },
+    recordId: { type: String, default: null },
   },
   { versionKey: false },
 );
 recordSchema.index({ useCaseId: 1, at: -1 });
 recordSchema.index({ useCaseId: 1, flagged: 1, at: -1 });
+recordSchema.index({ useCaseId: 1, recordId: 1 }, { sparse: true });
 recordSchema.index(
   { at: 1 },
   { expireAfterSeconds: RECORD_RETENTION_DAYS * 86400 },

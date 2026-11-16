@@ -32,6 +32,7 @@ import McpRoutes from "./modules/mcp/mcp.routes.js";
 import AgentRoutes from "./modules/agents/routes.js";
 import TelemetryRoutes from "./modules/telemetry/routes.js";
 import InsightsRoutes from "./modules/insights/routes.js";
+import ObservabilityRoutes from "./modules/observability/routes.js";
 import AiGovernanceRoutes from "./modules/ai-governance/routes.js";
 import VendorRoutes from "./modules/vendors/routes.js";
 import logger from "./lib/logger.js";
@@ -41,6 +42,7 @@ const server = new App([
   new AgentRoutes(),
   new TelemetryRoutes(),
   new InsightsRoutes(),
+  new ObservabilityRoutes(),
   new AiGovernanceRoutes(),
   new VendorRoutes(),
   new CompanionRoutes(),
