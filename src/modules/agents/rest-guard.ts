@@ -86,6 +86,10 @@ const isPeopleOnlyGovernance = (
     );
   }
   if (domain === "vendor") return /^[^/]+\/status$/.test(path);
+  // AI governance: an agent may log interactions and ask for an evaluation;
+  // assessments, risk decisions, approvals, stage moves and issues stay with people.
+  if (domain === "ai_governance")
+    return !/^use-cases\/[^/]+\/(records|evaluate)$/.test(path);
   return false;
 };
 

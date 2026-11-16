@@ -143,7 +143,15 @@ class App {
     // Gzip JSON responses over 1 KB; lists of tasks/events shrink ~80%.
     this.app.use(compression({ threshold: 1024 }));
     this.app.use(hpp());
-    this.app.use(express.json());
+    // Logging AI interactions sends batches of whole conversations: that one route takes up to 4 MB, everything else keeps the default.
+    const bigJson = express.json({ limit: "4mb" });
+    const defaultJson = express.json();
+    this.app.use((req, res, next) =>
+      req.method === "POST" &&
+      /^\/api\/ai-governance\/use-cases\/[a-f0-9]{24}\/records$/i.test(req.path)
+        ? bigJson(req, res, next)
+        : defaultJson(req, res, next),
+    );
     this.app.use(express.urlencoded({ extended: true }));
   }
 
