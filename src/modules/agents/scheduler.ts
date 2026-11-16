@@ -1,3 +1,4 @@
+import { evaluateAlerts } from "../insights/service.js";
 import { runAutomation } from "../telemetry/automation.service.js";
 import {
   detectCostDrift,
@@ -49,6 +50,8 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
       expiredElevations: await expireElevations(),
       // Open, close and escalate the tasks automation keeps for governance.
       automation: await runAutomation({ telemetry: false }),
+      // Metric alerts from Insights: open a task when one fires, close it when it recovers.
+      metricAlerts: await evaluateAlerts(),
     })),
   ),
   // Product telemetry rules, the feedback loop and event retention: hourly.

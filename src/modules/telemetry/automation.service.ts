@@ -523,7 +523,7 @@ export const taskLink = (taskId: string, projectId?: string | null): string =>
     ? `/projects/${projectId}?task=${taskId}`
     : `/dashboard?task=${taskId}`;
 
-async function openTask(
+export async function openTask(
   finding: Finding,
   workspaceId: string | null,
   settings: AutomationSettings,
@@ -581,7 +581,7 @@ async function openTask(
 }
 
 /** Marks the task done for the system, with a note saying why. */
-async function closeTask(
+export async function closeTask(
   link: IAutomationLinkDocument,
   reason: string,
 ): Promise<void> {
