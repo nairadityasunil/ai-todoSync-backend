@@ -1365,27 +1365,35 @@ async function addToBuckets(
     });
     byHour.set(hour, totals);
   }
-  for (const [hour, t] of byHour) {
+  const ops = [...byHour].map(([hour, t]) => {
     const { terms, ...counts } = t;
     const inc: Record<string, number> = { ...counts };
     for (const [term, count] of Object.entries(terms))
       inc[`terms.${term}`] = count;
-    const filter = { useCaseId, hour: new Date(hour) };
-    const update = { $inc: inc, $setOnInsert: { workspaceId } };
+    return {
+      updateOne: {
+        filter: { useCaseId, hour: new Date(hour) },
+        update: { $inc: inc, $setOnInsert: { workspaceId } },
+        upsert: true,
+      },
+    };
+  });
+  // One round trip for every hour a batch touches, not one per hour.
+  for (let attempt = 0; ; attempt++) {
     try {
-      await AiMetricBucketModel.collection.updateOne(
-        filter as never,
-        update as never,
-        { upsert: true },
-      );
+      await AiMetricBucketModel.collection.bulkWrite(ops as never, {
+        ordered: false,
+      });
+      return;
     } catch (error) {
-      // Two first writes for the same hour at once: the other one created the row, so this is now a plain update.
-      if (!isDuplicateKey(error)) throw error;
-      await AiMetricBucketModel.collection.updateOne(
-        filter as never,
-        update as never,
-        { upsert: true },
-      );
+      // Two first writes for the same hour at once: the other created the row, so a second pass is a plain update.
+      if (
+        !isDuplicateKey(error) &&
+        (error as { code?: number })?.code !== 11000 &&
+        !/E11000/.test(String((error as Error)?.message))
+      )
+        throw error;
+      if (attempt >= 2) throw error;
     }
   }
 }
@@ -1679,15 +1687,13 @@ async function createIssueDoc(input: {
     metricKey: input.metricKey,
     ownerUserId: input.ownerUserId,
     dueAt: input.dueAt ?? new Date(Date.now() + dueDays * DAY),
-    actions: (input.actions ?? [])
-      .slice(0, 20)
-      .map((title) => ({
-        id: randomUUID(),
-        title: title.slice(0, 200),
-        done: false,
-        doneAt: null,
-        doneBy: null,
-      })),
+    actions: (input.actions ?? []).slice(0, 20).map((title) => ({
+      id: randomUUID(),
+      title: title.slice(0, 200),
+      done: false,
+      doneAt: null,
+      doneBy: null,
+    })),
     createdBy: input.actor?.userId ?? null,
     history: [],
   });
@@ -2442,9 +2448,7 @@ export function catalogView() {
 // ---------------------------------------------------------------------------
 
 /** Hourly: evaluate everything in validation and production, and flag overdue reviews. */
-export async function monitorUseCases(
-  now = Date.now(),
-): Promise<{
+export async function monitorUseCases(now = Date.now()): Promise<{
   evaluated: number;
   issuesOpened: number;
   issuesResolved: number;
