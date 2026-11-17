@@ -1,5 +1,6 @@
 import { evaluateAlerts } from "../insights/service.js";
 import { monitorUseCases } from "../ai-governance/service.js";
+import { monitorAll as monitorShadowAi } from "../shadow-ai/service.js";
 import { runAutomation } from "../telemetry/automation.service.js";
 import {
   detectCostDrift,
@@ -62,6 +63,8 @@ export const scheduleAgentGovernanceJobs = (): cron.ScheduledTask[] => [
       automation: await runAutomation({ telemetry: true }),
       // AI use cases: evaluate what is in validation and production, open and close issues, flag overdue reviews.
       aiUseCases: await monitorUseCases(),
+      // Shadow AI: prohibited tools still in use, keys in code, reviews that waited too long.
+      shadowAi: await monitorShadowAi(),
     })),
   ),
   // Hygiene first, so suspended agents are scored as such.

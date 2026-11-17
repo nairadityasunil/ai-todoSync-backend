@@ -148,7 +148,10 @@ class App {
     const defaultJson = express.json();
     this.app.use((req, res, next) =>
       req.method === "POST" &&
-      /^\/api\/ai-governance\/use-cases\/[a-f0-9]{24}\/records$/i.test(req.path)
+      (/^\/api\/ai-governance\/use-cases\/[a-f0-9]{24}\/records$/i.test(
+        req.path,
+      ) ||
+        /^\/api\/shadow-ai\/(scan|ingest\/code)$/.test(req.path))
         ? bigJson(req, res, next)
         : defaultJson(req, res, next),
     );

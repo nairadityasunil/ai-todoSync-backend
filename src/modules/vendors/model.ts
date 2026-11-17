@@ -26,6 +26,7 @@ export type VendorSource =
   | "chatgpt"
   | "detected"
   | "webhook"
+  | "shadow_ai"
   | "manual";
 
 export interface IVendorHistoryEntry {
