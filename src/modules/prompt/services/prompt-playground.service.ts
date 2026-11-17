@@ -3,6 +3,9 @@ import PromptVersionModel from "../models/prompt-version.model.js";
 import promptAuthorizationService from "./prompt-authorization.service.js";
 import promptVariableService from "./prompt-variable.service.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
+import projectService from "../../project/services/project.service.js";
+import UserModel from "../../auth/models/user.model.js";
+import env from "../../../config/env.js";
 import llmExecutionService from "../../ai/services/llm-execution.service.js";
 import promptVersionResolverService from "./prompt-version-resolver.service.js";
 import { HttpError } from "../../../shared/errors/http-error.js";
@@ -13,6 +16,8 @@ import type {
 
 export interface PlaygroundRunPayload {
   promptId?: string;
+  /** The project the run is for (a person's own project work); the run is then recorded as project AI. */
+  projectId?: string;
   versionNumber?: number;
   /**
    * "production" runs what is deployed: the production version, or the canary
@@ -52,12 +57,50 @@ export interface PlaygroundRunResponse {
 }
 
 export class PromptPlaygroundService {
+  /**
+   * The key to call the provider with: the person's own key for that provider (Settings → AI providers),
+   * else, for Gemini, the server's key. Without this the run is refused as "API key is missing".
+   */
+  private async resolveProviderKey(
+    userId: string,
+    provider: string,
+  ): Promise<string> {
+    const user = await UserModel.findById(userId)
+      .select("openaiApiKey anthropicApiKey geminiApiKey")
+      .exec();
+    const own =
+      provider === "openai"
+        ? user?.openaiApiKey
+        : provider === "anthropic"
+          ? user?.anthropicApiKey
+          : user?.geminiApiKey;
+    const key =
+      own?.trim() ||
+      (provider === "gemini" ? env.GEMINI_API_KEY?.trim() : "") ||
+      "";
+    if (!key) {
+      const name =
+        provider === "openai"
+          ? "OpenAI"
+          : provider === "anthropic"
+            ? "Anthropic"
+            : "Google Gemini";
+      throw new HttpError(
+        400,
+        `No API key for ${name} yet. Add yours under Settings → Profile → AI providers.`,
+      );
+    }
+    return key;
+  }
+
   public async runPlayground(
     workspaceId: string,
     userId: string,
     payload: PlaygroundRunPayload,
   ): Promise<PlaygroundRunResponse> {
     await workspaceService.assertMembership(userId, workspaceId);
+    if (payload.projectId)
+      await projectService.assertProjectMembership(userId, payload.projectId);
 
     let templateBody = payload.body || "";
     let templateMessages: IPromptMessage[] = payload.messages || [];
@@ -197,6 +240,7 @@ export class PromptPlaygroundService {
       topP?: number;
     };
 
+    const userApiKey = await this.resolveProviderKey(userId, selectedProvider);
     const execResult = await llmExecutionService.execute({
       workspaceId,
       userId,
@@ -204,7 +248,9 @@ export class PromptPlaygroundService {
       // A deployed run is resolved above, once; the execution must not draw the canary split again.
       promptVersion: served ? null : versionNum || null,
       resolved: served ?? undefined,
-      source: "playground",
+      userApiKey,
+      projectId: payload.projectId ?? null,
+      source: payload.projectId ? "project_ai" : "playground",
       messages: aiMessages,
       provider: selectedProvider,
       modelName: selectedModel,

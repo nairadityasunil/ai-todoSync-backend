@@ -45,6 +45,8 @@ export class PromptService {
 
   // Query Operations
   public listPrompts = promptQueryService.listPrompts;
+  public listRunnable =
+    promptQueryService.listRunnable.bind(promptQueryService);
   public getPromptDetails = promptQueryService.getPromptDetails;
 
   // Favorite & Version Operations

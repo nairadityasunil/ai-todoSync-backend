@@ -1,5 +1,8 @@
 import PromptFavoriteModel from "../models/prompt-favorite.model.js";
 import PromptLibraryModel from "../models/prompt-library.model.js";
+import PromptVersionModel from "../models/prompt-version.model.js";
+import PromptCanaryDeploymentModel from "../models/prompt-canary-deployment.model.js";
+import projectService from "../../project/services/project.service.js";
 import promptAuthorizationService from "./prompt-authorization.service.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
 
@@ -98,6 +101,90 @@ export class PromptQueryService {
         isFavorite: userFavs.has(p._id.toString()) || userFavs.has(rootId),
       };
     });
+  }
+
+  /**
+   * Prompts a person can run from a project: those with a version deployed to production
+   * (with its variables and any canary under way), deployed ones first. Prompts that were
+   * never deployed are left out unless `includeUndeployed` is set.
+   */
+  public async listRunnable(
+    workspaceId: string,
+    userId: string,
+    options: {
+      projectId?: string;
+      search?: string;
+      includeUndeployed?: boolean;
+    } = {},
+  ) {
+    if (options.projectId)
+      await projectService.assertProjectMembership(userId, options.projectId);
+    const prompts = await this.listPrompts(workspaceId, userId, {
+      search: options.search,
+    });
+    const rootOf = (p: any) =>
+      p.parentId ? p.parentId.toString() : p._id.toString();
+    const rootIds = [...new Set(prompts.map(rootOf))];
+    const [prodVersions, canaries] = await Promise.all([
+      PromptVersionModel.find({
+        promptId: { $in: rootIds },
+        environment: "production",
+      })
+        .sort({ version: -1 })
+        .lean(),
+      PromptCanaryDeploymentModel.find({
+        promptId: { $in: rootIds },
+        status: { $in: ["active", "paused"] },
+      }).lean(),
+    ]);
+    const prodByRoot = new Map<string, any>();
+    for (const v of prodVersions)
+      if (!prodByRoot.has(String(v.promptId)))
+        prodByRoot.set(String(v.promptId), v);
+    const canaryByRoot = new Map(canaries.map((c) => [String(c.promptId), c]));
+
+    const rows = prompts.map((p: any) => {
+      const root = rootOf(p);
+      const prod = prodByRoot.get(root);
+      const canary = canaryByRoot.get(root);
+      return {
+        id: String(p._id),
+        rootId: root,
+        name: p.name,
+        description: p.description || "",
+        category: p.category || "general",
+        tags: p.tags || [],
+        folderId: p.folderId ? String(p.folderId) : null,
+        deployed: Boolean(prod),
+        productionVersion: prod?.version ?? p.productionVersion ?? 1,
+        provider: prod?.provider ?? p.provider,
+        modelName: prod?.modelName ?? p.modelName,
+        // The variables of the version that will run.
+        variables: (prod?.variables ?? p.variables ?? []).map((v: any) => ({
+          name: v.name,
+          type: v.type || "string",
+          description: v.description || "",
+          defaultValue: v.defaultValue ?? "",
+          required: Boolean(v.required),
+          options: v.options || [],
+        })),
+        canary: canary
+          ? {
+              status: canary.status,
+              candidateVersion: canary.candidateVersion,
+              canaryPercent: canary.trafficWeight?.canary ?? 0,
+            }
+          : null,
+        updatedAt: p.updatedAt,
+      };
+    });
+    return rows
+      .filter((r) => options.includeUndeployed || r.deployed)
+      .sort(
+        (a, b) =>
+          Number(b.deployed) - Number(a.deployed) ||
+          a.name.localeCompare(b.name),
+      );
   }
 
   public async getPromptDetails(
