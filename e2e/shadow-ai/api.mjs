@@ -214,6 +214,14 @@ await step('hourly check: alert for a prohibited tool in use, task for a tool le
   expect(again.body.data.alerts === 0, 'same alert is not raised twice in a week: ' + JSON.stringify(again.body));
   expect((await call('POST', `${S}/monitor/run${ws}`, { token: member.token })).status === 403, 'members cannot run it');
 });
+await step('the telemetry automation sweep leaves shadow AI review tasks alone', async () => {
+  const before = await db.collection('automationlinks').countDocuments({ key: /^shadow_review:/, state: 'open' });
+  expect(before >= 1, 'a review task is open');
+  const r = await call('POST', `/telemetry/automation/run${ws}`, { token });
+  expect(r.status === 200, r.body);
+  const after = await db.collection('automationlinks').countDocuments({ key: /^shadow_review:/, state: 'open' });
+  expect(after === before, `open review tasks before ${before}, after the sweep ${after}`);
+});
 await step('deciding a tool closes its review task', async () => {
   const p = (await call('GET', `${S}/tools${ws}&q=perplexity`, { token })).body.data[0];
   expect((await call('POST', `${S}/tools/${p.id}/decision${ws}`, { token, body: { status: 'dismissed', reason: 'Checked: it is only a search engine here' } })).status === 200);

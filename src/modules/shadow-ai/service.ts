@@ -1415,7 +1415,7 @@ export async function monitorWorkspace(
       try {
         const link = await openTask(
           {
-            rule: "shadow_ai",
+            rule: "ai_governance",
             key: reviewKey(String(t._id)),
             title: `Review AI tool: ${t.name}`,
             description: `${t.name} has been in use for ${Math.floor(ageDays)} days without a decision. ${t.users} ${t.users === 1 ? "person uses" : "people use"} it (risk ${t.riskLevel}). Decide whether to sanction, restrict or prohibit it.`,
