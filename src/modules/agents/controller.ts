@@ -98,6 +98,7 @@ import { undoActivity } from "./undo.service.js";
 import {
   adminWorkspaces,
   param,
+  requireMemberWorkspace,
   requireWorkspace,
   str,
   userIdOf,
@@ -1472,7 +1473,7 @@ class AgentController {
   /** Unified activity: task changes, agent actions, approvals and end-user events, newest first. */
   public timeline = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
-    const workspaceId = await requireWorkspace(req, userId);
+    const workspaceId = await requireMemberWorkspace(req, userId);
     const admin = await adminWorkspaces(userId);
     const all: TimelineKind[] = [
       "work",
@@ -1522,7 +1523,7 @@ class AgentController {
   /** Agents the caller can filter the timeline by. */
   public timelineAgents = async (req: AuthenticatedRequest, res: Response) => {
     const userId = userIdOf(req);
-    const workspaceId = await requireWorkspace(req, userId);
+    const workspaceId = await requireMemberWorkspace(req, userId);
     res.json({
       success: true,
       data: await timelineAgents({
