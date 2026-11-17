@@ -99,8 +99,10 @@ class ShadowAiController {
   };
 
   public catalog: Handler = async (req, res) => {
-    await actor(req);
+    const a = await actor(req);
     ok(res, {
+      /** Lets the portal show members the declare page without provoking an admin-only 403. */
+      isAdmin: a.isAdmin,
       kinds: KIND_LABELS,
       tools: service.pickerOptions(),
       statuses: service.STATUSES,
