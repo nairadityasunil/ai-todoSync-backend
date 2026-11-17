@@ -45,6 +45,12 @@ export const isProjectMember = async (
       return;
     }
 
+    // A malformed id is "not found", not a server error from the database cast.
+    if (!/^[a-f0-9]{24}$/i.test(projectId)) {
+      res.status(404).json({ error: "Project not found" });
+      return;
+    }
+
     req.projectAccess = await projectService.getProjectAccess(
       user._id.toString(),
       projectId,
