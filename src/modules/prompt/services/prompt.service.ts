@@ -322,9 +322,19 @@ export class PromptService {
       // The first save of a new prompt is version 1. Creating a prompt already writes a placeholder
       // version 1 (its starting text), so while that placeholder has not been used, saving the person's
       // first real content replaces it instead of becoming version 2.
+      const latestVersionRecord = contentChanged
+        ? await PromptVersionModel.findOne({ promptId: rootPromptId })
+            .sort({ version: -1 })
+            .session(session || null)
+        : null;
       if (
         contentChanged &&
-        (await this.isUnusedPlaceholder(existing, rootPromptId, session))
+        (await this.isUnusedPlaceholder(
+          existing,
+          latestVersionRecord,
+          rootPromptId,
+          session,
+        ))
       ) {
         await PromptVersionModel.updateOne(
           { promptId: rootPromptId, version: 1 },
@@ -367,12 +377,6 @@ export class PromptService {
       }
 
       if (contentChanged) {
-        const latestVersionRecord = await PromptVersionModel.findOne({
-          promptId: rootPromptId,
-        })
-          .sort({ version: -1 })
-          .session(session || null);
-
         const newVersionNum =
           existing.version === 0
             ? 1
@@ -491,20 +495,21 @@ export class PromptService {
 
   /**
    * True while a prompt still has only the version 1 that creating it wrote, and nothing has used it:
-   * no other version, no deployment event and no run. Only then may the first save take its place.
+   * the latest version is that placeholder, and there is no deployment event and no run.
+   * Only then may the first save take its place.
    */
   private async isUnusedPlaceholder(
     existing: { version: number; parentId?: unknown },
+    latest: { version?: number; changeNote?: string } | null,
     rootPromptId: string | Types.ObjectId,
     session: any,
   ): Promise<boolean> {
     if (existing.version !== 1 || existing.parentId) return false;
-    const versions = await PromptVersionModel.find({ promptId: rootPromptId })
-      .select("version changeNote")
-      .session(session || null)
-      .lean();
-    if (versions.length !== 1 || versions[0].version !== 1) return false;
-    if (versions[0].changeNote !== "Initial prompt version 1") return false;
+    if (
+      latest?.version !== 1 ||
+      latest.changeNote !== "Initial prompt version 1"
+    )
+      return false;
     const [events, runs] = await Promise.all([
       PromptDeploymentEventModel.countDocuments({
         promptId: rootPromptId,
