@@ -100,6 +100,32 @@ class ProjectController {
     }
   };
 
+  public getProject = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (user == null) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const projectId = req.params.id as string;
+      if (!/^[a-f0-9]{24}$/i.test(projectId)) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const project = await projectService.getProjectForUser(
+        user._id.toString(),
+        projectId,
+      );
+      res.status(200).json({ message: "Project fetched", data: { project } });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
   public updateProject = async (
     req: AuthenticatedRequest,
     res: Response,

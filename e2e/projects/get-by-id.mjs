@@ -1,0 +1,20 @@
+// A project can be fetched by id, even when it is not on the first page of the list.
+const API = process.env.API_URL ?? 'http://localhost:4000/api';
+const P = { 'user-agent': 'Mozilla/5.0 Chrome/130', origin: process.env.APP_URL ?? 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site', 'content-type': 'application/json' };
+const call = async (m, p, t, b) => { const r = await fetch(API + p, { method: m, headers: { ...P, ...(t ? { authorization: 'Bearer ' + t } : {}) }, body: b ? JSON.stringify(b) : undefined }); return { s: r.status, b: await r.json().catch(() => ({})) }; };
+const bad = []; const ok = (n, c, x) => { console.log(`${c ? '✓' : '✗'} ${n}`); if (!c) { bad.push(n); if (x) console.log('   ', JSON.stringify(x).slice(0, 300)); } };
+const stamp = Date.now().toString(36);
+const t = (await call('POST', '/auth/login', null, { email: 'qa@example.com', password: 'Password123!' })).b.data.token;
+await call('POST', '/auth/register', null, { email: `getp-${stamp}@example.com`, password: 'Password123!', name: 'Other' });
+const other = (await call('POST', '/auth/login', null, { email: `getp-${stamp}@example.com`, password: 'Password123!' })).b.data.token;
+for (let i = 0; i < 12; i++) await call('POST', '/projects', t, { name: `Page test ${stamp} ${i}` });
+const first = (await call('GET', '/projects?page=1&limit=10', t)).b.data;
+const all = (await call('GET', '/projects?page=1&limit=100', t)).b.data;
+const beyond = all.projects.find((p) => !first.projects.some((q) => q.id === p.id));
+ok('the account has more than one page of projects', all.total > 10 && Boolean(beyond), { total: all.total });
+const one = await call('GET', `/projects/${beyond.id}`, t);
+ok('a project beyond page 1 can be fetched by id, with the role', one.s === 200 && one.b.data.project.id === beyond.id && ['ADMIN', 'MEMBER'].includes(one.b.data.project.currentUserRole), one);
+ok('another person cannot fetch it', (await call('GET', `/projects/${beyond.id}`, other)).s === 403);
+ok('a malformed id is refused (400 or 404)', [400, 404].includes((await call('GET', '/projects/nope', t)).s));
+ok('an unknown id is 404', (await call('GET', '/projects/aaaaaaaaaaaaaaaaaaaaaaaa', t)).s === 404);
+console.log(bad.length ? `\n${bad.length} failed` : '\nAll checks passed'); process.exit(bad.length ? 1 : 0);
