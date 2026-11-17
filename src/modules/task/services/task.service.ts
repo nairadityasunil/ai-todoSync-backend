@@ -24,6 +24,7 @@ import { getProjectMembershipsByUser } from "../../project/repositories/project-
 import projectService from "../../project/services/project.service.js";
 import epicService from "../../epic/services/epic.service.js";
 import chatSocketServer from "../../../socket/chat.socket.js";
+import { emailAssignee } from "./task-assignment-mail.service.js";
 import TaskModel from "../models/task.model.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
@@ -242,6 +243,14 @@ class TaskService {
     });
 
     await priorityEngineService.evaluateAndPersist(task, payload.userId);
+
+    // Someone else was given the task: tell them by email.
+    if (payload.assignedTo && String(payload.assignedTo) !== payload.userId)
+      void emailAssignee({
+        taskIds: [task._id.toString()],
+        assigneeId: String(payload.assignedTo),
+        assignerId: payload.userId,
+      });
 
     return this.toDto(
       payload.userId,
@@ -464,6 +473,16 @@ class TaskService {
     this.recordTaskUpdateEvents(userId, currentTask, updated);
     await priorityEngineService.evaluateAndPersist(updated, userId);
 
+    if (
+      updates.assignedTo !== undefined &&
+      String(updates.assignedTo) !== refId(currentTask.assignedTo)
+    )
+      void emailAssignee({
+        taskIds: [taskId],
+        assigneeId: String(updates.assignedTo),
+        assignerId: userId,
+      });
+
     return this.toDto(userId, updated, roleMap);
   }
 
@@ -553,6 +572,11 @@ class TaskService {
       chatSocketServer.notifyUser(targetUserId, "task:assigned", {
         task: dto,
         assignedBy: actorUserId,
+      });
+      void emailAssignee({
+        taskIds: [updated._id.toString()],
+        assigneeId: targetUserId,
+        assignerId: actorUserId,
       });
     }
 
@@ -718,6 +742,12 @@ class TaskService {
       chatSocketServer.notifyUser(targetUserId, "task:bulk_assigned", {
         count: results.length,
         assignedBy: actorUserId,
+      });
+      // One email for the whole batch.
+      void emailAssignee({
+        taskIds: results.map((r) => r.id),
+        assigneeId: targetUserId,
+        assignerId: actorUserId,
       });
     }
 

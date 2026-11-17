@@ -17,6 +17,7 @@ import { findUserByEmail } from "../../auth/repositories/auth.repository.js";
 import { invitationQueue } from "./invitation-queue.service.js";
 import projectService from "../../project/services/project.service.js";
 import activityLogService from "../../audit/services/activity-log.service.js";
+import WorkspaceMemberModel from "../models/workspace-member.model.js";
 
 class HttpError extends Error {
   public status: number;
@@ -256,6 +257,26 @@ class InvitationService {
             role: invitation.role,
           },
           session,
+        );
+      }
+
+      // Joining a project also means joining its workspace, so the person can see and use what the
+      // team shares there (prompts, governance, members) without a second invitation.
+      const project = await getProjectById(invitation.projectId.toString());
+      if (project?.workspaceId) {
+        await WorkspaceMemberModel.updateOne(
+          {
+            workspaceId: project.workspaceId,
+            userId: user._id,
+          },
+          {
+            $setOnInsert: {
+              workspaceId: project.workspaceId,
+              userId: user._id,
+              role: "MEMBER",
+            },
+          },
+          { upsert: true, session },
         );
       }
 

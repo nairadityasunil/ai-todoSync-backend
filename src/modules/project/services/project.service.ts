@@ -27,6 +27,7 @@ import {
 import { clearTaskAssignmentsForUser } from "../../task/repositories/task.repository.js";
 import { runInTransaction } from "../../../utils/transaction.js";
 import operationalAnalyticsService from "../../analytics/services/operational-analytics.service.js";
+import WorkspaceMemberModel from "../../workspace/models/workspace-member.model.js";
 
 interface ProjectDto {
   id: string;
@@ -363,6 +364,21 @@ class ProjectService {
 
     if (existingMembership != null) {
       throw new HttpError(409, "User is already a project member");
+    }
+
+    // Only people already in the project's workspace can be added directly. Anyone else is
+    // invited by email, and joins the workspace and the project when they accept.
+    const project = await getProjectById(projectId);
+    if (project?.workspaceId) {
+      const inWorkspace = await WorkspaceMemberModel.exists({
+        workspaceId: project.workspaceId,
+        userId: targetUserId,
+      });
+      if (!inWorkspace)
+        throw new HttpError(
+          400,
+          "That person is not in this workspace. Invite them by email: they join the workspace and the project when they accept.",
+        );
     }
 
     try {
