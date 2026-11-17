@@ -18,6 +18,8 @@ class ShadowAiRoutes implements Routes {
     // Token routes first: they have their own authentication.
     r.post("/ingest/signals", c.ingestSignals);
     r.post("/ingest/code", c.ingestCode);
+    r.get("/ingest/decision", c.checkHost);
+    r.get("/ingest/blocklist", c.blocklistFeed);
 
     r.use(authMiddleware);
     r.get("/catalog", c.catalog);
@@ -35,6 +37,11 @@ class ShadowAiRoutes implements Routes {
     r.post("/import/log", c.importLog);
     r.post("/import/signals", c.signals);
     r.post("/scan", c.scan);
+
+    r.get("/connectors", c.connectors);
+    r.post("/connectors", c.addConnector);
+    r.post("/connectors/:id/sync", c.syncConnector);
+    r.delete("/connectors/:id", c.removeConnector);
 
     r.get("/tokens", c.tokens);
     r.post("/tokens", c.createToken);

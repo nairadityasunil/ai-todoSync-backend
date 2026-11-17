@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import logger from "../../lib/logger.js";
 import { AppError } from "../../utils/app-error.js";
 import { toCsv } from "../../utils/csv.js";
+import { decrypt, encrypt } from "../../utils/encryption.js";
 import UserModel from "../auth/models/user.model.js";
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import { raiseAlert } from "../agents/activity.service.js";
@@ -27,6 +28,7 @@ import {
 } from "./catalog.js";
 import { scanCode, type CodeFile } from "./code-scan.js";
 import {
+  ShadowConnectorModel,
   ShadowRequestModel,
   ShadowSettingsModel,
   ShadowSightingModel,
@@ -35,6 +37,13 @@ import {
   type IShadowSettingsDocument,
   type IShadowToolDocument,
 } from "./model.js";
+import {
+  DEFAULT_ENDPOINTS,
+  parseGoogleKey,
+  pullGoogle,
+  pullMicrosoft,
+  type Endpoints,
+} from "./connectors.js";
 import { assessRisk, type ToolStatus } from "./risk.js";
 import {
   isBroadGrant,
@@ -386,6 +395,7 @@ export async function ingestSignals(
   workspaceId: string,
   source: Source,
   signals: RawSignal[],
+  detailPrefix = "",
 ) {
   const entries: Entry[] = [];
   let ignored = 0;
@@ -401,7 +411,10 @@ export async function ingestSignals(
       source,
       detail:
         source === "oauth"
-          ? (s.scopes ?? []).slice(0, 8).join(" ").slice(0, 300)
+          ? `${detailPrefix}${(s.scopes ?? []).slice(0, 8).join(" ")}`.slice(
+              0,
+              300,
+            )
           : "",
       at: toDate(s.at),
       bytesOut: Math.max(0, Math.min(1e12, Number(s.bytesOut) || 0)),
@@ -528,19 +541,20 @@ export async function scanFiles(
   }
   const done = await record(workspaceId, entries);
   const keys = findings.filter((f) => f.type === "key");
-  if (keys.length) {
+  // One alert per tool, under the same key the hourly check uses, so a key is not announced twice.
+  for (const toolKey of new Set(
+    keys.map((k) => (k.type === "key" ? k.toolKey : "")),
+  )) {
+    const tool = CATALOG_BY_KEY.get(toolKey);
+    if (!tool) continue;
     await raiseAlert({
       workspaceId,
       type: "shadow_ai_key",
       severity: "critical",
-      title: `${keys.length} AI provider ${keys.length === 1 ? "key" : "keys"} found in code`,
+      title: `${tool.name} key found in code`,
       detail:
-        "Rotate each key and move it to a secret store. Keys in the repository stay readable in its history.",
-      dedupeKey: `shadow_key:${workspaceId}:${keys
-        .map((k) => (k.type === "key" ? k.fingerprint : ""))
-        .sort()
-        .join(",")
-        .slice(0, 120)}`,
+        "Rotate it and move it to a secret store. A key that was committed stays readable in the repository history.",
+      dedupeKey: `shadow_secret:${workspaceId}:${toolKey}`,
     }).catch(() => undefined);
   }
   return {
@@ -1373,9 +1387,9 @@ export async function monitorWorkspace(
         workspaceId,
         type: "shadow_ai_key",
         severity: "critical",
-        title: `A ${t.name} key sits in code`,
+        title: `${t.name} key found in code`,
         detail: "Rotate it and move it to a secret store.",
-        dedupeKey: `shadow_secret:${t._id}`,
+        dedupeKey: `shadow_secret:${workspaceId}:${t.toolKey}`,
       }).catch(() => false);
       if (raised) alerts += 1;
     }
@@ -1420,7 +1434,12 @@ export async function monitorAll(): Promise<{
   workspaces: number;
   alerts: number;
   tasks: number;
+  connectors: { connectors: number; failed: number };
 }> {
+  const connectors = await syncAllConnectors().catch(() => ({
+    connectors: 0,
+    failed: 0,
+  }));
   const ids = [
     ...new Set([
       ...((await ShadowToolModel.distinct("workspaceId")) as string[]),
@@ -1445,7 +1464,7 @@ export async function monitorAll(): Promise<{
       });
     }
   }
-  return { workspaces: ids.length, alerts, tasks };
+  return { workspaces: ids.length, alerts, tasks, connectors };
 }
 
 /** Facts for the compliance report. `known` is false until anything has been discovered, so the report says "not assessed" rather than "pass". */
@@ -1479,5 +1498,299 @@ export async function complianceFacts(workspaceId: string) {
 /** Runs the hourly check for this workspace now (admins), so the result can be seen without waiting. */
 export async function runMonitor(actor: Actor) {
   requireAdmin(actor);
+  for (const c of await ShadowConnectorModel.find({
+    workspaceId: actor.workspaceId,
+  }))
+    await syncConnector(c);
   return monitorWorkspace(actor.workspaceId);
+}
+
+// ---------------------------------------------------------------------------
+// Connectors: Google Workspace and Microsoft Entra
+// ---------------------------------------------------------------------------
+
+/** Where the connectors call. Tests point these at a stub; production uses the real services. */
+let endpoints: Endpoints = DEFAULT_ENDPOINTS;
+export const useEndpoints = (e: Endpoints | null): void => {
+  endpoints = e ?? DEFAULT_ENDPOINTS;
+};
+
+const CONNECTOR_TYPES = ["google_workspace", "microsoft_entra"] as const;
+type ConnectorType = (typeof CONNECTOR_TYPES)[number];
+
+const connectorView = (c: IShadowConnectorDocumentLike) => ({
+  id: String(c._id),
+  type: c.type,
+  name: c.name,
+  account: c.account,
+  lastSyncAt: c.lastSyncAt,
+  lastStatus: c.lastStatus,
+  lastError: c.lastError,
+  lastUsers: c.lastUsers,
+  lastSignals: c.lastSignals,
+  lastTruncated: c.lastTruncated,
+});
+type IShadowConnectorDocumentLike = Awaited<
+  ReturnType<typeof ShadowConnectorModel.findOne>
+> &
+  object;
+
+type Creds = Record<string, string>;
+
+async function pull(type: ConnectorType, creds: Creds) {
+  return type === "google_workspace"
+    ? pullGoogle(
+        {
+          serviceAccountEmail: creds.serviceAccountEmail,
+          privateKey: creds.privateKey,
+          adminEmail: creds.adminEmail,
+        },
+        endpoints,
+      )
+    : pullMicrosoft(
+        {
+          tenantId: creds.tenantId,
+          clientId: creds.clientId,
+          clientSecret: creds.clientSecret,
+        },
+        endpoints,
+      );
+}
+
+/** Replaces what this connector reported last time, so a revoked grant disappears. */
+async function applyPull(
+  workspaceId: string,
+  type: ConnectorType,
+  result: Awaited<ReturnType<typeof pull>>,
+) {
+  const prefix = `${type}: `;
+  const old = await ShadowSightingModel.find({
+    workspaceId,
+    source: "oauth",
+    detail: { $regex: `^${type}: ` },
+  })
+    .select("toolKey")
+    .lean();
+  await ShadowSightingModel.deleteMany({
+    workspaceId,
+    source: "oauth",
+    detail: { $regex: `^${type}: ` },
+  });
+  const done = await ingestSignals(
+    workspaceId,
+    "oauth",
+    result.signals,
+    prefix,
+  );
+  const fresh = new Set<string>();
+  for (const o of old) fresh.add(o.toolKey);
+  for (const key of fresh) await recompute(workspaceId, key);
+  return done;
+}
+
+export async function syncConnector(
+  doc: NonNullable<IShadowConnectorDocumentLike>,
+) {
+  try {
+    const creds = JSON.parse(decrypt(doc.credentials)) as Creds;
+    const result = await pull(doc.type as ConnectorType, creds);
+    await applyPull(doc.workspaceId, doc.type as ConnectorType, result);
+    doc.lastStatus = "ok";
+    doc.lastError = "";
+    doc.lastUsers = result.users;
+    doc.lastSignals = result.signals.length;
+    doc.lastTruncated = result.truncated;
+  } catch (error) {
+    doc.lastStatus = "error";
+    doc.lastError = (
+      error instanceof Error ? error.message : String(error)
+    ).slice(0, 300);
+  }
+  doc.lastSyncAt = new Date();
+  await doc.save();
+  return connectorView(doc);
+}
+
+export async function addConnector(
+  actor: Actor,
+  body: Record<string, unknown>,
+) {
+  requireAdmin(actor);
+  const type = String(body.type) as ConnectorType;
+  if (!CONNECTOR_TYPES.includes(type))
+    throw bad(`type must be one of: ${CONNECTOR_TYPES.join(", ")}`);
+  const name =
+    str(body.name, 80) ||
+    (type === "google_workspace" ? "Google Workspace" : "Microsoft Entra");
+  if (
+    (await ShadowConnectorModel.countDocuments({
+      workspaceId: actor.workspaceId,
+    })) >= 5
+  )
+    throw bad("A workspace can have 5 connectors");
+  let creds: Creds;
+  let account: string;
+  if (type === "google_workspace") {
+    const adminEmail = str(body.adminEmail, 200).toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(adminEmail))
+      throw bad(
+        "Give the email of a Workspace admin the service account can act as",
+      );
+    let key;
+    try {
+      key = parseGoogleKey(String(body.serviceAccountKey ?? ""));
+    } catch (e) {
+      throw bad((e as Error).message);
+    }
+    creds = {
+      serviceAccountEmail: key.serviceAccountEmail,
+      privateKey: key.privateKey,
+      adminEmail,
+    };
+    account = adminEmail;
+  } else {
+    const tenantId = str(body.tenantId, 120);
+    const clientId = str(body.clientId, 120);
+    const clientSecret = str(body.clientSecret, 300);
+    if (!tenantId || !clientId || clientSecret.length < 8)
+      throw bad("Tenant ID, client ID and client secret are all needed");
+    creds = { tenantId, clientId, clientSecret };
+    account = tenantId;
+  }
+  // Try it before saving, so a wrong key is caught now and not at the first hourly sync.
+  let result;
+  try {
+    result = await pull(type, creds);
+  } catch (error) {
+    throw bad(
+      `Could not connect: ${(error instanceof Error ? error.message : String(error)).slice(0, 250)}`,
+    );
+  }
+  const doc = await ShadowConnectorModel.create({
+    workspaceId: actor.workspaceId,
+    type,
+    name,
+    credentials: encrypt(JSON.stringify(creds)),
+    account,
+    createdBy: actor.userId,
+  });
+  await applyPull(actor.workspaceId, type, result);
+  doc.lastStatus = "ok";
+  doc.lastSyncAt = new Date();
+  doc.lastUsers = result.users;
+  doc.lastSignals = result.signals.length;
+  doc.lastTruncated = result.truncated;
+  await doc.save();
+  return connectorView(doc);
+}
+
+export async function listConnectors(actor: Actor) {
+  requireAdmin(actor);
+  return (
+    await ShadowConnectorModel.find({ workspaceId: actor.workspaceId }).sort({
+      createdAt: 1,
+    })
+  ).map((c) => connectorView(c));
+}
+
+export async function syncNow(actor: Actor, id: string) {
+  requireAdmin(actor);
+  const doc = /^[a-f0-9]{24}$/i.test(id)
+    ? await ShadowConnectorModel.findOne({
+        _id: id,
+        workspaceId: actor.workspaceId,
+      })
+    : null;
+  if (!doc) throw new AppError(404, "Connector not found", "NOT_FOUND");
+  return syncConnector(doc);
+}
+
+export async function removeConnector(actor: Actor, id: string) {
+  requireAdmin(actor);
+  const doc = /^[a-f0-9]{24}$/i.test(id)
+    ? await ShadowConnectorModel.findOne({
+        _id: id,
+        workspaceId: actor.workspaceId,
+      })
+    : null;
+  if (!doc) throw new AppError(404, "Connector not found", "NOT_FOUND");
+  await doc.deleteOne();
+  // What it reported stays as history until the next sync of another source; the tools keep their decisions.
+  return { removed: true };
+}
+
+export async function syncAllConnectors(): Promise<{
+  connectors: number;
+  failed: number;
+}> {
+  const docs = await ShadowConnectorModel.find({});
+  let failed = 0;
+  for (const d of docs) {
+    const v = await syncConnector(d);
+    if (v.lastStatus === "error") failed += 1;
+  }
+  return { connectors: docs.length, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Enforcement hooks for gateways and browser extensions (token-authenticated)
+// ---------------------------------------------------------------------------
+
+/** "May this person use this host?" Also records the use, so a gateway that asks is also a source. */
+export async function checkHost(
+  workspaceId: string,
+  hostOrUrl: string,
+  user?: string,
+) {
+  const resolved = resolveTarget("network", hostOrUrl);
+  if (!resolved)
+    return { known: false, allowed: true, status: null, message: "" };
+  await record(workspaceId, [
+    {
+      resolved,
+      userKey: userKeyOf(user),
+      source: "network",
+      detail: "",
+      at: new Date(),
+      bytesOut: 0,
+      uploads: 0,
+      personal: false,
+      broad: false,
+      secret: false,
+    },
+  ]);
+  const tool = await ShadowToolModel.findOne({
+    workspaceId,
+    toolKey: resolved.toolKey,
+  }).lean();
+  const settings = await settingsFor(workspaceId);
+  const status = (tool?.status ?? "unreviewed") as ToolStatus;
+  return {
+    known: true,
+    tool: resolved.name,
+    status,
+    allowed: status !== "prohibited",
+    conditions: status === "restricted" ? (tool?.conditions ?? "") : "",
+    alternative: tool?.alternative ?? "",
+    reason:
+      status === "prohibited" || status === "restricted"
+        ? (tool?.reason ?? "")
+        : "",
+    message: settings.coachMessage,
+  };
+}
+
+export async function blocklistFor(workspaceId: string): Promise<string> {
+  const tools = await ShadowToolModel.find({
+    workspaceId,
+    status: "prohibited",
+  })
+    .select("toolKey")
+    .lean();
+  const hosts = [
+    ...new Set(
+      tools.flatMap((t) => CATALOG_BY_KEY.get(t.toolKey)?.domains ?? []),
+    ),
+  ].sort();
+  return hosts.join("\n") + (hosts.length ? "\n" : "");
 }

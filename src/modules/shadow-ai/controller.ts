@@ -61,6 +61,19 @@ async function tokenWorkspace(req: Request, cost: number): Promise<string> {
 }
 
 class ShadowAiController {
+  /** Gateway or extension asks whether a host is allowed, and says who is asking. */
+  public checkHost = async (req: Request, res: Response) => {
+    const workspaceId = await tokenWorkspace(req, 1);
+    const host = q(req, "host");
+    if (!host) throw new AppError(400, "host is required", "BAD_REQUEST");
+    ok(res, await service.checkHost(workspaceId, host, q(req, "user")));
+  };
+  public blocklistFeed = async (req: Request, res: Response) => {
+    const workspaceId = await tokenWorkspace(req, 1);
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.send(await service.blocklistFor(workspaceId));
+  };
+
   public catalog: Handler = async (req, res) => {
     await actor(req);
     ok(res, {
@@ -143,6 +156,15 @@ class ShadowAiController {
     );
   public withdrawRequest: Handler = async (req, res) =>
     ok(res, await service.withdrawRequest(await actor(req), p(req, "id")));
+
+  public connectors: Handler = async (req, res) =>
+    ok(res, await service.listConnectors(await actor(req)));
+  public addConnector: Handler = async (req, res) =>
+    ok(res, await service.addConnector(await actor(req), body(req)), 201);
+  public syncConnector: Handler = async (req, res) =>
+    ok(res, await service.syncNow(await actor(req), p(req, "id")));
+  public removeConnector: Handler = async (req, res) =>
+    ok(res, await service.removeConnector(await actor(req), p(req, "id")));
 
   public runMonitor: Handler = async (req, res) =>
     ok(res, await service.runMonitor(await actor(req)));

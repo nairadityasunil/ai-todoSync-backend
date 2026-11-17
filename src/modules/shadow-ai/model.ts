@@ -232,3 +232,43 @@ export const ShadowSettingsModel = model<IShadowSettings>(
   "ShadowSettings",
   ShadowSettingsSchema,
 );
+
+/** A live link to an identity provider, pulled on a schedule. Credentials are stored encrypted. */
+export interface IShadowConnector {
+  workspaceId: string;
+  type: "google_workspace" | "microsoft_entra";
+  name: string;
+  /** Encrypted JSON of the credentials. Never returned by the API. */
+  credentials: string;
+  /** Shown to admins to tell connectors apart: the admin email or tenant. */
+  account: string;
+  createdBy: string;
+  lastSyncAt: Date | null;
+  lastStatus: "ok" | "error" | "never";
+  lastError: string;
+  lastUsers: number;
+  lastSignals: number;
+  lastTruncated: boolean;
+}
+export type IShadowConnectorDocument = IShadowConnector & Document;
+const ShadowConnectorSchema = new Schema<IShadowConnector>(
+  {
+    workspaceId: { type: String, required: true, index: true },
+    type: { type: String, required: true },
+    name: { type: String, required: true },
+    credentials: { type: String, required: true },
+    account: { type: String, default: "" },
+    createdBy: { type: String, required: true },
+    lastSyncAt: { type: Date, default: null },
+    lastStatus: { type: String, default: "never" },
+    lastError: { type: String, default: "" },
+    lastUsers: { type: Number, default: 0 },
+    lastSignals: { type: Number, default: 0 },
+    lastTruncated: { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+export const ShadowConnectorModel = model<IShadowConnector>(
+  "ShadowConnector",
+  ShadowConnectorSchema,
+);
