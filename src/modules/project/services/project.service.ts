@@ -621,6 +621,15 @@ class ProjectService {
     }
   }
 
+  /** One project the person belongs to, so a project beyond the first page of the list can still be opened. */
+  public async getProjectForUser(
+    userId: string,
+    projectId: string,
+  ): Promise<ProjectDto> {
+    const { project, role } = await this.getProjectAccess(userId, projectId);
+    return this.toDto(project, role);
+  }
+
   private toDto(
     project: IProjectDocument,
     currentUserRole: ProjectRole,
