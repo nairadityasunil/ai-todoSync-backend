@@ -1,6 +1,9 @@
+import type { Types } from "mongoose";
 import PromptFolderModel from "../models/prompt-folder.model.js";
 import PromptLibraryModel from "../models/prompt-library.model.js";
 import PromptVersionModel from "../models/prompt-version.model.js";
+import PromptDeploymentEventModel from "../models/prompt-deployment-event.model.js";
+import PromptExecutionLogModel from "../models/prompt-execution-log.model.js";
 import ProjectModel from "../../project/models/project.model.js";
 import workspaceService from "../../workspace/services/workspace.service.js";
 import { runInTransaction } from "../../../utils/transaction.js";
@@ -316,13 +319,64 @@ export class PromptService {
       const contentChanged =
         existing.version === 0 || newHash !== existing.hash;
 
-      if (contentChanged) {
-        const latestVersionRecord = await PromptVersionModel.findOne({
-          promptId: rootPromptId,
-        })
-          .sort({ version: -1 })
-          .session(session || null);
+      // The first save of a new prompt is version 1. Creating a prompt already writes a placeholder
+      // version 1 (its starting text), so while that placeholder has not been used, saving the person's
+      // first real content replaces it instead of becoming version 2.
+      const latestVersionRecord = contentChanged
+        ? await PromptVersionModel.findOne({ promptId: rootPromptId })
+            .sort({ version: -1 })
+            .session(session || null)
+        : null;
+      if (
+        contentChanged &&
+        (await this.isUnusedPlaceholder(
+          existing,
+          latestVersionRecord,
+          rootPromptId,
+          session,
+        ))
+      ) {
+        await PromptVersionModel.updateOne(
+          { promptId: rootPromptId, version: 1 },
+          {
+            $set: {
+              hash: newHash,
+              body: newBody,
+              messages: newMessages,
+              variables: syncedVars,
+              provider: newProvider,
+              modelName: newModelName,
+              parameters: newParameters,
+              changedBy: userId,
+              // No longer the placeholder: the next content change is version 2.
+              changeNote: payload.changeNote || "First saved version",
+            },
+          },
+          { session },
+        );
+        if (payload.name !== undefined) existing.name = payload.name.trim();
+        if (payload.description !== undefined)
+          existing.description = payload.description;
+        if (payload.category) existing.category = payload.category;
+        if (payload.tags !== undefined)
+          existing.tags = payload.tags.map((t) => t.toLowerCase().trim());
+        if (payload.folderId !== undefined)
+          existing.folderId = payload.folderId as any;
+        if (payload.projectId !== undefined)
+          existing.projectId = payload.projectId as any;
+        if (payload.visibility) existing.visibility = payload.visibility;
+        existing.body = newBody;
+        existing.messages = newMessages as any;
+        existing.variables = syncedVars as any;
+        existing.provider = newProvider as any;
+        existing.modelName = newModelName;
+        existing.parameters = newParameters as any;
+        existing.hash = newHash;
+        await existing.save({ session: session || undefined });
+        return existing;
+      }
 
+      if (contentChanged) {
         const newVersionNum =
           existing.version === 0
             ? 1
@@ -437,6 +491,34 @@ export class PromptService {
         return existing;
       }
     });
+  }
+
+  /**
+   * True while a prompt still has only the version 1 that creating it wrote, and nothing has used it:
+   * the latest version is that placeholder, and there is no deployment event and no run.
+   * Only then may the first save take its place.
+   */
+  private async isUnusedPlaceholder(
+    existing: { version: number; parentId?: unknown },
+    latest: { version?: number; changeNote?: string } | null,
+    rootPromptId: string | Types.ObjectId,
+    session: any,
+  ): Promise<boolean> {
+    if (existing.version !== 1 || existing.parentId) return false;
+    if (
+      latest?.version !== 1 ||
+      latest.changeNote !== "Initial prompt version 1"
+    )
+      return false;
+    const [events, runs] = await Promise.all([
+      PromptDeploymentEventModel.countDocuments({
+        promptId: rootPromptId,
+      }).session(session || null),
+      PromptExecutionLogModel.countDocuments({
+        promptId: rootPromptId,
+      }).session(session || null),
+    ]);
+    return events === 0 && runs === 0;
   }
 
   public async deletePrompt(
