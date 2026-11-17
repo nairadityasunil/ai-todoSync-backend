@@ -228,43 +228,62 @@ async function record(
         .lean()
     ).map((t) => t.toolKey),
   );
-  let newTools = 0;
-  for (const g of groups.values()) {
-    const r = g.resolved;
-    if (!toolKeys.has(r.toolKey)) {
-      toolKeys.add(r.toolKey);
-      const res = await ShadowToolModel.updateOne(
-        { workspaceId, toolKey: r.toolKey },
-        {
-          $setOnInsert: {
-            workspaceId,
-            toolKey: r.toolKey,
-            name: r.name,
-            vendor: r.vendor,
-            kind: r.kind,
-            catalog: r.catalog,
-            status: "unreviewed",
-            firstSeenAt: g.first,
-            history: [
-              {
-                at: new Date(),
-                by: null,
-                byName: "System",
-                action: "discovered",
-                detail: `Found through ${g.source}`,
-              },
-            ],
-          },
-          $max: { lastSeenAt: g.at },
-        },
-        { upsert: true },
-      );
-      if (res.upsertedCount > 0 && !existing.has(r.toolKey)) newTools += 1;
+  // One record per tool: when it was first and last seen across everything in this batch.
+  const perTool = new Map<
+    string,
+    {
+      g: typeof groups extends Map<string, infer V> ? V : never;
+      first: Date;
+      last: Date;
     }
+  >();
+  for (const g of groups.values()) {
+    const t = perTool.get(g.resolved.toolKey);
+    if (!t) perTool.set(g.resolved.toolKey, { g, first: g.first, last: g.at });
+    else {
+      if (g.first < t.first) t.first = g.first;
+      if (g.at > t.last) t.last = g.at;
+    }
+  }
+  let newTools = 0;
+  for (const [toolKey, t] of perTool) {
+    toolKeys.add(toolKey);
+    const r = t.g.resolved;
+    const res = await ShadowToolModel.updateOne(
+      { workspaceId, toolKey },
+      {
+        $setOnInsert: {
+          workspaceId,
+          toolKey,
+          name: r.name,
+          vendor: r.vendor,
+          kind: r.kind,
+          catalog: r.catalog,
+          status: "unreviewed",
+          history: [
+            {
+              at: new Date(),
+              by: null,
+              byName: "System",
+              action: "discovered",
+              detail: `Found through ${t.g.source}`,
+            },
+          ],
+        },
+        $max: { lastSeenAt: t.last },
+        $min: { firstSeenAt: t.first },
+      },
+      { upsert: true },
+    );
+    if (res.upsertedCount > 0 && !existing.has(toolKey)) newTools += 1;
+  }
+  // One upsert per person and tool. (A bulk write was tried and hung on the MongoDB-compatible
+  // database used for testing, so this stays a plain loop.)
+  for (const g of groups.values()) {
     await ShadowSightingModel.updateOne(
       {
         workspaceId,
-        toolKey: r.toolKey,
+        toolKey: g.resolved.toolKey,
         userKey: g.userKey,
         source: g.source,
         detail: g.detail,
@@ -282,17 +301,13 @@ async function record(
         $set: { broad: g.broad, ...(g.secret ? { secret: true } : {}) },
         $setOnInsert: {
           workspaceId,
-          toolKey: r.toolKey,
+          toolKey: g.resolved.toolKey,
           userKey: g.userKey,
           source: g.source,
           detail: g.detail,
         },
       },
       { upsert: true },
-    );
-    await ShadowToolModel.updateOne(
-      { workspaceId, toolKey: r.toolKey },
-      { $max: { lastSeenAt: g.at }, $min: { firstSeenAt: g.first } },
     );
   }
   for (const key of toolKeys) await recompute(workspaceId, key);

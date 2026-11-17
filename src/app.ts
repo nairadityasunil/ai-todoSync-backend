@@ -151,7 +151,9 @@ class App {
       (/^\/api\/ai-governance\/use-cases\/[a-f0-9]{24}\/records$/i.test(
         req.path,
       ) ||
-        /^\/api\/shadow-ai\/(scan|ingest\/code)$/.test(req.path))
+        /^\/api\/shadow-ai\/(scan|import\/log|import\/signals|ingest\/code|ingest\/signals|ingest\/inspect)$/.test(
+          req.path,
+        ))
         ? bigJson(req, res, next)
         : defaultJson(req, res, next),
     );
