@@ -30,6 +30,17 @@ export const start = () => new Promise((resolve) => {
         if (p === '/m/graph/servicePrincipals') return send(res, 200, { value: [{ id: 'sp1', displayName: 'ChatGPT' }, { id: 'sp2', displayName: 'Microsoft Teams' }] });
         if (p === '/m/graph/users/u1') return send(res, 200, { mail: 'carol@corp.com' });
       }
+      if (p.startsWith('/arm/subscriptions/')) {
+        if (req.headers.authorization !== 'Bearer m-token') return send(res, 401, { error: { message: 'bad token' } });
+        return send(res, 200, { value: [{ name: 'oai-prod', kind: 'OpenAI', location: 'swedencentral' }, { name: 'vision', kind: 'ComputerVision', location: 'x' }] });
+      }
+      if (p.startsWith('/aws/')) {
+        const auth = String(req.headers.authorization ?? '');
+        if (!/^AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE\/\d{8}\/us-east-1\/(bedrock|sagemaker)\/aws4_request, SignedHeaders=.*Signature=[0-9a-f]{64}$/.test(auth)) return send(res, 403, { message: 'The security token included in the request is invalid.' });
+        if (p === '/aws/bedrock/custom-models') return send(res, 200, { modelSummaries: [{ modelName: 'support-tuned' }] });
+        if (p === '/aws/bedrock/provisioned-model-throughputs') return send(res, 200, { provisionedModelSummaries: [] });
+        if (p === '/aws/sagemaker/' && req.headers['x-amz-target'] === 'SageMaker.ListEndpoints') return send(res, 200, { Endpoints: [{ EndpointName: 'fraud-model' }] });
+      }
       send(res, 404, { error: { message: 'not found ' + p } });
     });
   });

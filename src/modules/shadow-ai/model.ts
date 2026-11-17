@@ -40,6 +40,8 @@ export interface IShadowTool {
   personalShare: number;
   hasSecret: boolean;
   hasBroadGrant: boolean;
+  /** Times the extension saw sensitive data (keys, cards, IDs, emails) go into this tool. */
+  sensitive: number;
   riskScore: number;
   riskLevel: "low" | "medium" | "high" | "critical";
   history: ShadowHistoryEntry[];
@@ -77,6 +79,7 @@ const ShadowToolSchema = new Schema<IShadowTool>(
     personalShare: { type: Number, default: 0 },
     hasSecret: { type: Boolean, default: false },
     hasBroadGrant: { type: Boolean, default: false },
+    sensitive: { type: Number, default: 0 },
     riskScore: { type: Number, default: 0 },
     riskLevel: { type: String, default: "low" },
     history: { type: [HistorySchema], default: [] },
@@ -108,6 +111,7 @@ export interface IShadowSighting {
   detail: string;
   broad: boolean;
   secret: boolean;
+  sensitive: number;
 }
 export type IShadowSightingDocument = IShadowSighting & Document;
 
@@ -125,6 +129,7 @@ const ShadowSightingSchema = new Schema<IShadowSighting>({
   detail: { type: String, default: "" },
   broad: { type: Boolean, default: false },
   secret: { type: Boolean, default: false },
+  sensitive: { type: Number, default: 0 },
 });
 ShadowSightingSchema.index(
   { workspaceId: 1, toolKey: 1, userKey: 1, source: 1, detail: 1 },

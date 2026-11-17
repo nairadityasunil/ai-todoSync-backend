@@ -1,4 +1,4 @@
-import { createSign } from "node:crypto";
+import { createHash, createHmac, createSign } from "node:crypto";
 
 import type { RawSignal } from "./signals.js";
 
@@ -26,11 +26,24 @@ export interface MicrosoftCredentials {
   clientSecret: string;
 }
 
+export interface AzureCredentials extends MicrosoftCredentials {
+  subscriptionId: string;
+}
+export interface AwsCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  /** Comma-separated regions to look in. */
+  regions: string;
+}
+
 export interface Endpoints {
   googleToken: string;
   googleDirectory: string;
   microsoftLogin: string;
   microsoftGraph: string;
+  azureArm: string;
+  /** Replaces https://{service}.{region}.amazonaws.com; the service name is added as the first path segment. Tests only. */
+  awsOverride: string;
 }
 
 /** The real services. Environment variables point them elsewhere for tests and sovereign clouds (e.g. Microsoft 365 GCC High). */
@@ -47,6 +60,9 @@ export const DEFAULT_ENDPOINTS: Endpoints = {
   microsoftGraph:
     process.env.SHADOW_AI_MICROSOFT_GRAPH_URL ||
     "https://graph.microsoft.com/v1.0",
+  azureArm:
+    process.env.SHADOW_AI_AZURE_ARM_URL || "https://management.azure.com",
+  awsOverride: process.env.SHADOW_AI_AWS_URL || "",
 };
 
 export const MAX_USERS = 2000;
@@ -333,4 +349,244 @@ export async function pullMicrosoft(
     users: principals.length,
     truncated: grants.length >= 999 * MAX_PAGES,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Azure: AI resources in a subscription
+// ---------------------------------------------------------------------------
+
+/**
+ * Lists Azure AI resources (Azure OpenAI and AI Services accounts). This finds
+ * AI that has been deployed, not calls made to it. The app registration needs
+ * the Reader role on the subscription.
+ */
+export async function pullAzure(
+  c: AzureCredentials,
+  ep: Endpoints = DEFAULT_ENDPOINTS,
+  f: Fetch = fetch,
+): Promise<{ signals: RawSignal[]; users: number; truncated: boolean }> {
+  if (!/^[0-9a-f-]{36}$/i.test(c.subscriptionId))
+    throw new Error("The subscription ID must be a GUID");
+  if (
+    !/^[0-9a-f-]{36}$/i.test(c.tenantId) &&
+    !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(c.tenantId)
+  )
+    throw new Error("The tenant must be a directory ID or a domain");
+  const tokenRes = await f(
+    `${ep.microsoftLogin}/${encodeURIComponent(c.tenantId)}/oauth2/v2.0/token`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: c.clientId,
+        client_secret: c.clientSecret,
+        scope: "https://management.azure.com/.default",
+      }),
+    },
+  );
+  const token = String(
+    (await json(tokenRes, "Azure sign-in")).access_token ?? "",
+  );
+  if (!token) throw new Error("Azure did not return an access token");
+  const accounts = await graphPages(
+    f,
+    `${ep.azureArm}/subscriptions/${c.subscriptionId}/providers/Microsoft.CognitiveServices/accounts?api-version=2023-05-01`,
+    { authorization: `Bearer ${token}` },
+    "Listing Azure AI resources",
+  );
+  const signals: RawSignal[] = [];
+  for (const a of accounts) {
+    const kind = String(a.kind ?? "");
+    if (!/^(OpenAI|AIServices)$/i.test(kind)) continue;
+    signals.push({
+      target: "Azure OpenAI",
+      detail: `${String(a.name ?? "account")} (${kind}, ${String(a.location ?? "unknown region")})`,
+    });
+  }
+  return { signals, users: 0, truncated: false };
+}
+
+// ---------------------------------------------------------------------------
+// AWS: Bedrock and SageMaker resources
+// ---------------------------------------------------------------------------
+
+const sha256 = (v: string): string =>
+  createHash("sha256").update(v).digest("hex");
+const hmac = (key: Buffer | string, v: string): Buffer =>
+  createHmac("sha256", key).update(v).digest();
+
+/** AWS Signature Version 4 for one request. Returns the headers to send. */
+export function signAws(opts: {
+  method: string;
+  url: URL;
+  service: string;
+  region: string;
+  body: string;
+  creds: Pick<AwsCredentials, "accessKeyId" | "secretAccessKey">;
+  headers?: Record<string, string>;
+  now?: Date;
+  payloadHeader?: boolean;
+}): Record<string, string> {
+  const now = opts.now ?? new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const date = amzDate.slice(0, 8);
+  const headers: Record<string, string> = {
+    ...(opts.headers ?? {}),
+    host: opts.url.host,
+    "x-amz-date": amzDate,
+    ...(opts.payloadHeader === false
+      ? {}
+      : { "x-amz-content-sha256": sha256(opts.body) }),
+  };
+  const names = Object.keys(headers)
+    .map((h) => h.toLowerCase())
+    .sort();
+  const lower = Object.fromEntries(
+    Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v.trim()]),
+  );
+  const canonicalHeaders = names.map((n) => `${n}:${lower[n]}\n`).join("");
+  const query = [...opts.url.searchParams.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+  const canonical = [
+    opts.method,
+    opts.url.pathname || "/",
+    query,
+    canonicalHeaders,
+    names.join(";"),
+    sha256(opts.body),
+  ].join("\n");
+  const scope = `${date}/${opts.region}/${opts.service}/aws4_request`;
+  const toSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256(canonical)].join(
+    "\n",
+  );
+  const key = hmac(
+    hmac(
+      hmac(hmac(`AWS4${opts.creds.secretAccessKey}`, date), opts.region),
+      opts.service,
+    ),
+    "aws4_request",
+  );
+  const signature = createHmac("sha256", key).update(toSign).digest("hex");
+  return {
+    ...headers,
+    authorization: `AWS4-HMAC-SHA256 Credential=${opts.creds.accessKeyId}/${scope}, SignedHeaders=${names.join(";")}, Signature=${signature}`,
+  };
+}
+
+function awsUrl(
+  ep: Endpoints,
+  service: string,
+  region: string,
+  path: string,
+): URL {
+  return ep.awsOverride
+    ? new URL(`${ep.awsOverride}/${service}${path}`)
+    : new URL(`https://${service}.${region}.amazonaws.com${path}`);
+}
+
+/**
+ * Lists deployed AI resources: Bedrock custom models and provisioned
+ * throughput, SageMaker endpoints. This finds AI that is set up, not calls
+ * made to it. The access key needs read-only List permissions for these.
+ */
+export async function pullAws(
+  c: AwsCredentials,
+  ep: Endpoints = DEFAULT_ENDPOINTS,
+  f: Fetch = fetch,
+): Promise<{ signals: RawSignal[]; users: number; truncated: boolean }> {
+  const regions = c.regions
+    .split(",")
+    .map((r) => r.trim().toLowerCase())
+    .filter(Boolean);
+  if (
+    !regions.length ||
+    regions.length > 8 ||
+    regions.some((r) => !/^[a-z]{2}(-[a-z]+)+-\d$/.test(r))
+  )
+    throw new Error(
+      "Give 1 to 8 AWS regions such as us-east-1, separated by commas",
+    );
+  if (!/^[A-Z0-9]{16,128}$/.test(c.accessKeyId))
+    throw new Error("That does not look like an AWS access key ID");
+  const signals: RawSignal[] = [];
+  let ok = 0;
+  let firstError: Error | null = null;
+  const call = async (
+    service: string,
+    region: string,
+    method: "GET" | "POST",
+    path: string,
+    body = "",
+    extra: Record<string, string> = {},
+  ) => {
+    const url = awsUrl(ep, service, region, path);
+    const headers = signAws({
+      method,
+      url,
+      service,
+      region,
+      body,
+      creds: c,
+      headers: extra,
+    });
+    return json(
+      await f(url, {
+        method,
+        headers,
+        body: method === "POST" ? body : undefined,
+      }),
+      `AWS ${service}`,
+    );
+  };
+  for (const region of regions) {
+    try {
+      const custom = await call("bedrock", region, "GET", "/custom-models");
+      for (const m of (custom.modelSummaries as
+        | Array<{ modelName?: string }>
+        | undefined) ?? [])
+        signals.push({
+          target: "Amazon Bedrock",
+          detail: `custom model ${m.modelName ?? "unnamed"} (${region})`,
+        });
+      const prov = await call(
+        "bedrock",
+        region,
+        "GET",
+        "/provisioned-model-throughputs",
+      );
+      for (const m of (prov.provisionedModelSummaries as
+        | Array<{ provisionedModelName?: string }>
+        | undefined) ?? [])
+        signals.push({
+          target: "Amazon Bedrock",
+          detail: `provisioned ${m.provisionedModelName ?? "unnamed"} (${region})`,
+        });
+      ok += 1;
+    } catch (e) {
+      firstError ??= e as Error;
+    }
+    try {
+      const body = "{}";
+      const eps = await call("sagemaker", region, "POST", "/", body, {
+        "content-type": "application/x-amz-json-1.1",
+        "x-amz-target": "SageMaker.ListEndpoints",
+      });
+      for (const m of (eps.Endpoints as
+        | Array<{ EndpointName?: string }>
+        | undefined) ?? [])
+        signals.push({
+          target: "Amazon SageMaker",
+          detail: `endpoint ${m.EndpointName ?? "unnamed"} (${region})`,
+        });
+      ok += 1;
+    } catch (e) {
+      firstError ??= e as Error;
+    }
+  }
+  // Some services may simply be switched off in a region; nothing working at all means the key is wrong.
+  if (!ok && firstError) throw firstError;
+  return { signals, users: 0, truncated: false };
 }

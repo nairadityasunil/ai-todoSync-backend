@@ -147,6 +147,19 @@ export const CATALOG: CatalogTool[] = [
     ],
   },
   {
+    key: "sagemaker",
+    name: "Amazon SageMaker",
+    vendor: "Amazon",
+    kind: "model_api",
+    domains: [],
+    patterns: [/^runtime\.sagemaker\.[a-z0-9-]+\.amazonaws\.com$/],
+    packages: [
+      "sagemaker",
+      "@aws-sdk/client-sagemaker-runtime",
+      "@aws-sdk/client-sagemaker",
+    ],
+  },
+  {
     key: "copilot",
     name: "Microsoft Copilot",
     vendor: "Microsoft",

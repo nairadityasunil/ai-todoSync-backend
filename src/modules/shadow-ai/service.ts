@@ -40,10 +40,13 @@ import {
 import {
   DEFAULT_ENDPOINTS,
   parseGoogleKey,
+  pullAws,
+  pullAzure,
   pullGoogle,
   pullMicrosoft,
   type Endpoints,
 } from "./connectors.js";
+import { scanForDlp } from "../agents/hybrid.js";
 import { assessRisk, type ToolStatus } from "./risk.js";
 import {
   isBroadGrant,
@@ -175,6 +178,8 @@ interface Entry {
   personal: boolean;
   broad: boolean;
   secret: boolean;
+  /** Sensitive items seen going in (counts only; the text is never kept). */
+  sensitive?: number;
 }
 
 async function record(
@@ -205,6 +210,7 @@ async function record(
       if (e.at < g.first) g.first = e.at;
       g.broad ||= e.broad;
       g.secret ||= e.secret;
+      g.sensitive = (g.sensitive ?? 0) + (e.sensitive ?? 0);
     }
   }
   const toolKeys = new Set<string>();
@@ -269,6 +275,7 @@ async function record(
           bytesOut: g.bytesOut,
           uploads: g.uploads,
           personalCount: g.personalCount,
+          sensitive: g.sensitive ?? 0,
         },
         $min: { firstAt: g.first },
         $max: { lastAt: g.at },
@@ -364,6 +371,7 @@ export async function recompute(
   tool.personalShare = requests ? personal / requests : 0;
   tool.hasSecret = rows.some((r) => r.secret);
   tool.hasBroadGrant = rows.some((r) => r.broad);
+  tool.sensitive = rows.reduce((s, r) => s + (r.sensitive ?? 0), 0);
   const last = rows.reduce((m, r) => Math.max(m, r.lastAt.getTime()), 0);
   if (last)
     tool.lastSeenAt = new Date(Math.max(tool.lastSeenAt.getTime(), last));
@@ -376,6 +384,7 @@ export async function recompute(
     personalShare: tool.personalShare,
     hasSecret: tool.hasSecret,
     hasBroadGrant: tool.hasBroadGrant,
+    sensitive: tool.sensitive,
     sources: tool.sources.length,
     vendorApproved: await vendorApproved(tool),
     recentlyUsed: Date.now() - tool.lastSeenAt.getTime() < 14 * DAY,
@@ -410,8 +419,8 @@ export async function ingestSignals(
       userKey: userKeyOf(s.user),
       source,
       detail:
-        source === "oauth"
-          ? `${detailPrefix}${(s.scopes ?? []).slice(0, 8).join(" ")}`.slice(
+        source === "oauth" || source === "cloud"
+          ? `${detailPrefix}${s.detail ?? (s.scopes ?? []).slice(0, 8).join(" ")}`.slice(
               0,
               300,
             )
@@ -708,6 +717,7 @@ const toolView = (
     personalShare: Math.round(x.personalShare * 100) / 100,
     hasSecret: x.hasSecret,
     hasBroadGrant: x.hasBroadGrant,
+    sensitive: x.sensitive ?? 0,
     riskScore: x.riskScore,
     riskLevel: x.riskLevel,
     domains: CATALOG_BY_KEY.get(x.toolKey)?.domains ?? [],
@@ -774,6 +784,7 @@ export async function getTool(actor: Actor, id: string) {
     personalShare: tool.personalShare,
     hasSecret: tool.hasSecret,
     hasBroadGrant: tool.hasBroadGrant,
+    sensitive: tool.sensitive,
     sources: tool.sources.length,
     vendorApproved: await vendorApproved(tool),
     recentlyUsed: Date.now() - tool.lastSeenAt.getTime() < 14 * DAY,
@@ -794,6 +805,7 @@ export async function getTool(actor: Actor, id: string) {
       lastAt: s.lastAt,
       broad: s.broad,
       secret: s.secret,
+      sensitive: s.sensitive ?? 0,
     })),
   };
 }
@@ -1515,7 +1527,19 @@ export const useEndpoints = (e: Endpoints | null): void => {
   endpoints = e ?? DEFAULT_ENDPOINTS;
 };
 
-const CONNECTOR_TYPES = ["google_workspace", "microsoft_entra"] as const;
+const CONNECTOR_TYPES = [
+  "google_workspace",
+  "microsoft_entra",
+  "azure_ai",
+  "aws_ai",
+] as const;
+const CLOUD_TYPES: string[] = ["azure_ai", "aws_ai"];
+const TYPE_LABEL: Record<string, string> = {
+  google_workspace: "Google Workspace",
+  microsoft_entra: "Microsoft Entra",
+  azure_ai: "Azure AI",
+  aws_ai: "AWS AI",
+};
 type ConnectorType = (typeof CONNECTOR_TYPES)[number];
 
 const connectorView = (c: IShadowConnectorDocumentLike) => ({
@@ -1538,6 +1562,25 @@ type IShadowConnectorDocumentLike = Awaited<
 type Creds = Record<string, string>;
 
 async function pull(type: ConnectorType, creds: Creds) {
+  if (type === "azure_ai")
+    return pullAzure(
+      {
+        tenantId: creds.tenantId,
+        clientId: creds.clientId,
+        clientSecret: creds.clientSecret,
+        subscriptionId: creds.subscriptionId,
+      },
+      endpoints,
+    );
+  if (type === "aws_ai")
+    return pullAws(
+      {
+        accessKeyId: creds.accessKeyId,
+        secretAccessKey: creds.secretAccessKey,
+        regions: creds.regions,
+      },
+      endpoints,
+    );
   return type === "google_workspace"
     ? pullGoogle(
         {
@@ -1564,24 +1607,20 @@ async function applyPull(
   result: Awaited<ReturnType<typeof pull>>,
 ) {
   const prefix = `${type}: `;
+  const source = CLOUD_TYPES.includes(type) ? "cloud" : "oauth";
   const old = await ShadowSightingModel.find({
     workspaceId,
-    source: "oauth",
+    source,
     detail: { $regex: `^${type}: ` },
   })
     .select("toolKey")
     .lean();
   await ShadowSightingModel.deleteMany({
     workspaceId,
-    source: "oauth",
+    source,
     detail: { $regex: `^${type}: ` },
   });
-  const done = await ingestSignals(
-    workspaceId,
-    "oauth",
-    result.signals,
-    prefix,
-  );
+  const done = await ingestSignals(workspaceId, source, result.signals, prefix);
   const fresh = new Set<string>();
   for (const o of old) fresh.add(o.toolKey);
   for (const key of fresh) await recompute(workspaceId, key);
@@ -1619,9 +1658,7 @@ export async function addConnector(
   const type = String(body.type) as ConnectorType;
   if (!CONNECTOR_TYPES.includes(type))
     throw bad(`type must be one of: ${CONNECTOR_TYPES.join(", ")}`);
-  const name =
-    str(body.name, 80) ||
-    (type === "google_workspace" ? "Google Workspace" : "Microsoft Entra");
+  const name = str(body.name, 80) || TYPE_LABEL[type];
   if (
     (await ShadowConnectorModel.countDocuments({
       workspaceId: actor.workspaceId,
@@ -1648,6 +1685,16 @@ export async function addConnector(
       adminEmail,
     };
     account = adminEmail;
+  } else if (type === "aws_ai") {
+    const accessKeyId = str(body.accessKeyId, 128);
+    const secretAccessKey = str(body.secretAccessKey, 200);
+    const regions = str(body.regions, 200);
+    if (!accessKeyId || secretAccessKey.length < 20 || !regions)
+      throw bad(
+        "Access key ID, secret access key and at least one region are needed",
+      );
+    creds = { accessKeyId, secretAccessKey, regions };
+    account = `${accessKeyId.slice(0, 8)}… (${regions})`;
   } else {
     const tenantId = str(body.tenantId, 120);
     const clientId = str(body.clientId, 120);
@@ -1656,6 +1703,12 @@ export async function addConnector(
       throw bad("Tenant ID, client ID and client secret are all needed");
     creds = { tenantId, clientId, clientSecret };
     account = tenantId;
+    if (type === "azure_ai") {
+      const subscriptionId = str(body.subscriptionId, 60);
+      if (!subscriptionId) throw bad("The subscription ID is needed");
+      creds.subscriptionId = subscriptionId;
+      account = `${tenantId} / ${subscriptionId}`;
+    }
   }
   // Try it before saving, so a wrong key is caught now and not at the first hourly sync.
   let result;
@@ -1794,3 +1847,98 @@ export async function blocklistFor(workspaceId: string): Promise<string> {
   ].sort();
   return hosts.join("\n") + (hosts.length ? "\n" : "");
 }
+
+// ---------------------------------------------------------------------------
+// Sensitive data going into AI tools (browser extension)
+// ---------------------------------------------------------------------------
+
+const DLP_KINDS = new Set([
+  "credential",
+  "card_number",
+  "national_id",
+  "email",
+  "phone",
+]);
+const DLP_SERIOUS = new Set(["credential", "card_number", "national_id"]);
+
+/**
+ * The browser extension sends what a person is about to paste or submit into
+ * an AI site. It is checked in memory and thrown away: only the kinds and
+ * counts are kept. The answer says whether to let it through, warn, or block.
+ */
+export async function inspectText(
+  workspaceId: string,
+  hostOrUrl: string,
+  user: string | undefined,
+  text: string,
+) {
+  const resolved = resolveTarget("network", hostOrUrl);
+  if (!resolved)
+    return {
+      known: false,
+      action: "allow" as const,
+      findings: [] as Array<{ type: string; label: string; count: number }>,
+    };
+  const findings = scanForDlp(text.slice(0, 100_000))
+    .filter((f) => DLP_KINDS.has(f.type))
+    .map((f) => ({ type: f.type, label: f.label, count: f.count }));
+  const total = findings.reduce((n, f) => n + f.count, 0);
+  const tool = await ShadowToolModel.findOne({
+    workspaceId,
+    toolKey: resolved.toolKey,
+  }).lean();
+  const status = (tool?.status ?? "unreviewed") as ToolStatus;
+  if (total > 0) {
+    await record(workspaceId, [
+      {
+        resolved,
+        userKey: userKeyOf(user),
+        source: "extension",
+        detail: "sensitive data",
+        at: new Date(),
+        bytesOut: Math.min(text.length, 1e7),
+        uploads: 0,
+        personal: false,
+        broad: false,
+        secret: false,
+        sensitive: total,
+      },
+    ]);
+    if (status !== "sanctioned") {
+      const serious = findings.some((f) => DLP_SERIOUS.has(f.type));
+      await raiseAlert({
+        workspaceId,
+        type: "shadow_ai_sensitive",
+        severity: serious ? "critical" : "warning",
+        title: `Sensitive data sent to ${resolved.name}`,
+        detail: `${findings.map((f) => `${f.count} ${f.label.toLowerCase()}`).join(", ")}. The tool is ${STATUS_LABELS_PLAIN[status]}.`,
+        dedupeKey: `shadow_dlp:${workspaceId}:${resolved.toolKey}:${new Date().toISOString().slice(0, 10)}`,
+      }).catch(() => undefined);
+    }
+  }
+  const serious = findings.some((f) => DLP_SERIOUS.has(f.type));
+  const action =
+    total === 0
+      ? "allow"
+      : status === "prohibited" || (serious && status !== "sanctioned")
+        ? "block"
+        : "warn";
+  const settings = await settingsFor(workspaceId);
+  return {
+    known: true,
+    tool: resolved.name,
+    status,
+    action,
+    findings,
+    alternative: tool?.alternative ?? "",
+    message: settings.coachMessage,
+  };
+}
+
+const STATUS_LABELS_PLAIN: Record<ToolStatus, string> = {
+  unreviewed: "not yet reviewed",
+  sanctioned: "sanctioned",
+  restricted: "restricted",
+  prohibited: "prohibited",
+  dismissed: "ignored",
+};

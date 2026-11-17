@@ -29,7 +29,7 @@ const ws = `?workspaceId=${myWs}`;
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 const saKey = JSON.stringify({ client_email: 'sa@proj.iam.gserviceaccount.com', private_key: pem });
-let gId, mId;
+let gId, mId, azId, awsId;
 const tools = async (q = '') => (await call('GET', `${S}/tools${ws}${q}`, { token })).body.data;
 
 await step('members cannot see or add connectors', async () => {
@@ -131,9 +131,33 @@ await step('blocklist feed returns only prohibited domains, for a token', async 
   expect(r.status === 200 && text.trim() === 'otter.ai', text);
   expect((await fetch(`${API}${S}/ingest/blocklist`)).status === 401);
 });
+await step('Azure: finds Azure OpenAI resources, ignores other AI services', async () => {
+  const base = { type: 'azure_ai', tenantId: '11111111-1111-1111-1111-111111111111', clientId: 'app', subscriptionId: '22222222-2222-2222-2222-222222222222' };
+  let r = await call('POST', `${S}/connectors${ws}`, { token, body: { ...base, clientSecret: 'wrong-secret-9' } });
+  expect(r.status === 400 && !JSON.stringify(r.body).includes('wrong-secret-9'), r.body);
+  r = await call('POST', `${S}/connectors${ws}`, { token, body: { ...base, clientSecret: 'right-secret-1' } });
+  expect(r.status === 201 && r.body.data.lastSignals === 1, r.body);
+  const t = (await tools('&q=azure openai'))[0];
+  expect(t && t.sources.includes('cloud') && t.users === 0, t);
+  const d = (await call('GET', `${S}/tools/${t.id}${ws}`, { token })).body.data;
+  expect(d.sightings.some((s) => /oai-prod \(OpenAI, swedencentral\)/.test(s.detail)), d.sightings);
+  azId = r.body.data.id;
+});
+await step('AWS: signed calls find Bedrock and SageMaker resources; a wrong key is refused', async () => {
+  const base = { type: 'aws_ai', accessKeyId: 'AKIAIOSFODNN7EXAMPLE', regions: 'us-east-1' };
+  let r = await call('POST', `${S}/connectors${ws}`, { token, body: { ...base, accessKeyId: 'AKIAWRONGWRONGWRONG1', secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' } });
+  expect(r.status === 400 && /security token/.test(JSON.stringify(r.body)), r.body);
+  r = await call('POST', `${S}/connectors${ws}`, { token, body: { ...base, secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' } });
+  expect(r.status === 201 && r.body.data.lastSignals === 2, r.body);
+  expect(!JSON.stringify(r.body).includes('wJalrXUtnFEMI'), 'secret not returned');
+  expect(!JSON.stringify(await db.collection('shadowconnectors').find({}).toArray()).includes('wJalrXUtnFEMI'), 'secret stored encrypted');
+  const names = (await tools()).map((x) => x.name);
+  expect(names.includes('Amazon Bedrock') && names.includes('Amazon SageMaker'), names);
+  awsId = r.body.data.id;
+});
 await step('remove a connector', async () => {
   expect((await call('DELETE', `${S}/connectors/${mId}${ws}`, { token })).status === 200);
-  expect((await call('GET', `${S}/connectors${ws}`, { token })).body.data.length === 1);
+  expect((await call('GET', `${S}/connectors${ws}`, { token })).body.data.length === 3);
   expect((await call('DELETE', `${S}/connectors/${mId}${ws}`, { token })).status === 404);
 });
 stub.close();

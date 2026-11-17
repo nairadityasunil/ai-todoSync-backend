@@ -20,6 +20,7 @@ class ShadowAiRoutes implements Routes {
     r.post("/ingest/code", c.ingestCode);
     r.get("/ingest/decision", c.checkHost);
     r.get("/ingest/blocklist", c.blocklistFeed);
+    r.post("/ingest/inspect", c.inspect);
 
     r.use(authMiddleware);
     r.get("/catalog", c.catalog);

@@ -2,7 +2,7 @@
 import mongoose from 'mongoose';
 import { start as startStub } from './idp-stub.mjs';
 import { generateKeyPairSync } from 'node:crypto';
-import { chromium } from 'playwright';
+const { chromium } = await import(process.env.PLAYWRIGHT ?? 'playwright');
 const API = (process.env.API_URL ?? 'http://localhost:4000/api');
 const APP = (process.env.APP_URL ?? 'http://localhost:5173');
 const OUT = process.env.SCREENSHOT_DIR ?? '/tmp';
@@ -105,10 +105,30 @@ try {
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const key = JSON.stringify({ client_email: 'sa@proj.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() });
     await form.getByLabel('Admin email to act as').fill('admin@corp.com');
-    await form.getByLabel('Service account key contents').fill(key);
+    await form.getByLabel('Service account key (JSON) contents').fill(key);
     await form.getByRole('button', { name: 'Connect' }).click();
     await card.getByText('admin@corp.com').waitFor({ timeout: 15000 });
     await card.getByText(/2 people, 3 grants/).waitFor();
+    await page.screenshot({ path: `${OUT}/shadow-connectors.png` });
+  });
+  await step('Connect Azure AI and AWS AI from the portal and see the AI resources found', async () => {
+    const card = page.getByTestId('shadow-connectors');
+    await card.getByRole('button', { name: 'Connect Azure AI' }).click();
+    let form = page.getByTestId('shadow-connector-form');
+    await form.getByLabel('Tenant ID or domain').fill('11111111-1111-1111-1111-111111111111');
+    await form.getByLabel('Subscription ID').fill('22222222-2222-2222-2222-222222222222');
+    await form.getByLabel('Client ID').fill('app');
+    await form.getByLabel('Client secret').fill('right-secret-1');
+    await form.getByRole('button', { name: 'Connect' }).click();
+    await card.getByText(/Synced .*1 AI resource/).first().waitFor({ timeout: 15000 });
+    await card.getByRole('button', { name: 'Connect AWS AI' }).click();
+    form = page.getByTestId('shadow-connector-form');
+    await form.getByLabel('Access key ID').fill('AKIAIOSFODNN7EXAMPLE');
+    await form.getByLabel('Secret access key').fill('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
+    await form.getByLabel(/Regions/).fill('us-east-1');
+    await form.getByRole('button', { name: 'Connect' }).click();
+    await card.getByText(/Synced .*2 AI resources/).first().waitFor({ timeout: 15000 });
+    await page.getByTestId('shadow-extension').getByText('Browser extension').waitFor();
     await page.screenshot({ path: `${OUT}/shadow-connectors.png` });
   });
   await step('Sync now and Run check now report what happened', async () => {
@@ -120,7 +140,7 @@ try {
   await step('Remove a connector', async () => {
     const card = page.getByTestId('shadow-connectors');
     await card.getByRole('button', { name: /Remove Microsoft Entra/ }).click();
-    await card.getByText('11111111-1111-1111-1111-111111111111').waitFor({ state: 'detached', timeout: 10000 });
+    await card.getByRole('button', { name: /Remove Microsoft Entra/ }).waitFor({ state: 'detached', timeout: 10000 });
   });
   await step('Overview shows the numbers and what to review first', async () => {
     await page.getByTestId('shadow-ai').getByRole('tab', { name: 'Overview' }).click();

@@ -68,6 +68,30 @@ class ShadowAiController {
     if (!host) throw new AppError(400, "host is required", "BAD_REQUEST");
     ok(res, await service.checkHost(workspaceId, host, q(req, "user")));
   };
+  /** The extension sends what is about to go into an AI tool; only counts are kept. */
+  public inspect = async (req: Request, res: Response) => {
+    const workspaceId = await tokenWorkspace(req, 1);
+    const b = body(req);
+    const host = typeof b.host === "string" ? b.host : "";
+    const text = typeof b.text === "string" ? b.text : "";
+    if (!host || !text)
+      throw new AppError(400, "host and text are required", "BAD_REQUEST");
+    if (text.length > 200_000)
+      throw new AppError(
+        400,
+        "Send up to 200,000 characters at a time",
+        "BAD_REQUEST",
+      );
+    ok(
+      res,
+      await service.inspectText(
+        workspaceId,
+        host,
+        typeof b.user === "string" ? b.user.slice(0, 200) : undefined,
+        text,
+      ),
+    );
+  };
   public blocklistFeed = async (req: Request, res: Response) => {
     const workspaceId = await tokenWorkspace(req, 1);
     res.setHeader("Content-Type", "text/plain; charset=utf-8");

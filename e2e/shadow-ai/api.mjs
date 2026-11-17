@@ -119,7 +119,7 @@ await step('prohibit a tool: request follows; policy exports blocklist', async (
   const json = JSON.parse(await (await fetch(`${API}${S}/policy${ws}`, { headers: { ...PORTAL, authorization: `Bearer ${token}` } })).text());
   expect(json.prohibited.length === 1 && json.restricted.length === 1 && json.sanctioned.length === 1, json);
 });
-await db.collection('agentalerts').deleteMany({ type: 'shadow_ai_key' });
+await db.collection('agentalerts').deleteMany({ type: { $in: ['shadow_ai_key', 'shadow_ai_sensitive'] } });
 await step('code scan: packages and a key found, key never echoed back', async () => {
   const key = 'sk-ant-api03-' + 'Z'.repeat(40);
   const r = await call('POST', `${S}/scan${ws}`, { token, body: { repo: 'billing-service', files: [{ path: 'package.json', content: JSON.stringify({ dependencies: { openai: '^4' } }) }, { path: 'src/cfg.ts', content: `export const k = "${key}";` }] } });
@@ -234,6 +234,33 @@ await step('a key in code raises one alert, however often it is scanned or check
   await call('POST', `${S}/monitor/run${ws}`, { token });
   const n = await db.collection('agentalerts').countDocuments({ type: 'shadow_ai_key', title: 'Anthropic API key found in code' });
   expect(n === 1, 'alerts: ' + n);
+});
+await step('extension inspection: sensitive data is counted, text is never stored, answer says block or warn', async () => {
+  const t = (await call('POST', `${S}/tokens${ws}`, { token, body: { name: 'extension' } })).body.data.token;
+  const send = (host, text, user = 'eve@corp.com') => call('POST', `${S}/ingest/inspect`, { headers: { 'x-shadow-ai-token': t }, body: { host, user, text } });
+  const card = '4111 1111 1111 1111';
+  let r = await send('https://gemini.google.com/app', 'Please summarise the Q3 plan for the team');
+  expect(r.status === 200 && r.body.data.action === 'allow' && r.body.data.findings.length === 0, r.body);
+  r = await send('https://gemini.google.com/app', `customer card ${card} and mail jo@example.com`);
+  expect(r.body.data.action === 'block' && r.body.data.findings.some((f) => f.type === 'card_number'), r.body);
+  r = await send('https://gemini.google.com/app', 'ping me at jo@example.com about the lunch');
+  expect(r.body.data.action === 'warn' && r.body.data.findings[0].type === 'email', r.body);
+  r = await send('intranet.corp.com', `card ${card}`);
+  expect(r.body.data.known === false && r.body.data.action === 'allow', r.body);
+  const g = (await call('GET', `${S}/tools${ws}&q=gemini`, { token })).body.data[0];
+  expect(g.sensitive >= 2 && g.sources.includes('extension'), g);
+  const detail = (await call('GET', `${S}/tools/${g.id}${ws}`, { token })).body.data;
+  expect(detail.factors.some((f) => /Sensitive data was sent/.test(f.label)), detail.factors);
+  const stored = JSON.stringify([await db.collection('shadowsightings').find({}).toArray(), await db.collection('agentalerts').find({ type: 'shadow_ai_sensitive' }).toArray()]);
+  expect(!stored.includes('4111') && !stored.includes('jo@example.com') && !stored.includes('lunch'), 'the text must not be kept');
+  const alert = await db.collection('agentalerts').findOne({ type: 'shadow_ai_sensitive' });
+  expect(alert && alert.severity === 'critical' && /Gemini/.test(alert.title), alert);
+  expect((await send('gemini.google.com', '')).status === 400, 'text required');
+  expect((await call('POST', `${S}/ingest/inspect`, { body: { host: 'gemini.google.com', text: 'x' } })).status === 401, 'no token');
+  // a sanctioned tool is not blocked for an email, but still warned
+  await call('POST', `${S}/tools/${g.id}/decision${ws}`, { token, body: { status: 'sanctioned', reason: 'Enterprise contract in place' } });
+  r = await send('gemini.google.com', `card ${card}`);
+  expect(r.body.data.action === 'warn', 'sanctioned: warn, not block: ' + JSON.stringify(r.body));
 });
 console.log(issues.length ? `\n${issues.length} failed: ${issues.join('; ')}` : '\nAll shadow AI API checks passed');
 await mongoose.disconnect();

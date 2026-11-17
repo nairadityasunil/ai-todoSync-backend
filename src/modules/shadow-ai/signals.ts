@@ -35,6 +35,8 @@ export interface RawSignal {
   personal?: boolean;
   /** OAuth scopes granted, or permissions of the install. */
   scopes?: string[];
+  /** Free text about where it was found (a resource name). */
+  detail?: string;
 }
 
 export interface Resolved {

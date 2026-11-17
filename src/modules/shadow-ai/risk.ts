@@ -23,6 +23,8 @@ export interface RiskInput {
   personalShare: number;
   hasSecret: boolean;
   hasBroadGrant: boolean;
+  /** Times sensitive data was seen going into the tool. */
+  sensitive?: number;
   sources: number;
   /** A third-party review of the vendor exists and was approved. */
   vendorApproved: boolean;
@@ -68,6 +70,12 @@ export function assessRisk(i: RiskInput): {
   if (i.uploads > 0) add("Files were uploaded", 10);
   if (i.personalShare > 0.5) add("Mostly used through personal accounts", 10);
   if (i.hasSecret) add("A key for it was found in code", 25);
+  const sensitive = i.sensitive ?? 0;
+  if (sensitive > 0)
+    add(
+      `Sensitive data was sent in (${sensitive} time${sensitive === 1 ? "" : "s"})`,
+      sensitive >= 5 ? 25 : 15,
+    );
   if (i.hasBroadGrant)
     add("Connected to company data (mail, files or calendar)", 15);
   if (i.sources >= 2) add("Seen through more than one source", 5);
