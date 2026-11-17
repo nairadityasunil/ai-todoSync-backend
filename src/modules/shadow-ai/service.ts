@@ -493,25 +493,23 @@ export async function scanFiles(
     files: files.length,
     packages: findings.filter((f) => f.type === "package").length,
     keys: keys.length,
-    findings: findings
-      .slice(0, 200)
-      .map((f) =>
-        f.type === "package"
-          ? {
-              type: "package" as const,
-              path: f.path,
-              line: f.line,
-              tool: f.tool.name,
-              package: f.pkg,
-            }
-          : {
-              type: "key" as const,
-              path: f.path,
-              line: f.line,
-              tool: f.provider,
-              preview: f.preview,
-            },
-      ),
+    findings: findings.slice(0, 200).map((f) =>
+      f.type === "package"
+        ? {
+            type: "package" as const,
+            path: f.path,
+            line: f.line,
+            tool: f.tool.name,
+            package: f.pkg,
+          }
+        : {
+            type: "key" as const,
+            path: f.path,
+            line: f.line,
+            tool: f.provider,
+            preview: f.preview,
+          },
+    ),
     ...done,
   };
 }
@@ -1345,7 +1343,7 @@ export async function monitorWorkspace(
                   ? "HIGH"
                   : "MEDIUM",
             assigneeUserId: assignee,
-            link: "/ai-governance?tab=shadow",
+            link: "/ai-governance/shadow-ai",
           },
           workspaceId,
           { enabled: true, projectId: null } as never,
