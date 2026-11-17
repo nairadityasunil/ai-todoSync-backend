@@ -144,6 +144,9 @@ class ShadowAiController {
   public withdrawRequest: Handler = async (req, res) =>
     ok(res, await service.withdrawRequest(await actor(req), p(req, "id")));
 
+  public runMonitor: Handler = async (req, res) =>
+    ok(res, await service.runMonitor(await actor(req)));
+
   public policy: Handler = async (req, res) => {
     const doc = await service.policy(
       await actor(req),

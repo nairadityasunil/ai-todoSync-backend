@@ -14,6 +14,8 @@ import {
   type Actor,
 } from "../ai-governance/service.js";
 import vendorService from "../vendors/service.js";
+import { VendorModel } from "../vendors/model.js";
+import { AgentModel } from "../agents/model.js";
 import type { VendorCategory } from "../vendors/catalog.js";
 import {
   CATALOG_BY_KEY,
@@ -281,6 +283,58 @@ async function record(
   return { matched: entries.length, newTools, tools: toolKeys.size };
 }
 
+async function vendorApproved(tool: IShadowToolDocument): Promise<boolean> {
+  if (!tool.vendorId) return false;
+  const v = await VendorModel.findById(tool.vendorId).select("status").lean();
+  return v?.status === "approved";
+}
+
+/**
+ * Scripts and automated browsers acting with a person's login (found by agent
+ * detection) are shadow AI too. They join the inventory as one tool, with the
+ * people whose logins they use as the evidence.
+ */
+export async function syncDetectedAgents(workspaceId: string): Promise<number> {
+  const agents = await AgentModel.find({
+    workspaceId,
+    kind: "detected",
+    status: "active",
+  })
+    .select("name ownerUserId updatedAt")
+    .lean();
+  if (!agents.length) return 0;
+  const owners = await UserModel.find({
+    _id: { $in: agents.map((a) => a.ownerUserId) },
+  })
+    .select("email")
+    .lean();
+  const email = new Map(owners.map((u) => [String(u._id), u.email]));
+  const resolved: Resolved = {
+    toolKey: "detected_agents",
+    name: "Unregistered scripts and automated browsers",
+    vendor: "Unknown",
+    kind: "agent_platform",
+    catalog: false,
+    confidence: 0.8,
+  };
+  await record(
+    workspaceId,
+    agents.map((a) => ({
+      resolved,
+      userKey: userKeyOf(email.get(String(a.ownerUserId))),
+      source: "agent" as Source,
+      detail: `Agent ${a.name}`.slice(0, 300),
+      at: toDate((a as { updatedAt?: Date }).updatedAt),
+      bytesOut: 0,
+      uploads: 0,
+      personal: true,
+      broad: true,
+      secret: false,
+    })),
+  );
+  return agents.length;
+}
+
 /** Rebuilds a tool's totals and risk from its sightings. */
 export async function recompute(
   workspaceId: string,
@@ -314,7 +368,7 @@ export async function recompute(
     hasSecret: tool.hasSecret,
     hasBroadGrant: tool.hasBroadGrant,
     sources: tool.sources.length,
-    vendorApproved: false,
+    vendorApproved: await vendorApproved(tool),
     recentlyUsed: Date.now() - tool.lastSeenAt.getTime() < 14 * DAY,
   });
   tool.riskScore = risk.score;
@@ -651,6 +705,7 @@ export async function listTools(
   f: { status?: string; q?: string; kind?: string; source?: string },
 ) {
   requireAdmin(actor);
+  await syncDetectedAgents(actor.workspaceId);
   const filter: Record<string, unknown> = { workspaceId: actor.workspaceId };
   if (f.status && (STATUSES as string[]).includes(f.status))
     filter.status = f.status;
@@ -706,7 +761,7 @@ export async function getTool(actor: Actor, id: string) {
     hasSecret: tool.hasSecret,
     hasBroadGrant: tool.hasBroadGrant,
     sources: tool.sources.length,
-    vendorApproved: false,
+    vendorApproved: await vendorApproved(tool),
     recentlyUsed: Date.now() - tool.lastSeenAt.getTime() < 14 * DAY,
   });
   return {
@@ -1063,6 +1118,7 @@ export function pickerOptions() {
 
 export async function overview(actor: Actor) {
   requireAdmin(actor);
+  await syncDetectedAgents(actor.workspaceId);
   const [tools, sightings, openRequests, settings] = await Promise.all([
     ShadowToolModel.find({
       workspaceId: actor.workspaceId,
@@ -1296,6 +1352,7 @@ export async function monitorWorkspace(
   let tasks = 0;
   const assignee = await firstAdmin(workspaceId);
   for (const t of tools) {
+    await syncDetectedAgents(workspaceId);
     if (
       t.status === "prohibited" &&
       now.getTime() - t.lastSeenAt.getTime() < 7 * DAY
@@ -1364,7 +1421,17 @@ export async function monitorAll(): Promise<{
   alerts: number;
   tasks: number;
 }> {
-  const ids = (await ShadowToolModel.distinct("workspaceId")) as string[];
+  const ids = [
+    ...new Set([
+      ...((await ShadowToolModel.distinct("workspaceId")) as string[]),
+      ...(
+        await AgentModel.distinct("workspaceId", {
+          kind: "detected",
+          status: "active",
+        })
+      ).map(String),
+    ]),
+  ];
   let alerts = 0;
   let tasks = 0;
   for (const id of ids) {
@@ -1407,4 +1474,10 @@ export async function complianceFacts(workspaceId: string) {
     ).length,
     keysInCode: tools.filter((t) => t.hasSecret).length,
   };
+}
+
+/** Runs the hourly check for this workspace now (admins), so the result can be seen without waiting. */
+export async function runMonitor(actor: Actor) {
+  requireAdmin(actor);
+  return monitorWorkspace(actor.workspaceId);
 }

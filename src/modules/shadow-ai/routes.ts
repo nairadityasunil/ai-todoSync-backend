@@ -25,6 +25,7 @@ class ShadowAiRoutes implements Routes {
     r.get("/settings", c.getSettings);
     r.patch("/settings", c.updateSettings);
     r.get("/policy", c.policy);
+    r.post("/monitor/run", c.runMonitor);
 
     r.get("/tools", c.tools);
     r.get("/tools/:id", c.tool);
