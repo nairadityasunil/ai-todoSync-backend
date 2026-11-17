@@ -107,9 +107,16 @@ export async function recomputeRisk(
   agent.riskFactors = result.factors;
   agent.riskEvaluatedAt = now;
   // Safety net: an agent that just became critical is suspended until a person reviews it.
-  if (result.level === "critical" && previousLevel !== "critical" && agent.status === "active") {
-    const { governanceSettings, openIncident } = await import("./hybrid.service.js");
-    const settings = await governanceSettings(agent.workspaceId ? String(agent.workspaceId) : null);
+  if (
+    result.level === "critical" &&
+    previousLevel !== "critical" &&
+    agent.status === "active"
+  ) {
+    const { governanceSettings, openIncident } =
+      await import("./hybrid.service.js");
+    const settings = await governanceSettings(
+      agent.workspaceId ? String(agent.workspaceId) : null,
+    );
     // Shadow agents are critical from the start (a person's login); the shadow AI settings handle them.
     if (settings.criticalAutoSuspend && agent.kind !== "detected") {
       await openIncident({
@@ -118,7 +125,10 @@ export async function recomputeRisk(
         trigger: "critical_risk",
         severity: "critical",
         title: `${agent.name} reached critical risk`,
-        summary: `Risk score ${result.score}: ${result.factors.slice(0, 3).map((f) => f.label).join("; ")}.`,
+        summary: `Risk score ${result.score}: ${result.factors
+          .slice(0, 3)
+          .map((f) => f.label)
+          .join("; ")}.`,
         contain: true,
       });
     }
@@ -527,8 +537,13 @@ export async function detectCostSpikes(now = new Date()): Promise<number> {
   const dayAgo = new Date(now.getTime() - DAY);
   const weekBefore = new Date(dayAgo.getTime() - 7 * DAY);
   const spendBy = (from: Date, to: Date) =>
-    PromptExecutionLogModel.aggregate<{ _id: Types.ObjectId | null; usd: number }>([
-      { $match: { agentId: { $ne: null }, createdAt: { $gte: from, $lt: to } } },
+    PromptExecutionLogModel.aggregate<{
+      _id: Types.ObjectId | null;
+      usd: number;
+    }>([
+      {
+        $match: { agentId: { $ne: null }, createdAt: { $gte: from, $lt: to } },
+      },
       { $group: { _id: "$agentId", usd: { $sum: "$totalCost" } } },
     ]);
   const recent = (await spendBy(dayAgo, now)).filter(
@@ -542,8 +557,14 @@ export async function detectCostSpikes(now = new Date()): Promise<number> {
   for (const row of recent) {
     const agentId = String(row._id);
     const average = (before.get(agentId) ?? 0) / 7;
-    if (average <= 0 || row.usd < average * ALERT_THRESHOLDS.costSpikeMultiplier) continue;
-    const agent = await AgentModel.findById(agentId).select("name workspaceId").lean();
+    if (
+      average <= 0 ||
+      row.usd < average * ALERT_THRESHOLDS.costSpikeMultiplier
+    )
+      continue;
+    const agent = await AgentModel.findById(agentId)
+      .select("name workspaceId")
+      .lean();
     if (!agent) continue;
     raised += Number(
       await raiseAlert({
@@ -807,18 +828,35 @@ export async function complianceReport(workspaceId: string) {
   );
   const keyAgeLimit = hybrid.keyMaxAgeDays * 86_400_000;
   const keyDocs = keys.length
-    ? await AgentModel.find({ _id: { $in: keys.map((k) => k._id) } }).select("name keyIssuedAt createdAt").lean()
+    ? await AgentModel.find({ _id: { $in: keys.map((k) => k._id) } })
+        .select("name keyIssuedAt createdAt")
+        .lean()
     : [];
   const staleKeys = hybrid.keyMaxAgeDays
     ? keyDocs.filter((k) => {
-        const issued = (k.keyIssuedAt ?? (k as unknown as { createdAt?: Date }).createdAt) as Date | undefined;
-        return issued ? Date.now() - new Date(issued).getTime() > keyAgeLimit : false;
+        const issued = (k.keyIssuedAt ??
+          (k as unknown as { createdAt?: Date }).createdAt) as Date | undefined;
+        return issued
+          ? Date.now() - new Date(issued).getTime() > keyAgeLimit
+          : false;
       })
     : [];
   const monthAgo = new Date(Date.now() - 30 * 86_400_000);
-  const used = await AgentActivityModel.aggregate<{ _id: { agentId: Types.ObjectId; domain: string; risk: string } }>([
-    { $match: { workspaceId: ws, createdAt: { $gte: monthAgo }, agentId: { $in: active.map((a) => a._id) } } },
-    { $group: { _id: { agentId: "$agentId", domain: "$domain", risk: "$risk" } } },
+  const used = await AgentActivityModel.aggregate<{
+    _id: { agentId: Types.ObjectId; domain: string; risk: string };
+  }>([
+    {
+      $match: {
+        workspaceId: ws,
+        createdAt: { $gte: monthAgo },
+        agentId: { $in: active.map((a) => a._id) },
+      },
+    },
+    {
+      $group: {
+        _id: { agentId: "$agentId", domain: "$domain", risk: "$risk" },
+      },
+    },
   ]);
   const usedScopes = new Map<string, Set<string>>();
   for (const row of used) {
@@ -829,29 +867,63 @@ export async function complianceReport(workspaceId: string) {
   }
   const overPrivileged = keys
     .filter((a) => usedScopes.has(String(a._id)))
-    .map((a) => ({ name: a.name, unused: a.scopes.filter((scope) => !usedScopes.get(String(a._id))?.has(scope)) }))
+    .map((a) => ({
+      name: a.name,
+      unused: a.scopes.filter(
+        (scope) => !usedScopes.get(String(a._id))?.has(scope),
+      ),
+    }))
     .filter((o) => o.unused.length > 0);
-  const actedRecently = await AgentModel.find({ _id: { $in: active.map((a) => a._id) }, lastSeenAt: { $gte: monthAgo } })
+  const actedRecently = await AgentModel.find({
+    _id: { $in: active.map((a) => a._id) },
+    lastSeenAt: { $gte: monthAgo },
+  })
     .select("name callCount")
     .lean();
-  const unlogged = actedRecently.filter((a) => !usedScopes.has(String(a._id)) && (a.callCount ?? 0) > 50);
+  const unlogged = actedRecently.filter(
+    (a) => !usedScopes.has(String(a._id)) && (a.callCount ?? 0) > 50,
+  );
   const enforcedDestructive = await AgentPolicyModel.countDocuments({
     workspaceId: ws,
     enabled: true,
     mode: "enforce",
     effect: { $in: ["deny", "require_approval"] },
-    $or: [{ "match.tools": { $elemMatch: { $regex: "delete|\\*" } } }, { "match.minRisk": { $in: ["destructive", "security_critical"] } }],
+    $or: [
+      { "match.tools": { $elemMatch: { $regex: "delete|\\*" } } },
+      { "match.minRisk": { $in: ["destructive", "security_critical"] } },
+    ],
   }).catch(() => 0);
-  const regionOk = (location: string) => regionAllowed(location, hybrid.allowedDataRegions);
+  const regionOk = (location: string) =>
+    regionAllowed(location, hybrid.allowedDataRegions);
   const outsideRegions = hybrid.allowedDataRegions.length
-    ? (await VendorModel.find({ _id: { $in: [...vendorsInUse] } }).select("name dataLocation answers").lean())
-        .map((v) => ({ name: v.name, location: String(v.dataLocation || (v.answers as Record<string, string> | undefined)?.data_location || "") }))
+    ? (
+        await VendorModel.find({ _id: { $in: [...vendorsInUse] } })
+          .select("name dataLocation answers")
+          .lean()
+      )
+        .map((v) => ({
+          name: v.name,
+          location: String(
+            v.dataLocation ||
+              (v.answers as Record<string, string> | undefined)
+                ?.data_location ||
+              "",
+          ),
+        }))
         .filter((v) => !v.location || !regionOk(v.location))
     : [];
-  const openIncidents = await AgentIncidentModel.countDocuments({ workspaceId: ws, status: { $ne: "resolved" } });
+  const openIncidents = await AgentIncidentModel.countDocuments({
+    workspaceId: ws,
+    status: { $ne: "resolved" },
+  });
 
   const pick = (ok: boolean, partial: boolean): ControlStatus =>
     ok ? "met" : partial ? "partial" : "gap";
+
+  // Employees' AI tools found through discovery (loaded late: that module builds on this one).
+  const shadow = await (
+    await import("../shadow-ai/service.js")
+  ).complianceFacts(workspaceId);
 
   const controls: ComplianceControl[] = [
     {
@@ -878,6 +950,45 @@ export async function complianceReport(workspaceId: string) {
       recommendation: unregistered.length
         ? 'Replace each with its own agent key, or block it. Turn on "Require agent keys" to stop new ones.'
         : null,
+    },
+    {
+      id: "shadow_ai_reviewed",
+      framework:
+        "NIST AI RMF: Govern 1.6 and ISO/IEC 42001 Annex A (AI inventory)",
+      title: "AI tools found in use are reviewed within the review window",
+      status: !shadow.known
+        ? "partial"
+        : pick(
+            shadow.overdue === 0,
+            shadow.overdue <= Math.max(1, shadow.tools * 0.1),
+          ),
+      evidence: !shadow.known
+        ? "No AI tools have been discovered yet. Connect a source (network logs, OAuth grants, code scan) to know what staff use."
+        : `${shadow.tools} AI tool(s) found; ${shadow.unreviewed} not yet reviewed, ${shadow.overdue} past the review window.`,
+      recommendation: !shadow.known
+        ? "Under AI governance, open Shadow AI and import a log or scan code."
+        : shadow.overdue
+          ? "Open Shadow AI and decide each overdue tool: sanction, restrict or prohibit."
+          : null,
+    },
+    {
+      id: "shadow_ai_prohibited",
+      framework:
+        "ISO/IEC 42001 Annex A (third-party and supplier AI) and EU AI Act Art. 4",
+      title: "Prohibited AI tools and exposed AI keys are not in use",
+      status: !shadow.known
+        ? "partial"
+        : pick(
+            shadow.prohibitedInUse === 0 && shadow.keysInCode === 0,
+            shadow.prohibitedInUse + shadow.keysInCode <= 1,
+          ),
+      evidence: !shadow.known
+        ? "Nothing has been discovered, so this cannot be shown."
+        : `${shadow.prohibitedInUse} prohibited tool(s) used in the last 14 days; ${shadow.keysInCode} tool(s) with a key found in code.`,
+      recommendation:
+        shadow.prohibitedInUse || shadow.keysInCode
+          ? "Block the prohibited domains, offer the approved alternative, and rotate any exposed key."
+          : null,
     },
     {
       id: "access_reviews",
@@ -1018,33 +1129,49 @@ export async function complianceReport(workspaceId: string) {
       id: "key_expiration",
       framework: "ISO/IEC 27001 A.5.17",
       title: `Agent keys are rotated within ${hybrid.keyMaxAgeDays || "the allowed"} days`,
-      status: hybrid.keyMaxAgeDays === 0 ? "met" : pick(staleKeys.length === 0, staleKeys.length <= 1),
+      status:
+        hybrid.keyMaxAgeDays === 0
+          ? "met"
+          : pick(staleKeys.length === 0, staleKeys.length <= 1),
       evidence:
         hybrid.keyMaxAgeDays === 0
           ? "No maximum key age is set."
           : staleKeys.length
-            ? `${staleKeys.length} key(s) older than ${hybrid.keyMaxAgeDays} days: ${staleKeys.slice(0, 5).map((a) => a.name).join(", ")}.`
+            ? `${staleKeys.length} key(s) older than ${hybrid.keyMaxAgeDays} days: ${staleKeys
+                .slice(0, 5)
+                .map((a) => a.name)
+                .join(", ")}.`
             : `All ${keys.length} agent key(s) were issued within ${hybrid.keyMaxAgeDays} days.`,
-      recommendation: staleKeys.length ? "Rotate these keys (Agents → the agent → Rotate key)." : null,
+      recommendation: staleKeys.length
+        ? "Rotate these keys (Agents → the agent → Rotate key)."
+        : null,
     },
     {
       id: "unused_scopes",
       framework: FRAMEWORKS.OWASP_EXCESSIVE_AGENCY,
       title: "Agents only hold the scopes they use",
-      status: pick(overPrivileged.length === 0, overPrivileged.length <= Math.max(1, Math.round(keys.length * 0.2))),
+      status: pick(
+        overPrivileged.length === 0,
+        overPrivileged.length <= Math.max(1, Math.round(keys.length * 0.2)),
+      ),
       evidence: overPrivileged.length
         ? `${overPrivileged.length} agent(s) hold scopes unused in 30 days: ${overPrivileged
             .slice(0, 5)
             .map((o) => `${o.name} (${o.unused.join(", ")})`)
             .join("; ")}.`
         : "Every agent key that acted in the last 30 days used all of its scopes.",
-      recommendation: overPrivileged.length ? "Remove the unused scopes from these agents." : null,
+      recommendation: overPrivileged.length
+        ? "Remove the unused scopes from these agents."
+        : null,
     },
     {
       id: "approval_coverage",
       framework: FRAMEWORKS.EU_OVERSIGHT,
       title: "High-risk agent actions need a person's approval",
-      status: hybrid.mode !== "advisory" || enforcedDestructive > 0 ? "met" : "partial",
+      status:
+        hybrid.mode !== "advisory" || enforcedDestructive > 0
+          ? "met"
+          : "partial",
       evidence:
         hybrid.mode !== "advisory"
           ? `Default rule: ${hybrid.mode === "auto_low_risk" ? "low-risk actions run automatically; medium and high risk wait for a person" : "every change waits for a person unless a policy allows it"}.`
@@ -1062,15 +1189,23 @@ export async function complianceReport(workspaceId: string) {
       title: "Every acting agent is in the activity log",
       status: pick(unlogged.length === 0, unlogged.length <= 1),
       evidence: unlogged.length
-        ? `${unlogged.length} agent(s) were active in the last 30 days without a single activity record: ${unlogged.slice(0, 5).map((a) => a.name).join(", ")}.`
+        ? `${unlogged.length} agent(s) were active in the last 30 days without a single activity record: ${unlogged
+            .slice(0, 5)
+            .map((a) => a.name)
+            .join(", ")}.`
         : "Every agent active in the last 30 days has activity records.",
-      recommendation: unlogged.length ? "Check these agents call through governed channels (agent keys or MCP)." : null,
+      recommendation: unlogged.length
+        ? "Check these agents call through governed channels (agent keys or MCP)."
+        : null,
     },
     {
       id: "data_residency",
       framework: "GDPR Chapter V",
       title: "Data stays in allowed regions",
-      status: hybrid.allowedDataRegions.length === 0 ? "partial" : pick(outsideRegions.length === 0, false),
+      status:
+        hybrid.allowedDataRegions.length === 0
+          ? "partial"
+          : pick(outsideRegions.length === 0, false),
       evidence:
         hybrid.allowedDataRegions.length === 0
           ? "No allowed regions are set, so vendor locations are not checked."
@@ -1091,10 +1226,15 @@ export async function complianceReport(workspaceId: string) {
       id: "dlp_threats",
       framework: FRAMEWORKS.EU_SECURITY,
       title: "Data loss prevention and threat detection are on",
-      status: pick(hybrid.dlpMode === "enforce" && hybrid.threatDetection, hybrid.dlpMode !== "off" && hybrid.threatDetection),
+      status: pick(
+        hybrid.dlpMode === "enforce" && hybrid.threatDetection,
+        hybrid.dlpMode !== "off" && hybrid.threatDetection,
+      ),
       evidence: `DLP: ${hybrid.dlpMode}. Threat detection: ${hybrid.threatDetection ? "on" : "off"}. Incident containment: ${hybrid.incidentAutoContain ? "on" : "off"}. ${openIncidents} open incident(s).`,
       recommendation:
-        hybrid.dlpMode !== "enforce" || !hybrid.threatDetection ? "Set DLP to enforce and turn on threat detection." : null,
+        hybrid.dlpMode !== "enforce" || !hybrid.threatDetection
+          ? "Set DLP to enforce and turn on threat detection."
+          : null,
     },
     {
       id: "kill_switch",
@@ -1128,7 +1268,7 @@ export async function complianceReport(workspaceId: string) {
       status: agent.status,
       riskLevel: agent.riskLevel,
       scopes: agent.scopes,
-      projectCount: agent.projectIds.length,
+      projectCount: (agent.projectIds ?? []).length,
       legacy: agent.legacy,
       expiresAt: agent.expiresAt,
     })),

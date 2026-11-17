@@ -90,6 +90,8 @@ const isPeopleOnlyGovernance = (
   // assessments, risk decisions, approvals, stage moves and issues stay with people.
   if (domain === "ai_governance")
     return !/^use-cases\/[^/]+\/(records|evaluate)$/.test(path);
+  // Shadow AI: decisions, tokens, imports, scans and settings are for people. An agent may only read.
+  if (domain === "shadow_ai") return true;
   return false;
 };
 
