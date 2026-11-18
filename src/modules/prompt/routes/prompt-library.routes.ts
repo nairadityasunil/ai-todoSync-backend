@@ -27,6 +27,7 @@ class PromptLibraryRoutes implements Routes {
     );
 
     // Prompts CRUD
+    this.router.get("/runnable", promptLibraryController.listRunnable);
     this.router.get("/", promptLibraryController.listPrompts);
     this.router.post("/", promptLibraryController.createPrompt);
     this.router.get("/:promptId", promptLibraryController.getPromptDetails);

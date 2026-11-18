@@ -110,6 +110,31 @@ class PromptLibraryController {
     }
   };
 
+  // Prompts a person can run from a project (deployed ones, with variables and canary info).
+  public listRunnable = async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const userId = this.getUserId(req);
+      const workspaceId = this.getParam(req, "workspaceId");
+      const { projectId, search, includeUndeployed } = req.query;
+      const prompts = await promptLibraryService.listRunnable(
+        workspaceId,
+        userId,
+        {
+          projectId: typeof projectId === "string" ? projectId : undefined,
+          search: typeof search === "string" ? search : undefined,
+          includeUndeployed: this.parseBooleanQuery(includeUndeployed) === true,
+        },
+      );
+      res.status(200).json({ status: "success", data: prompts });
+    } catch (err) {
+      next(err);
+    }
+  };
+
   // Prompts
   public listPrompts = async (
     req: AuthenticatedRequest,
