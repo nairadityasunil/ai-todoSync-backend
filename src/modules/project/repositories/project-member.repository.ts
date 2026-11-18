@@ -22,6 +22,7 @@ export interface ProjectMemberWithUser {
   projectId: string;
   userId: string;
   role: ProjectRole;
+  permissions?: IProjectMemberDocument["permissions"];
   createdAt?: Date;
   user: ProjectMemberUserShape;
 }
@@ -90,6 +91,7 @@ export const getProjectMembers = async (
       projectId: member.projectId.toString(),
       userId: user._id.toString(),
       role: member.role,
+      permissions: member.permissions,
       createdAt: member.createdAt,
       user: {
         _id: user._id,
@@ -145,5 +147,23 @@ export const ensureProjectAdminMembership = async (
     ),
     { $setOnInsert: { role: "ADMIN" } },
     { upsert: true, session: session as any },
+  ).exec();
+};
+
+export const setMemberPermissions = async (
+  projectId: string,
+  userId: string,
+  patch: Record<string, boolean>,
+): Promise<IProjectMemberDocument | null> => {
+  const set: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(patch))
+    set[`permissions.${key}`] = value;
+  return ProjectMemberModel.findOneAndUpdate(
+    andRefMatches(
+      buildSafeRefMatch("projectId", projectId),
+      buildSafeRefMatch("userId", userId),
+    ),
+    { $set: set },
+    { new: true },
   ).exec();
 };

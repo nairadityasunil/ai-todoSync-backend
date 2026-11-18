@@ -1,0 +1,57 @@
+// Project feature permissions and weekly time logging, against a running backend (default http://localhost:4000).
+import mongoose from 'mongoose';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, authorization: 'Bearer ' + tok }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+const reg = async (n) => { await fetch(API + '/auth/register', { method: 'POST', headers: H, body: JSON.stringify({ email: `${n}-${s}@example.com`, password: 'Password123!', name: n }) }); const r = await (await fetch(API + '/auth/login', { method: 'POST', headers: H, body: JSON.stringify({ email: `${n}-${s}@example.com`, password: 'Password123!' }) })).json(); return r.data.token; };
+const admin = await reg('adm'), mem = await reg('mem');
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); const db = mongoose.connection.db;
+const memUser = await db.collection('users').findOne({ email: `mem-${s}@example.com` });
+const P = (await call(admin, 'POST', '/projects', { name: 'Perm ' + s })).j.data.project; const pid = P.id;
+const pw = (await db.collection('projects').findOne({ _id: new mongoose.Types.ObjectId(pid) })).workspaceId;
+await db.collection('workspacemembers').updateOne({ userId: memUser._id, workspaceId: pw }, { $setOnInsert: { userId: memUser._id, workspaceId: pw, role: 'MEMBER', createdAt: new Date(), updatedAt: new Date() } }, { upsert: true });
+ok((await call(admin, 'POST', `/projects/${pid}/members`, { userId: String(memUser._id) })).status === 201, 'admin added a member');
+let m = (await call(admin, 'GET', `/projects/${pid}/members`)).j.data.members.find((x) => x.userId === String(memUser._id));
+ok(JSON.stringify(m.permissions) === JSON.stringify({ team: false, time: true, prompts: true, aiPlanner: true }), 'member starts with the defaults: ' + JSON.stringify(m.permissions));
+const proj = (await call(mem, 'GET', `/projects/${pid}`)).j.data.project; ok(proj.currentUserPermissions?.time === true && proj.currentUserPermissions?.team === false, 'GET project returns my permissions');
+ok((await call(mem, 'PATCH', `/projects/${pid}/members/${memUser._id}/permissions`, { team: true })).status === 403, 'a member cannot change permissions');
+ok((await call(mem, 'POST', `/projects/${pid}/members`, { userId: String(memUser._id) })).status === 403, 'without Team a member cannot add people');
+const other = await reg('oth'); const othU = await db.collection('users').findOne({ email: `oth-${s}@example.com` });
+await db.collection('workspacemembers').updateOne({ userId: othU._id, workspaceId: pw }, { $setOnInsert: { userId: othU._id, workspaceId: pw, role: 'MEMBER', createdAt: new Date(), updatedAt: new Date() } }, { upsert: true });
+let r = await call(admin, 'PATCH', `/projects/${pid}/members/${memUser._id}/permissions`, { team: true }); ok(r.status === 200 && r.j.data.member.permissions.team === true, 'admin granted Team');
+ok((await call(mem, 'POST', `/projects/${pid}/members`, { userId: String(othU._id) })).status === 201, 'with Team the member can add people');
+ok((await call(mem, 'PATCH', `/projects/${pid}/members/${othU._id}/permissions`, { time: false })).status === 403, 'Team does not allow changing permissions (admin only)');
+ok((await call(admin, 'PATCH', `/projects/${pid}/members/${memUser._id}/permissions`, {})).status === 400, 'empty patch is rejected');
+ok((await call(admin, 'PATCH', `/projects/${pid}/members/${P.userId}/permissions`, { time: false })).status === 409, 'admins cannot be restricted');
+// AI planner + prompts gates
+ok((await call(mem, 'GET', `/projects/${pid}/ai-planning/settings`)).status === 200, 'AI planner allowed by default');
+await call(admin, 'PATCH', `/projects/${pid}/members/${memUser._id}/permissions`, { aiPlanner: false, prompts: false, time: false });
+ok((await call(mem, 'GET', `/projects/${pid}/ai-planning/settings`)).status === 403, 'AI planner blocked when switched off');
+r = await call(mem, 'POST', `/workspaces/${pw}/prompts/playground/run`, { projectId: pid, body: 'hi', provider: 'gemini' }); ok(r.status === 403, 'prompt run in the project blocked when Prompts is off (got ' + r.status + ')');
+ok((await call(mem, 'GET', `/projects/${pid}/time/week`)).status === 403, 'time blocked when Time is off');
+await call(admin, 'PATCH', `/projects/${pid}/members/${memUser._id}/permissions`, { time: true });
+// Time
+const t = (await call(admin, 'POST', '/tasks', { title: 'Timed task', date: '2026-11-18', projectId: pid, estimatedHours: 3 })).j; const tid = t.data?.task?.id ?? t.data?.task?._id ?? t.data?._id;
+await call(admin, 'PATCH', `/tasks/${tid}`, { estimatedHours: 3 });
+const day = '2026-11-18'; // Wednesday
+r = await call(mem, 'POST', `/projects/${pid}/time/entries`, { date: day, minutes: 90, note: 'pairing' }); ok(r.status === 201, 'member logged 90 min');
+r = await call(mem, 'POST', `/projects/${pid}/time/entries`, { date: day, minutes: 30, taskId: tid }); ok(r.status === 201, 'member logged 30 min on a task (task id ' + tid + ')');
+ok((await call(mem, 'POST', `/projects/${pid}/time/entries`, { date: '2026-13-40', minutes: 5 })).status === 400, 'bad date rejected');
+ok((await call(mem, 'POST', `/projects/${pid}/time/entries`, { date: day, minutes: 0 })).status === 400, 'zero minutes rejected');
+await call(admin, 'POST', `/projects/${pid}/time/entries`, { date: '2026-11-16', minutes: 60 });
+let w = (await call(mem, 'GET', `/projects/${pid}/time/week?start=${day}`)).j.data;
+ok(w.weekStart === '2026-11-16' && w.days.length === 7 && w.days[6] === '2026-11-22', 'week starts Monday 2026-11-16');
+ok(w.entries.length === 2 && w.totals[0].minutes === 120, 'member sees only their own: ' + w.entries.length + ' entries, ' + w.totals[0]?.minutes + ' min');
+ok((await call(mem, 'GET', `/projects/${pid}/time/week?scope=all`)).status === 403, 'member cannot see everyone');
+w = (await call(admin, 'GET', `/projects/${pid}/time/week?start=${day}&scope=all`)).j.data; ok(w.scope === 'all' && w.entries.length === 3 && w.totals.length === 2, 'admin sees everyone: ' + w.entries.length + ' entries, ' + w.totals.length + ' people');
+ok(w.tasks.some((x) => x.id === tid && x.estimatedHours === 3), 'tasks and estimates come with the week');
+const e = w.entries.find((x) => x.note === 'pairing');
+ok((await call(admin, 'PATCH', `/projects/${pid}/time/entries/${e.id}`, { minutes: 45 })).status === 200, 'admin edited a member entry');
+const adminEntry = w.entries.find((x) => x.userId === P.userId);
+ok((await call(mem, 'DELETE', `/projects/${pid}/time/entries/${adminEntry.id}`)).status === 403, "member cannot delete someone else's entry");
+ok((await call(mem, 'DELETE', `/projects/${pid}/time/entries/${e.id}`)).status === 200, 'member deleted their own entry');
+ok((await call(mem, 'POST', `/projects/${pid}/time/entries`, { date: day, minutes: 5, taskId: '000000000000000000000000' })).status === 404, 'task outside the project rejected');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);

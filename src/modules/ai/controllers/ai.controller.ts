@@ -197,6 +197,12 @@ export const generateProjectPlan = async (
     }
 
     const userId = req.user!._id.toString();
+    if (projectId && mongoose.Types.ObjectId.isValid(projectId))
+      await projectService.assertProjectPermission(
+        userId,
+        projectId,
+        "aiPlanner",
+      );
     const aiConfig = await resolveAiConfigForUserOrProject(req, projectId, {
       provider,
       modelName,
@@ -745,15 +751,35 @@ function planDependenciesForRecord(plan: {
     type?: string;
     description?: string;
   }>;
-}): Array<{ sourceFeature: string; targetFeature: string; type: "BLOCKING" | "EXTERNAL" | "OPTIONAL"; description?: string }> {
+}): Array<{
+  sourceFeature: string;
+  targetFeature: string;
+  type: "BLOCKING" | "EXTERNAL" | "OPTIONAL";
+  description?: string;
+}> {
   const titles = (plan.tasks ?? []).map((task) => task?.title ?? "");
   return (plan.dependencies ?? [])
     .map((dep) => {
-      const source = dep.sourceFeature ?? (dep.dependsOnTaskIndex != null ? titles[dep.dependsOnTaskIndex] : undefined);
-      const target = dep.targetFeature ?? (dep.taskIndex != null ? titles[dep.taskIndex] : undefined);
+      const source =
+        dep.sourceFeature ??
+        (dep.dependsOnTaskIndex != null
+          ? titles[dep.dependsOnTaskIndex]
+          : undefined);
+      const target =
+        dep.targetFeature ??
+        (dep.taskIndex != null ? titles[dep.taskIndex] : undefined);
       const type: "BLOCKING" | "EXTERNAL" | "OPTIONAL" =
-        dep.type === "EXTERNAL" || dep.type === "OPTIONAL" ? dep.type : "BLOCKING";
-      return source && target ? { sourceFeature: source, targetFeature: target, type, description: dep.description } : null;
+        dep.type === "EXTERNAL" || dep.type === "OPTIONAL"
+          ? dep.type
+          : "BLOCKING";
+      return source && target
+        ? {
+            sourceFeature: source,
+            targetFeature: target,
+            type,
+            description: dep.description,
+          }
+        : null;
     })
     .filter((dep): dep is NonNullable<typeof dep> => dep !== null);
 }

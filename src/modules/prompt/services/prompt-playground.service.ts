@@ -100,7 +100,11 @@ export class PromptPlaygroundService {
   ): Promise<PlaygroundRunResponse> {
     await workspaceService.assertMembership(userId, workspaceId);
     if (payload.projectId)
-      await projectService.assertProjectMembership(userId, payload.projectId);
+      await projectService.assertProjectPermission(
+        userId,
+        payload.projectId,
+        "prompts",
+      );
 
     let templateBody = payload.body || "";
     let templateMessages: IPromptMessage[] = payload.messages || [];

@@ -7,6 +7,10 @@ export interface IProjectMember {
   projectId: Types.ObjectId | string;
   userId: Types.ObjectId | string;
   role: ProjectRole;
+  /** Feature switches set by the project admin; unset means the default. */
+  permissions?: Partial<
+    Record<"team" | "time" | "prompts" | "aiPlanner", boolean>
+  >;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -30,6 +34,18 @@ const projectMemberSchema = new Schema<IProjectMemberDocument>(
       enum: ["ADMIN", "MEMBER"],
       required: true,
       default: "MEMBER",
+    },
+    permissions: {
+      type: new Schema(
+        {
+          team: { type: Boolean },
+          time: { type: Boolean },
+          prompts: { type: Boolean },
+          aiPlanner: { type: Boolean },
+        },
+        { _id: false },
+      ),
+      default: undefined,
     },
   },
   { timestamps: true },

@@ -1,5 +1,6 @@
 import type { Response } from "express";
 
+import projectService from "../../project/services/project.service.js";
 import aiPlanningService from "../services/ai-planning.service.js";
 import type { AuthenticatedRequest } from "../../../types/auth.js";
 
@@ -101,12 +102,10 @@ class AiPlanningController {
         workspaceId,
         { title },
       );
-      res
-        .status(201)
-        .json({
-          message: "Workspace planning session created",
-          data: { session },
-        });
+      res.status(201).json({
+        message: "Workspace planning session created",
+        data: { session },
+      });
     } catch (error: any) {
       res.status(error.status || 500).json({ error: error.message });
     }
@@ -288,6 +287,11 @@ class AiPlanningController {
         res.status(401).json({ error: "Authentication required" });
         return;
       }
+      await projectService.assertProjectPermission(
+        req.user._id.toString(),
+        getParam(req.params.projectId),
+        "aiPlanner",
+      );
       const data = await operation(
         req.user._id.toString(),
         getParam(req.params.projectId),
