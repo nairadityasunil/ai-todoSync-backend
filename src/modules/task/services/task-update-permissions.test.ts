@@ -49,7 +49,9 @@ const stubCommon = (
   mock.method(ProjectMemberModel, "find", () =>
     query([{ projectId, userId: memberId, role }]),
   );
-  mock.method(ProjectModel, "findById", () => query({ states: [] }));
+  mock.method(ProjectModel, "findById", () =>
+    query({ states: [], statesInitialized: true }),
+  );
   mock.method(TaskModel, "findOne", () => query(task));
   mock.method(
     TaskModel,

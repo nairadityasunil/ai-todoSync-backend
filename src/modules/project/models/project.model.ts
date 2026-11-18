@@ -76,6 +76,8 @@ export interface IProject {
   audit?: IProjectAudit;
   /** Embedded workflow states (formerly ProjectState collection) */
   states?: IProjectState[];
+  /** The default workflow has been added (or the project was set up on purpose), so it is not added again. */
+  statesInitialized?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -165,11 +167,16 @@ const projectSchema = new Schema<IProjectDocument>(
     tags: { type: [String], default: [] },
     customFields: { type: Array, default: [] },
     isArchived: { type: Boolean, default: false },
-    classification: { type: String, enum: ["public", "internal", "confidential", "restricted", null], default: null },
+    classification: {
+      type: String,
+      enum: ["public", "internal", "confidential", "restricted", null],
+      default: null,
+    },
     // Embedded subdocuments (formerly separate collections)
     ai: { type: projectAiSchema, default: () => ({}) },
     audit: { type: projectAuditSchema, default: () => ({}) },
     states: { type: [projectStateSchema], default: [] },
+    statesInitialized: { type: Boolean, default: false },
   },
   {
     timestamps: true,
