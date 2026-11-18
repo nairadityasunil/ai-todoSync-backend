@@ -17,12 +17,14 @@ import type { AuthResult, AuthenticatedRequest } from "../../../types/auth.js";
 class AuthController {
   public register = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { email, password, firstName, lastName } = req.body as {
-        email?: string;
-        password?: string;
-        firstName?: string;
-        lastName?: string;
-      };
+      const { email, password, firstName, lastName, inviteToken } =
+        req.body as {
+          email?: string;
+          password?: string;
+          firstName?: string;
+          lastName?: string;
+          inviteToken?: string;
+        };
 
       const nameParts = [firstName, lastName].filter(Boolean);
       const payload: CreateUserPayload = {
@@ -32,6 +34,18 @@ class AuthController {
         lastName,
         name: nameParts.length > 0 ? nameParts.join(" ") : null,
       };
+      if (typeof inviteToken === "string" && inviteToken.length > 0) {
+        const { auth, joined } = await authService.registerWithInvitation(
+          inviteToken,
+          payload,
+          this.extractDeviceMetadata(req),
+        );
+        res.status(201).json({
+          message: "User registered successfully",
+          data: { ...this.buildAuthResponse(auth), joined },
+        });
+        return;
+      }
       const authResult = await authService.register(
         payload,
         this.extractDeviceMetadata(req),

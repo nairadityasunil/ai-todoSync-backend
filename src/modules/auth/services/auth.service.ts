@@ -186,6 +186,41 @@ class AuthService {
     return this.issuePrimaryAuthResult(user, metadata);
   }
 
+  /**
+   * Creates the account for an invited email and accepts the invitation in the same step: the person
+   * ends up signed in, a member of the project and of its workspace. The email comes from the
+   * invitation, so the link (sent to that mailbox) is what proves the address.
+   */
+  public async registerWithInvitation(
+    inviteToken: string,
+    payload: CreateUserPayload,
+    metadata: DeviceMetadataInput = {},
+  ): Promise<{ auth: AuthResult; joined: Record<string, unknown> | null }> {
+    const invitationService = (
+      await import("../../workspace/services/invitation.service.js")
+    ).default;
+    let email: string;
+    try {
+      ({ email } = await invitationService.getSignupInvitation(inviteToken));
+    } catch (err) {
+      // The invitation service has its own error type; hand its status and message on as ours.
+      const e = err as { status?: number; message?: string };
+      throw new HttpError(e.status ?? 400, e.message ?? "Invalid invitation");
+    }
+    const auth = await this.register({ ...payload, email }, metadata);
+    let joined: Record<string, unknown> | null = null;
+    try {
+      joined = await invitationService.acceptInvitation(
+        String(auth.user.id),
+        inviteToken,
+      );
+    } catch (err) {
+      // The account exists; the person can still accept from the invitation page after signing in.
+      console.error("Joining the project after invited sign-up failed", err);
+    }
+    return { auth, joined };
+  }
+
   public async login(
     credentials: LoginCredentials,
     metadata: DeviceMetadataInput = {},

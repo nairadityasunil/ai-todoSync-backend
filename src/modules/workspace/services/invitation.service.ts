@@ -29,6 +29,20 @@ class HttpError extends Error {
   }
 }
 
+/** An invitation link works for this long after it was sent (or re-sent). */
+export const INVITATION_TTL_DAYS = 14;
+
+const isExpired = (invitation: {
+  createdAt?: Date;
+  updatedAt?: Date;
+}): boolean => {
+  const sent = invitation.updatedAt ?? invitation.createdAt;
+  return (
+    sent != null &&
+    Date.now() - new Date(sent).getTime() > INVITATION_TTL_DAYS * 86_400_000
+  );
+};
+
 export interface InviteUserPayload {
   email: string;
   role?: "ADMIN" | "MEMBER";
@@ -118,6 +132,7 @@ class InvitationService {
         projectName: project.name,
         inviterName,
         token,
+        isNewUser: false,
       });
 
       // Push real-time in-portal notification to the invited user
@@ -172,6 +187,7 @@ class InvitationService {
       projectName: project.name,
       inviterName,
       token,
+      isNewUser: true,
     });
 
     return {
@@ -182,6 +198,39 @@ class InvitationService {
       status: invitation.status,
       createdAt: invitation.createdAt,
     };
+  }
+
+  /**
+   * The invitation behind a sign-up link, checked: pending, not expired, project still there and no
+   * account for that email yet. The email always comes from the invitation, never from the request.
+   */
+  public async getSignupInvitation(token: string): Promise<{ email: string }> {
+    const invitation = await getInvitationByToken(token);
+    if (!invitation) {
+      throw new HttpError(404, "Invitation not found or invalid token");
+    }
+    if (invitation.status !== "PENDING") {
+      throw new HttpError(
+        400,
+        `Invitation is already ${invitation.status.toLowerCase()}`,
+      );
+    }
+    if (isExpired(invitation)) {
+      throw new HttpError(
+        410,
+        "This invitation has expired. Ask the project admin to send a new one.",
+      );
+    }
+    if (!(await getProjectById(invitation.projectId.toString()))) {
+      throw new HttpError(404, "Project no longer exists");
+    }
+    if (await findUserByEmail(invitation.email)) {
+      throw new HttpError(
+        409,
+        "An account already exists for this email. Log in to accept the invitation.",
+      );
+    }
+    return { email: invitation.email };
   }
 
   public async verifyInvitationToken(token: string): Promise<any> {
@@ -197,16 +246,27 @@ class InvitationService {
       );
     }
 
+    if (isExpired(invitation)) {
+      throw new HttpError(
+        410,
+        "This invitation has expired. Ask the project admin to send a new one.",
+      );
+    }
+
     const project = await getProjectById(invitation.projectId.toString());
     if (!project) {
       throw new HttpError(404, "Project no longer exists");
     }
 
     const targetUser = await findUserByEmail(invitation.email);
+    const { findUserById } =
+      await import("../../auth/repositories/auth.repository.js");
+    const inviter = await findUserById(invitation.invitedBy?.toString() ?? "");
 
     return {
       token: invitation.token,
       email: invitation.email,
+      inviterName: inviter?.name || inviter?.email || "A teammate",
       projectName: project.name,
       role: invitation.role,
       status: invitation.status,
@@ -224,6 +284,13 @@ class InvitationService {
       throw new HttpError(
         400,
         `Invitation is already ${invitation.status.toLowerCase()}`,
+      );
+    }
+
+    if (isExpired(invitation)) {
+      throw new HttpError(
+        410,
+        "This invitation has expired. Ask the project admin to send a new one.",
       );
     }
 
@@ -297,6 +364,8 @@ class InvitationService {
 
       return {
         projectId: invitation.projectId.toString(),
+        workspaceId: project?.workspaceId ? String(project.workspaceId) : null,
+        projectName: project?.name ?? null,
         role: invitation.role,
         status: "ACCEPTED",
       };
