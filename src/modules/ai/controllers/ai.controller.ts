@@ -635,7 +635,7 @@ export const planDailyWork = async (
       id: t._id.toString(),
       title: t.title,
       priority: t.priority,
-      dueDate: t.date,
+      dueDate: t.date ?? undefined,
       isBlocked: t.isBlocked,
     }));
 

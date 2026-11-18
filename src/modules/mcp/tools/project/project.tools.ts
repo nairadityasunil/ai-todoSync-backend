@@ -237,6 +237,7 @@ toolRegistry.register({
       .filter(
         (t) =>
           t.projectId === projectId &&
+          t.date &&
           t.date < today &&
           t.status !== "DONE" &&
           t.status !== "rolled_over",

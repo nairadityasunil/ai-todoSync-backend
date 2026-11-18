@@ -252,7 +252,7 @@ class SyncService {
       title: task.title,
       description: task.description,
       note: task.note,
-      date: task.date,
+      date: task.date ?? "",
       status: this.normalizeStoredTaskStatus(task.status),
       source: task.source,
       projectId: task.projectId?.toString() ?? null,

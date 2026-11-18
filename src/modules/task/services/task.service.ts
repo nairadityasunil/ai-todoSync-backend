@@ -108,7 +108,7 @@ interface TaskDto {
   notes: TaskNoteDto[];
   /** The project workflow state the task is in, if the project has states. */
   stateId: string | null;
-  date: string;
+  date: string | null;
   status: TaskStatus;
   priority: TaskPriority;
   basePriority: TaskPriority;
@@ -267,14 +267,11 @@ class TaskService {
   }
 
   public async createTask(payload: CreateTaskPayload): Promise<TaskDto> {
-    if (
-      payload.title == null ||
-      payload.title === "" ||
-      payload.date == null ||
-      payload.date === ""
-    ) {
-      throw new HttpError(400, "Title and date are required");
+    if (payload.title == null || payload.title === "") {
+      throw new HttpError(400, "Title is required");
     }
+    // The due date is optional: none given means the task has no due date.
+    payload.date = this.parseDueDate(payload.date);
     if (String(payload.title).trim().length > MAX_TASK_TITLE_LENGTH) {
       throw new HttpError(
         400,
@@ -520,6 +517,10 @@ class TaskService {
           "Assigned members can only update status, notes, and subtasks",
         );
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, "date")) {
+      updates.date = this.parseDueDate(updates.date);
     }
 
     if (Object.prototype.hasOwnProperty.call(updates, "projectId")) {
@@ -1025,7 +1026,7 @@ class TaskService {
       note: task.note,
       notes: this.toNoteDtos(task),
       stateId: task.stateId ? String(task.stateId) : null,
-      date: task.date,
+      date: task.date ?? null,
       status: this.normalizeStoredTaskStatus(task.status),
       priority: task.priority || "MEDIUM",
       basePriority: task.basePriority || task.priority || "MEDIUM",
@@ -1667,6 +1668,16 @@ class TaskService {
 
     const id = value.trim();
     return id === "" || id === "null" || id === "undefined" ? null : id;
+  }
+
+  /** A due date as YYYY-MM-DD, or null for "no due date" (missing, null or empty). Anything else is a 400. */
+  private parseDueDate(value: unknown): string | null {
+    if (value == null || (typeof value === "string" && value.trim() === ""))
+      return null;
+    const date = this.normalizeDate(value);
+    if (!date)
+      throw new HttpError(400, "The due date must look like 2026-11-30");
+    return date;
   }
 
   private normalizeDate(value: unknown): string | undefined {

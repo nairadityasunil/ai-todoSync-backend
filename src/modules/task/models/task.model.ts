@@ -49,7 +49,8 @@ export interface ITask {
   stateId?: Types.ObjectId | string | null;
   /** Several notes per task. `note` stays as the text of the newest one, for older readers. */
   notes?: ITaskNote[];
-  date: string;
+  /** The due date (YYYY-MM-DD). Optional: null means the task has no due date. */
+  date: string | null;
   status: TaskStatus;
   priority: TaskPriority;
   basePriority: TaskPriority;
@@ -164,7 +165,7 @@ const taskSchema = new Schema<ITaskDocument>(
     },
     date: {
       type: String,
-      required: true,
+      default: null,
       match: /^\d{4}-\d{2}-\d{2}$/,
     },
     status: {
