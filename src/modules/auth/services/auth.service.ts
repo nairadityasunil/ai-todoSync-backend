@@ -129,6 +129,8 @@ const OTP_TTL_MS = 10 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
 const MIN_PASSWORD_LENGTH = 8;
 
+import { isSuperAdmin } from "../../admin/super-admin.js";
+
 class HttpError extends Error {
   public status: number;
 
@@ -836,6 +838,17 @@ class AuthService {
     user: IUserDocument,
     metadata: DeviceMetadataInput,
   ): Promise<AuthResult> {
+    if (
+      user.accountStatus === "suspended" ||
+      user.accountStatus === "deleted"
+    ) {
+      throw new HttpError(
+        403,
+        user.accountStatus === "suspended"
+          ? "This account is suspended. Contact your administrator."
+          : "This account no longer exists.",
+      );
+    }
     const issued = await this.issueSessionForDevice(user, {
       deviceId: null,
       deviceType: "primary",
@@ -1078,6 +1091,7 @@ class AuthService {
       geminiApiKeyConfigured: !!user.geminiApiKey,
       aiPlatformProviders: env.GEMINI_API_KEY ? ["gemini"] : [],
       twoFactorEnabled: user.twoFactorEnabled,
+      isSuperAdmin: isSuperAdmin(user),
     };
   }
 

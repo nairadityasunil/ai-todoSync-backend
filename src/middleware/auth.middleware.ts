@@ -86,6 +86,14 @@ export const resolveJwtAuth = async (
       return null;
     }
 
+    // Suspended or deleted accounts stop working at once, even with a valid token.
+    if (
+      user.accountStatus === "suspended" ||
+      user.accountStatus === "deleted"
+    ) {
+      return null;
+    }
+
     if (session.deviceType === "companion") {
       if (session.deviceId == null) {
         return null;

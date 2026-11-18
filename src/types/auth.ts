@@ -26,6 +26,8 @@ export interface AuthProfile {
   /** Providers the server has its own key for, usable without a personal key. */
   aiPlatformProviders?: Array<"openai" | "anthropic" | "gemini">;
   twoFactorEnabled?: boolean;
+  /** Can open the platform admin panel. */
+  isSuperAdmin?: boolean;
 }
 
 export interface SessionDeviceContext {
