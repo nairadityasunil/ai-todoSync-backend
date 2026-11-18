@@ -1,4 +1,4 @@
-// Tasks that an old nightly rollover marked "rolled_over" without a live copy come back; ones with a copy stay hidden.
+// A task is never hidden for carrying the old mark. Tasks that an old nightly rollover marked "rolled_over" without a live copy come back; ones with a copy stay hidden.
 // Run the repair with: API=... node e2e/projects/restore-rolled-over.mjs  (it restarts nothing: it calls the repair through tsx)
 import mongoose from 'mongoose';
 import { execFileSync } from 'child_process';
@@ -22,7 +22,8 @@ await db.collection('tasks').updateOne({ _id: oid(copied.id) }, { $set: { status
 await db.collection('tasks').updateOne({ _id: oid(copy.id) }, { $set: { rolloverCount: 1 } });
 const titles = async () => (await call(tok, 'GET', '/tasks')).j.data.tasks.filter((t) => t.projectId === proj.id).map((t) => `${t.title}|${t.status}`);
 let before = await titles();
-ok(!before.some((t) => t.startsWith('Lost ')), 'before the repair the lost task is hidden');
+ok(before.includes(`Lost ${s}|TODO`), 'even before the repair, a task with the old mark and no copy is listed (as an ordinary open task)');
+ok(before.filter((t) => t.startsWith('Copied ')).length === 1, 'and a task whose copy exists is listed once');
 execFileSync('npx', ['tsx', '-e', "import('./src/modules/task/services/task-repair.service.ts').then(async (m) => { const mongoose = (await import('mongoose')).default; await mongoose.connect('mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); console.log('restored', await m.restoreRolledOverTasks()); await mongoose.disconnect(); })"], { stdio: 'inherit', env: process.env });
 const after = await titles();
 ok(after.includes(`Lost ${s}|TODO`), 'after the repair the task with no copy is back (as TODO)');
