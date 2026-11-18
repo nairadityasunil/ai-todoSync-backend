@@ -38,15 +38,21 @@ class ProjectRoutes implements Routes {
       isProjectMember,
       projectController.getMembers,
     );
+    // Adding and removing people needs the "team" feature (admins always have it); the service checks.
     this.router.post(
       "/:projectId/members",
-      requireProjectRole("ADMIN"),
+      isProjectMember,
       projectController.addMember,
     );
     this.router.delete(
       "/:projectId/members/:userId",
-      requireProjectRole("ADMIN"),
+      isProjectMember,
       projectController.removeMember,
+    );
+    this.router.patch(
+      "/:projectId/members/:userId/permissions",
+      requireProjectRole("ADMIN"),
+      projectController.updateMemberPermissions,
     );
     this.router.get("/:id", isProjectMember, projectController.getProject);
     this.router.patch("/:id", isProjectMember, projectController.updateProject);

@@ -22,8 +22,14 @@ import {
   deleteProjectMembership,
   getProjectMembers,
   getProjectMembership,
+  setMemberPermissions,
   getProjectMembershipsByUser,
 } from "../../../modules/project/repositories/project-member.repository.js";
+import {
+  resolvePermissions,
+  type ProjectFeature,
+  type ProjectPermissions,
+} from "../project-permissions.js";
 import { clearTaskAssignmentsForUser } from "../../task/repositories/task.repository.js";
 import { runInTransaction } from "../../../utils/transaction.js";
 import operationalAnalyticsService from "../../analytics/services/operational-analytics.service.js";
@@ -35,6 +41,8 @@ interface ProjectDto {
   description?: string;
   userId: string;
   currentUserRole: ProjectRole;
+  /** What the signed-in person may use in this project. */
+  currentUserPermissions?: ProjectPermissions;
   classification?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
@@ -74,6 +82,7 @@ interface ProjectMemberDto {
   projectId: string;
   userId: string;
   role: ProjectRole;
+  permissions: ProjectPermissions;
   createdAt?: Date;
   user: ProjectMemberUserDto;
 }
@@ -99,6 +108,7 @@ interface PaginatedProjects {
 interface ProjectAccess {
   project: IProjectDocument;
   role: ProjectRole;
+  permissions: ProjectPermissions;
 }
 
 import workspaceService from "../../workspace/services/workspace.service.js";
@@ -241,15 +251,23 @@ class ProjectService {
     const membershipByProject = new Map(
       memberships.map((membership) => [
         membership.projectId.toString(),
-        membership.role,
+        membership,
       ]),
     );
 
     return {
       projects: projects
         .map((project) => {
-          const role = membershipByProject.get(project._id.toString());
-          return role ? this.toDto(project, role) : null;
+          const membership = membershipByProject.get(project._id.toString());
+          return membership
+            ? ({
+                ...this.toDto(project, membership.role),
+                currentUserPermissions: resolvePermissions(
+                  membership.role,
+                  membership.permissions,
+                ),
+              } as ProjectDto)
+            : null;
         })
         .filter((project): project is ProjectDto => project != null),
       total,
@@ -334,6 +352,7 @@ class ProjectService {
       projectId: member.projectId,
       userId: member.userId,
       role: member.role,
+      permissions: resolvePermissions(member.role, member.permissions),
       createdAt: member.createdAt,
       user: {
         id: member.user._id.toString(),
@@ -348,7 +367,7 @@ class ProjectService {
     projectId: string,
     payload: AddProjectMemberPayload,
   ): Promise<ProjectMemberDto> {
-    await this.assertProjectRole(actorUserId, projectId, "ADMIN");
+    await this.assertProjectPermission(actorUserId, projectId, "team");
     const targetUserId = this.normalizeIdentifier(
       payload.userId,
       "User id is required",
@@ -393,6 +412,7 @@ class ProjectService {
         projectId: member.projectId.toString(),
         userId: user._id.toString(),
         role: member.role,
+        permissions: resolvePermissions(member.role, member.permissions),
         createdAt: member.createdAt,
         user: {
           id: user._id.toString(),
@@ -410,7 +430,7 @@ class ProjectService {
     projectId: string,
     targetUserId: string,
   ): Promise<void> {
-    await this.assertProjectRole(actorUserId, projectId, "ADMIN");
+    await this.assertProjectPermission(actorUserId, projectId, "team");
     const membership = await getProjectMembership(projectId, targetUserId);
 
     if (membership == null) {
@@ -495,7 +515,49 @@ class ProjectService {
     return {
       project,
       role: membership.role,
+      permissions: resolvePermissions(membership.role, membership.permissions),
     };
+  }
+
+  /** The person must be a project admin or have been given this feature by one. */
+  public async assertProjectPermission(
+    userId: string,
+    projectId: string,
+    feature: ProjectFeature,
+  ): Promise<ProjectAccess> {
+    const access = await this.getProjectAccess(userId, projectId);
+    if (!access.permissions[feature]) {
+      throw new HttpError(
+        403,
+        "A project admin has not given you access to this feature",
+      );
+    }
+    return access;
+  }
+
+  /** A project admin sets which features a member may use. Admins always have all of them. */
+  public async updateMemberPermissions(
+    actorUserId: string,
+    projectId: string,
+    targetUserId: string,
+    patch: Partial<ProjectPermissions>,
+  ): Promise<ProjectMemberDto> {
+    await this.assertProjectRole(actorUserId, projectId, "ADMIN");
+    const membership = await getProjectMembership(projectId, targetUserId);
+    if (membership == null)
+      throw new HttpError(404, "Project member not found");
+    if (membership.role === "ADMIN")
+      throw new HttpError(409, "Project admins always have every feature");
+    if (Object.keys(patch).length === 0)
+      throw new HttpError(
+        400,
+        "Send at least one of team, time, prompts, aiPlanner",
+      );
+    await setMemberPermissions(projectId, targetUserId, patch);
+    const members = await this.fetchProjectMembers(actorUserId, projectId);
+    const updated = members.find((m) => m.userId === targetUserId);
+    if (!updated) throw new HttpError(404, "Project member not found");
+    return updated;
   }
 
   public async assertProjectMembership(
@@ -626,8 +688,14 @@ class ProjectService {
     userId: string,
     projectId: string,
   ): Promise<ProjectDto> {
-    const { project, role } = await this.getProjectAccess(userId, projectId);
-    return this.toDto(project, role);
+    const { project, role, permissions } = await this.getProjectAccess(
+      userId,
+      projectId,
+    );
+    return {
+      ...this.toDto(project, role),
+      currentUserPermissions: permissions,
+    };
   }
 
   private toDto(

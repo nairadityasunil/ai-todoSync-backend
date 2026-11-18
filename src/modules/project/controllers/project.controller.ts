@@ -7,6 +7,8 @@ import activityLogService from "../../audit/services/activity-log.service.js";
 
 type AuthenticatedRequest = Request & { user?: IUserDocument };
 
+import { parsePermissionPatch } from "../project-permissions.js";
+
 const getRouteParam = (value: string | string[] | undefined): string => {
   if (typeof value === "string") {
     return value;
@@ -307,6 +309,32 @@ class ProjectController {
       });
     } catch (error) {
       const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public updateMemberPermissions = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (user == null) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const member = await projectService.updateMemberPermissions(
+        user._id.toString(),
+        getRouteParam(req.params.projectId),
+        getRouteParam(req.params.userId),
+        parsePermissionPatch(req.body),
+      );
+      res.status(200).json({
+        message: "Member permissions updated",
+        data: { member },
+      });
+    } catch (error) {
+      const status = (error as { status?: number }).status ?? 500;
       res.status(status).json({ error: (error as Error).message });
     }
   };
