@@ -308,6 +308,19 @@ class WorkspaceService {
       role,
     });
 
+    // Tell them by email, with the workspace and who added them
+    const [workspace, inviter] = await Promise.all([
+      WorkspaceModel.findById(workspaceId).select("name").lean(),
+      UserModel.findById(userId).select("name email").lean(),
+    ]);
+    const { enqueueInvitationMail } =
+      await import("./invitation-queue.service.js");
+    await enqueueInvitationMail("send-workspace-added-email", {
+      email: targetUser.email,
+      projectName: workspace?.name ?? "a workspace",
+      inviterName: inviter?.name || inviter?.email || "A teammate",
+    });
+
     return {
       id: newMember._id.toString(),
       userId: targetUser._id.toString(),

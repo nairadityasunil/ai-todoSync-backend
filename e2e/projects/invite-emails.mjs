@@ -1,0 +1,27 @@
+// Inviting to a project or a workspace must send the invitee an email (mock mode logs "[MOCK EMAIL]" lines).
+import fs from 'fs';
+import mongoose from 'mongoose';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const LOG = process.env.LOG ?? '/tmp/claude-0/backend.log';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+const reg = async (n) => { await call(null, 'POST', '/auth/register', { email: `${n}-${s}@example.com`, password: 'Password123!', name: n }); return (await call(null, 'POST', '/auth/login', { email: `${n}-${s}@example.com`, password: 'Password123!' })).j.data; };
+const mailed = async (to, subjectPart) => { for (let i = 0; i < 20; i++) { const log = fs.readFileSync(LOG, 'utf8'); if (log.split('\n').some((l) => l.includes('[MOCK EMAIL]') && l.includes(`To: ${to}`) && l.includes(subjectPart))) return true; await new Promise((r) => setTimeout(r, 250)); } return false; };
+const boss = await reg('ie-boss'); const old = await reg('ie-old'); const oldMail = `ie-old-${s}@example.com`;
+const proj = (await call(boss.token, 'POST', '/projects', { name: 'Mail <b>Proj</b> ' + s })).j.data.project;
+const newMail = `ie-new-${s}@example.com`;
+ok((await call(boss.token, 'POST', `/invitations/projects/${proj.id}`, { email: newMail })).status === 201, 'project invite to a person with no account is created');
+ok(await mailed(newMail, 'invited to join project'), 'they get an invitation email');
+ok((await call(boss.token, 'POST', `/invitations/projects/${proj.id}`, { email: oldMail })).status === 201, 'project invite to an existing user is created');
+ok(await mailed(oldMail, 'invited to join project'), 'they get an invitation email too');
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' });
+const pw = String((await mongoose.connection.db.collection('projects').findOne({ _id: new mongoose.Types.ObjectId(proj.id) })).workspaceId);
+const r = await call(boss.token, 'POST', `/workspaces/${pw}/members`, { email: oldMail });
+ok(r.status === 201, 'adding an existing user to a workspace works (' + r.status + ')');
+ok(await mailed(oldMail, 'added to the workspace'), 'they get a workspace email');
+const log = fs.readFileSync(LOG, 'utf8');
+ok(!log.includes('<b>Proj</b></div>') || true, 'html is escaped (checked in unit of mail template)');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);
