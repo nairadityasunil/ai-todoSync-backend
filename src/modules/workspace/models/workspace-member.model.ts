@@ -8,6 +8,8 @@ export interface IWorkspaceMember {
   userId: Types.ObjectId | string;
   role: WorkspaceRole;
   joinedAt?: Date;
+  /** When this person last opened the workspace: the workspace switcher lists the most recent first. */
+  lastUsedAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -37,6 +39,10 @@ const workspaceMemberSchema = new Schema<IWorkspaceMemberDocument>(
     joinedAt: {
       type: Date,
       default: Date.now,
+    },
+    lastUsedAt: {
+      type: Date,
+      default: null,
     },
   },
   { timestamps: true },

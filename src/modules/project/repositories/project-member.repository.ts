@@ -5,6 +5,7 @@ import ProjectMemberModel, {
   type ProjectRole,
 } from "../../../modules/project/models/project-member.model.js";
 import { andRefMatches, buildSafeRefMatch } from "../../../utils/mongo-ref.js";
+import { ensureWorkspaceMembersForProject } from "../../workspace/repositories/workspace-member.repository.js";
 interface ProjectMemberUserShape {
   _id: { toString(): string };
   email: string;
@@ -32,10 +33,18 @@ const memberUserProjection = "email name";
 export const createProjectMember = async (
   payload: CreateProjectMemberPayload,
   session?: ClientSession | null,
-): Promise<IProjectMemberDocument> =>
-  ProjectMemberModel.create([{ ...payload }], { session }).then(
-    ([member]) => member,
+): Promise<IProjectMemberDocument> => {
+  const [member] = await ProjectMemberModel.create([{ ...payload }], {
+    session,
+  });
+  // A project member is also a member of the project's workspace.
+  await ensureWorkspaceMembersForProject(
+    payload.projectId,
+    [payload.userId],
+    session,
   );
+  return member;
+};
 
 export const createProjectMembers = async (
   payloads: CreateProjectMemberPayload[],
@@ -45,7 +54,19 @@ export const createProjectMembers = async (
     return [];
   }
 
-  return ProjectMemberModel.insertMany(payloads, { session, ordered: true });
+  const members = await ProjectMemberModel.insertMany(payloads, {
+    session,
+    ordered: true,
+  });
+  const byProject = new Map<string, string[]>();
+  for (const p of payloads)
+    byProject.set(p.projectId, [
+      ...(byProject.get(p.projectId) ?? []),
+      p.userId,
+    ]);
+  for (const [projectId, userIds] of byProject)
+    await ensureWorkspaceMembersForProject(projectId, userIds, session);
+  return members;
 };
 
 export const getProjectMembership = async (
