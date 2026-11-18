@@ -5,6 +5,7 @@ import { Routes } from "../../interfaces/routes.interface.js";
 import authMiddleware from "../../middleware/auth.middleware.js";
 import type { AuthenticatedRequest } from "../../types/auth.js";
 import analytics from "./admin-analytics.service.js";
+import templates from "./admin-email-templates.service.js";
 import users, { AdminError, type Actor } from "./admin-users.service.js";
 import { requireSuperAdmin } from "./super-admin.js";
 
@@ -116,6 +117,40 @@ class AdminRoutes implements Routes {
     r.get(
       "/workspaces/:id",
       handle((req) => users.workspaceDetail(param(req.params.id))),
+    );
+    r.get(
+      "/email-templates",
+      handle(() => templates.list()),
+    );
+    r.get(
+      "/email-templates/:code",
+      handle((req) => templates.get(param(req.params.code))),
+    );
+    r.patch(
+      "/email-templates/:code",
+      handle((req) =>
+        templates.update(actorOf(req), param(req.params.code), req.body ?? {}),
+      ),
+    );
+    r.post(
+      "/email-templates/:code/reset",
+      handle((req) => templates.reset(actorOf(req), param(req.params.code))),
+    );
+    r.post(
+      "/email-templates/:code/preview",
+      handle((req) =>
+        templates.preview(param(req.params.code), req.body ?? {}),
+      ),
+    );
+    r.post(
+      "/email-templates/:code/test",
+      handle((req) =>
+        templates.sendTest(
+          actorOf(req),
+          param(req.params.code),
+          req.body ?? {},
+        ),
+      ),
     );
     r.get(
       "/audit",

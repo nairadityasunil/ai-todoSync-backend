@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import env from "../../config/env.js";
 import logger from "../../lib/logger.js";
+import { renderMail } from "../../modules/email-templates/email-template.service.js";
 
 export class EmailServiceImpl {
   private transporter: nodemailer.Transporter | null = null;
@@ -98,6 +99,11 @@ export class EmailServiceImpl {
     return false;
   }
 
+  /** True when emails really leave the server (a Brevo key or SMTP login is set). */
+  public isConfigured(): boolean {
+    return Boolean(env.BREVO_API_KEY) || this.transporter !== null;
+  }
+
   public async sendEmail(
     to: string,
     subject: string,
@@ -131,21 +137,30 @@ export class EmailServiceImpl {
     }
   }
 
+  /**
+   * Sends the email built from a stored template (edited by platform admins). When the template is switched off
+   * nothing is sent and this still counts as success: the email was turned off on purpose.
+   */
+  public async sendTemplate(
+    to: string,
+    code: string,
+    vars: Record<string, string>,
+  ): Promise<boolean> {
+    const mail = await renderMail(code, { inviteeEmail: to, ...vars });
+    if (mail == null) return true;
+    return this.sendEmail(to, mail.subject, mail.text, mail.html);
+  }
+
   public async sendOtpEmail(
     to: string,
     otp: string,
     type: "2fa" | "forgot_password" | string,
   ): Promise<boolean> {
-    const subject =
-      type === "2fa" ? "Your 2FA Verification Code" : "Your Password Reset OTP";
-    const text = `Your OTP code is: ${otp}`;
-    const html = `
-      <div style="font-family: sans-serif; padding: 20px;">
-        <h2>${subject}</h2>
-        <p>Your verification code is: <strong style="font-size: 20px;">${otp}</strong></p>
-      </div>
-    `;
-    return this.sendEmail(to, subject, text, html);
+    return this.sendTemplate(
+      to,
+      type === "2fa" ? "LOGIN_2FA_CODE" : "PASSWORD_RESET_CODE",
+      { code: otp },
+    );
   }
 
   public async sendInvitationEmail(

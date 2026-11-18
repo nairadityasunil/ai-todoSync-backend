@@ -35,7 +35,9 @@
     "depcheck": "depcheck",
     "jscpd": "jscpd",
     "precommit": "npm run check:console && npm run check:env && lint-staged && npm run lint",
-    "prepush": "npm run type-check && npm run build && npm run check:all && npm run lint"
+    "prepush": "npm run type-check && npm run build && npm run check:all && npm run lint",
+    "seed:super-admin": "node dist/scripts/seed-super-admin.js",
+    "seed:email-templates": "node dist/scripts/seed-email-templates.js"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
