@@ -321,12 +321,19 @@ class SlaService {
 
   public async getAnalytics(userId: string): Promise<SlaAnalyticsDto> {
     const projectIds = await this.getAccessibleProjectIds(userId);
+    // Only the fields the numbers need, as plain objects: this used to load every task in full
+    // (subtasks, notes and all), which grows with the workspace.
     const tasks = await TaskModel.find({
       $or: [
         buildRefMatch("userId", userId),
         buildRefInMatch("projectId", projectIds),
       ],
-    }).exec();
+    })
+      .select(
+        "priority responseBreached resolutionBreached firstResponseAt completedAt createdAt totalPausedDuration",
+      )
+      .lean()
+      .exec();
 
     const breachedByPriority = SLA_PRIORITIES.reduce(
       (acc, priority) => ({ ...acc, [priority]: 0 }),

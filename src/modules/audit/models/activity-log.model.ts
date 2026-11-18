@@ -96,6 +96,9 @@ const activityLogSchema = new Schema<IActivityLogDocument>(
 activityLogSchema.index({ projectId: 1, createdAt: -1 });
 activityLogSchema.index({ entityType: 1, entityId: 1 });
 activityLogSchema.index({ projectId: 1, sequence: -1 });
+// Active people per day, and one person's activity (admin analytics, member timeline).
+activityLogSchema.index({ createdAt: -1 });
+activityLogSchema.index({ userId: 1, createdAt: -1 });
 
 activityLogSchema.pre("updateOne", { query: true, document: false }, () => {
   throw new Error(

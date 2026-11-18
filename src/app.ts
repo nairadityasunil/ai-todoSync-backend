@@ -9,6 +9,7 @@ import { Routes } from "./interfaces/routes.interface.js";
 import logger from "./lib/logger.js";
 import env from "./config/env.js";
 import { connectDatabase } from "./config/db.config.js";
+import { ensureIndexesInBackground } from "./config/indexes.js";
 import { scheduleRolloverJob } from "./utils/rollover.js";
 import { scheduleSlaJob } from "./utils/sla-scheduler.js";
 import { schedulePriorityEngineJob } from "./utils/priority-engine-scheduler.js";
@@ -200,6 +201,8 @@ class App {
   public async listen(): Promise<void> {
     try {
       await this.initializeDatabase();
+      // Build any declared index that is missing, without holding up the server.
+      ensureIndexesInBackground();
 
       // Start background worker for project invitations
       try {

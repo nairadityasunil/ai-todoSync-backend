@@ -17,6 +17,7 @@
     "check:semantic": "tsx src/scripts/checks/semanticRegressionCheck.ts",
     "check:env": "tsx src/scripts/checks/envCheck.ts",
     "check:branch": "tsx src/scripts/checks/branchCheck.ts",
+    "db:indexes": "node dist/scripts/ensure-indexes.js",
     "check:all": "node dist/scripts/checks/allCustomChecks.js",
     "seed:semantic-scenarios": "tsx src/scripts/seedSemanticOperationalScenarios.ts",
     "seed:demo": "tsx src/scripts/seed-demo.ts",

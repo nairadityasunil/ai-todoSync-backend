@@ -77,10 +77,13 @@ export const getProjectStates = async (
     const userId = req.user!._id.toString();
     const { id: projectId } = req.params as Record<string, string>;
     await projectService.assertProjectMembership(userId, projectId);
-    await ensureDefaultWorkflow(projectId);
-
-    const project = await ProjectModel.findById(projectId).lean();
+    let project = await ProjectModel.findById(projectId).lean();
     if (!project) throw new AppError(404, "Project not found", "NOT_FOUND");
+    // Older projects get the default workflow the first time; every later read is a single query.
+    if (!project.statesInitialized) {
+      await ensureDefaultWorkflow(projectId);
+      project = (await ProjectModel.findById(projectId).lean()) ?? project;
+    }
 
     const states = (project.states ?? [])
       .slice()

@@ -39,5 +39,7 @@ const schema = new Schema<IAdminAuditDocument>(
   { timestamps: { createdAt: true, updatedAt: false } },
 );
 schema.index({ createdAt: -1 });
+// One person's admin history.
+schema.index({ targetType: 1, targetId: 1, createdAt: -1 });
 
 export default model<IAdminAuditDocument>("AdminAudit", schema);

@@ -99,6 +99,10 @@ const promptExecutionLogSchema = new Schema<IPromptExecutionLogDocument>(
 
 promptExecutionLogSchema.index({ workspaceId: 1, createdAt: -1 });
 promptExecutionLogSchema.index({ promptId: 1, promptVersion: 1 });
+// A person's runs, and runs over a time window (admin analytics, failures per day).
+promptExecutionLogSchema.index({ userId: 1, createdAt: -1 });
+promptExecutionLogSchema.index({ createdAt: -1 });
+promptExecutionLogSchema.index({ status: 1, createdAt: -1 });
 
 export default model<IPromptExecutionLogDocument>(
   "PromptExecutionLog",

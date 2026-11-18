@@ -249,12 +249,22 @@ export const getUnreadCount = async (
   projectId: string,
   userId: string,
 ): Promise<number> => {
-  return ChatMessageModel.countDocuments({
-    projectId,
-    senderId: { $ne: userId },
-    readBy: { $ne: userId },
-  }).exec();
+  // Opening a project room asks for this every time. Count only recent messages, stop at 100, and skip
+  // deleted ones, so it never scans a project's whole history (the projectId + createdAt index covers it).
+  return ChatMessageModel.countDocuments(
+    {
+      projectId,
+      createdAt: { $gte: new Date(Date.now() - UNREAD_WINDOW_MS) },
+      isDeleted: { $ne: true },
+      senderId: { $ne: userId },
+      readBy: { $ne: userId },
+    },
+    { limit: UNREAD_CAP },
+  ).exec();
 };
+
+const UNREAD_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const UNREAD_CAP = 100;
 
 /**
  * Get reply count for a message

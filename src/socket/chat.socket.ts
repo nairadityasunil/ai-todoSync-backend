@@ -405,26 +405,18 @@ class ChatSocketServer {
       const { projectId, content, replyToId } = payload;
       const userId = socket.user!._id.toString();
 
-      // Verify user is in the project room or auto-join if member
-      if (socket.currentProjectId !== projectId) {
-        const membership = await ProjectMemberModel.findOne({
-          projectId,
-          userId,
-        });
-        if (!membership) {
-          socket.emit("error", { message: "Not a project member" });
-          return;
-        }
-        socket.join(`project:${projectId}`);
-        socket.currentProjectId = projectId;
-      }
-
+      // The service checks membership itself (and refuses non-members), so it is not checked a second time
+      // here; a sender who was not yet in the room joins it once the message is accepted.
       const message = await chatService.sendMessage(
         projectId,
         userId,
         content,
         { replyToId },
       );
+      if (socket.currentProjectId !== projectId) {
+        socket.join(`project:${projectId}`);
+        socket.currentProjectId = projectId;
+      }
 
       // Broadcast to all project members
       this.io!.to(`project:${projectId}`).emit(

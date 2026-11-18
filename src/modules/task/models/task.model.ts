@@ -338,6 +338,8 @@ taskSchema.index({ assignedTo: 1, date: 1 });
 taskSchema.index({ epicId: 1 });
 taskSchema.index({ "subtasks.assignedToUserId": 1 });
 taskSchema.index({ status: 1 });
+// A project's tasks by status: the default workflow backfill, SLA and analytics counts.
+taskSchema.index({ projectId: 1, status: 1 });
 taskSchema.index({ responseBreached: 1, resolutionBreached: 1, priority: 1 });
 taskSchema.index({ slaResponseDueAt: 1, slaResolutionDueAt: 1, status: 1 });
 taskSchema.index({ blockedByTaskId: 1, status: 1 });

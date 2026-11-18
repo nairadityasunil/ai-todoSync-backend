@@ -10,8 +10,10 @@ import {
   type UpdateEpicPayload,
   updateEpic,
   deleteEpic,
+  getEpicsByProjects,
 } from "../../../modules/epic/repositories/epic.repository.js";
 import projectService from "../../project/services/project.service.js";
+import { getProjectMembershipsByUser } from "../../project/repositories/project-member.repository.js";
 
 interface EpicDto {
   id: string;
@@ -69,6 +71,26 @@ class EpicService {
   ): Promise<EpicDto[]> {
     await projectService.assertProjectMembership(userId, projectId);
     const epics = await getEpicsByProject(projectId);
+    return epics.map((epic) => this.toDto(epic));
+  }
+
+  /**
+   * The epics of several projects in one go (the dashboard shows a page of projects). Projects the person is
+   * not in are left out rather than refused, so one stale id cannot break the whole page.
+   */
+  public async fetchEpicsForProjects(
+    userId: string,
+    projectIds: string[],
+  ): Promise<EpicDto[]> {
+    const wanted = [
+      ...new Set(projectIds.filter((id) => /^[a-f0-9]{24}$/i.test(id))),
+    ].slice(0, 100);
+    if (wanted.length === 0) return [];
+    const memberships = await getProjectMembershipsByUser(userId);
+    const allowed = new Set(memberships.map((m) => m.projectId.toString()));
+    const ids = wanted.filter((id) => allowed.has(id));
+    if (ids.length === 0) return [];
+    const epics = await getEpicsByProjects(ids);
     return epics.map((epic) => this.toDto(epic));
   }
 

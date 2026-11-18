@@ -59,7 +59,7 @@ r = await call(adminTok, 'POST', `/admin/users/${plainId}/make-super-admin`); ok
 ok((await call(userTok, 'GET', '/admin/users')).status === 200, 'the promoted person gets in at once');
 ok((await call(userTok, 'POST', `/admin/users/${adminId}/remove-super-admin`)).status === 200, 'a super admin can demote another');
 ok((await call(adminTok, 'GET', '/admin/users')).status === 403, 'the demoted person loses access at once');
-await db.collection('users').updateOne({ _id: new mongoose.Types.ObjectId(adminId) }, { $set: { platformRole: 'super_admin' } });
+ok((await call(userTok, 'POST', `/admin/users/${adminId}/make-super-admin`)).status === 200, 'the other super admin restores their access');
 
 // Reset password, 2FA, sign out
 const victimTok2 = (await login(`victim-${s}@example.com`, 'Password123!')).j.data.token;
