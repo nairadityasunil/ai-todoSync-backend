@@ -129,7 +129,6 @@ class HealthRoutes implements Routes {
             status: "running",
             jobs: [
               "sla_scheduler",
-              "rollover_scheduler",
               "priority_engine_scheduler",
               "semantic_rollup_scheduler",
               "sdk_auth_cleanup_scheduler",

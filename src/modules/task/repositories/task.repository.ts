@@ -115,6 +115,8 @@ export const getTasksByUser = async (
   search?: string,
 ): Promise<TaskDocumentWithAssignee[]> => {
   const filter: any = {
+    // Tasks are no longer carried from day to day. Originals an earlier rollover marked are hidden: their copy is the live task.
+    status: { $ne: "rolled_over" },
     $or: [
       buildRefMatch("userId", userId),
       buildRefInMatch("projectId", projectIds),
@@ -147,7 +149,7 @@ export const getTasksByUser = async (
 
   return TaskModel.find(filter)
     .populate(taskPopulateOptions)
-    .sort({ date: 1, _id: 1 })
+    .sort({ date: -1, _id: 1 })
     .exec();
 };
 
@@ -195,6 +197,7 @@ export const getTasksByDate = async (
 ): Promise<TaskDocumentWithAssignee[]> => {
   const filter: any = {
     date,
+    status: { $ne: "rolled_over" },
     $or: [
       buildRefMatch("userId", userId),
       buildRefInMatch("projectId", projectIds),
@@ -229,25 +232,6 @@ export const getTasksByDate = async (
     .populate(taskPopulateOptions)
     .sort({ status: 1, _id: 1 })
     .exec();
-};
-
-export const getPendingTasksByDate = async (
-  date: string,
-): Promise<ITaskDocument[]> =>
-  TaskModel.find({
-    date,
-    status: { $in: ["BACKLOG", "TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED"] },
-  }).exec();
-
-export const markTasksRolledOver = async (taskIds: string[]): Promise<void> => {
-  if (!taskIds.length) {
-    return;
-  }
-
-  await TaskModel.updateMany(
-    { _id: { $in: taskIds } },
-    { status: "rolled_over", rolledOver: true },
-  ).exec();
 };
 
 export const clearTaskAssignmentsForUser = async (
