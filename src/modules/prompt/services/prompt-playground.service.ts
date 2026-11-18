@@ -56,43 +56,43 @@ export interface PlaygroundRunResponse {
   };
 }
 
-export class PromptPlaygroundService {
-  /**
-   * The key to call the provider with: the person's own key for that provider (Settings → AI providers),
-   * else, for Gemini, the server's key. Without this the run is refused as "API key is missing".
-   */
-  private async resolveProviderKey(
-    userId: string,
-    provider: string,
-  ): Promise<string> {
-    const user = await UserModel.findById(userId)
-      .select("openaiApiKey anthropicApiKey geminiApiKey")
-      .exec();
-    const own =
+/**
+ * The key to call the provider with: the person's own key for that provider (Settings → AI providers),
+ * else, for Gemini, the server's key. Without this the run is refused as "API key is missing".
+ */
+async function resolveProviderKey(
+  userId: string,
+  provider: string,
+): Promise<string> {
+  const user = await UserModel.findById(userId)
+    .select("openaiApiKey anthropicApiKey geminiApiKey")
+    .exec();
+  const own =
+    provider === "openai"
+      ? user?.openaiApiKey
+      : provider === "anthropic"
+        ? user?.anthropicApiKey
+        : user?.geminiApiKey;
+  const key =
+    own?.trim() ||
+    (provider === "gemini" ? env.GEMINI_API_KEY?.trim() : "") ||
+    "";
+  if (!key) {
+    const name =
       provider === "openai"
-        ? user?.openaiApiKey
+        ? "OpenAI"
         : provider === "anthropic"
-          ? user?.anthropicApiKey
-          : user?.geminiApiKey;
-    const key =
-      own?.trim() ||
-      (provider === "gemini" ? env.GEMINI_API_KEY?.trim() : "") ||
-      "";
-    if (!key) {
-      const name =
-        provider === "openai"
-          ? "OpenAI"
-          : provider === "anthropic"
-            ? "Anthropic"
-            : "Google Gemini";
-      throw new HttpError(
-        400,
-        `No API key for ${name} yet. Add yours under Settings → Profile → AI providers.`,
-      );
-    }
-    return key;
+          ? "Anthropic"
+          : "Google Gemini";
+    throw new HttpError(
+      400,
+      `No API key for ${name} yet. Add yours under Settings → Profile → AI providers.`,
+    );
   }
+  return key;
+}
 
+export class PromptPlaygroundService {
   public async runPlayground(
     workspaceId: string,
     userId: string,
@@ -240,7 +240,7 @@ export class PromptPlaygroundService {
       topP?: number;
     };
 
-    const userApiKey = await this.resolveProviderKey(userId, selectedProvider);
+    const userApiKey = await resolveProviderKey(userId, selectedProvider);
     const execResult = await llmExecutionService.execute({
       workspaceId,
       userId,
