@@ -25,6 +25,7 @@ class TelemetryRoutes implements Routes {
     this.router.post("/automation/run", c.run);
     this.router.get("/automation/task/:taskId", c.forTask);
     this.router.get("/projects/governance", c.projectGovernance);
+    this.router.get("/projects/:projectId/governance", c.projectGovernanceOne);
   }
 }
 

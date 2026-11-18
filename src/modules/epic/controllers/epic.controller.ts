@@ -63,8 +63,8 @@ class EpicController {
     }
   };
 
-  /** GET /api/epics?projectIds=a,b,c : the epics of several projects in one request. */
-  public getEpicsForProjects = async (
+  /** GET /api/epics : the epics of every project the caller belongs to. `?projectId=` narrows it to one project. */
+  public getMyEpics = async (
     req: AuthenticatedRequest,
     res: Response,
   ): Promise<void> => {
@@ -74,16 +74,13 @@ class EpicController {
         res.status(401).json({ error: "Authentication required" });
         return;
       }
-      const raw = req.query.projectIds;
-      const ids = (
-        typeof raw === "string" ? raw : Array.isArray(raw) ? raw.join(",") : ""
-      )
-        .split(",")
-        .map((id) => id.trim())
-        .filter(Boolean);
-      const epics = await epicService.fetchEpicsForProjects(
+      const projectId =
+        typeof req.query.projectId === "string" && req.query.projectId.trim()
+          ? req.query.projectId.trim()
+          : undefined;
+      const epics = await epicService.fetchMyEpics(
         user._id.toString(),
-        ids,
+        projectId,
       );
       res.status(200).json({ message: "Epic list fetched", data: { epics } });
     } catch (error) {
