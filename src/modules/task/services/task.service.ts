@@ -401,7 +401,38 @@ class TaskService {
           search,
         )
       : await getTasksByUser(userId, projectIds, assigneeId, search);
-    return tasks.map((task) => this.toDto(userId, task, roleMap));
+    return this.withoutDuplicatedRolloverOriginals(tasks).map((task) =>
+      this.toDto(userId, task, roleMap),
+    );
+  }
+
+  /**
+   * An old nightly rollover marked a task "rolled_over" and copied it to the next day. Where that copy exists the
+   * original is a duplicate and is left out; where it does not (the copy was never made) the original is the only
+   * copy of the task, so it stays in the list. A task is never hidden just for carrying that mark.
+   */
+  private withoutDuplicatedRolloverOriginals<
+    T extends {
+      status: string;
+      userId?: unknown;
+      projectId?: unknown;
+      title: string;
+      rolloverCount?: number;
+    },
+  >(tasks: T[]): T[] {
+    if (!tasks.some((task) => task.status === "rolled_over")) return tasks;
+    const key = (task: T, count: number): string =>
+      `${String(task.userId)}|${String(task.projectId ?? "")}|${task.title}|${count}`;
+    const live = new Set(
+      tasks
+        .filter((task) => task.status !== "rolled_over")
+        .map((task) => key(task, task.rolloverCount ?? 0)),
+    );
+    return tasks.filter(
+      (task) =>
+        task.status !== "rolled_over" ||
+        !live.has(key(task, (task.rolloverCount ?? 0) + 1)),
+    );
   }
 
   public async getTasksAssignedToMe(userId: string): Promise<TaskDto[]> {
@@ -1378,6 +1409,8 @@ class TaskService {
     const s = status.toUpperCase();
     if (s === "DONE" || s === "COMPLETED") return "DONE";
     if (s === "PENDING") return "TODO";
+    // A task an old rollover marked and never copied: show it as an ordinary open task.
+    if (s === "ROLLED_OVER") return "TODO";
     return s as TaskStatus;
   }
 
