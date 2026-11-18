@@ -203,6 +203,15 @@ class App {
       await this.initializeDatabase();
       // Build any declared index that is missing, without holding up the server.
       ensureIndexesInBackground();
+      // Bring back tasks an old nightly rollover hid without copying them (idempotent).
+      void import("./modules/task/services/task-repair.service.js")
+        .then((m) => m.restoreRolledOverTasks())
+        .catch((error) =>
+          logger.error(
+            "Restoring rolled-over tasks failed",
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+        );
 
       // Start background worker for project invitations
       try {
