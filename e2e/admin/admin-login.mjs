@@ -1,0 +1,33 @@
+// The platform admin console has its own sign-in: only super admins can use it, everyone else gets the same refusal.
+import mongoose from 'mongoose';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); const db = mongoose.connection.db;
+const adminMail = `al-admin-${s}@example.com`, plainMail = `al-plain-${s}@example.com`;
+for (const e of [adminMail, plainMail]) await call(null, 'POST', '/auth/register', { email: e, password: 'Password123!', name: 'x' });
+await db.collection('users').updateOne({ email: adminMail }, { $set: { platformRole: 'super_admin' } });
+let r = await call(null, 'POST', '/admin/auth/login', { email: adminMail, password: 'Password123!' });
+ok(r.status === 200 && r.j.data.token && r.j.data.user.isSuperAdmin === true, 'a super admin signs in at the admin sign-in');
+const tok = r.j.data.token;
+ok((await call(tok, 'GET', '/admin/analytics?days=7')).status === 200, 'and the session opens the admin API');
+const plainId = (await db.collection('users').findOne({ email: plainMail }))._id;
+const before = await db.collection('devicesessions').countDocuments({ userId: plainId });
+r = await call(null, 'POST', '/admin/auth/login', { email: plainMail, password: 'Password123!' });
+ok(r.status === 401 && r.j.error === 'Invalid email or password.', 'a normal person with the right password is refused');
+const wrongPw = await call(null, 'POST', '/admin/auth/login', { email: adminMail, password: 'wrong-password' });
+const unknown = await call(null, 'POST', '/admin/auth/login', { email: `nobody-${s}@example.com`, password: 'Password123!' });
+ok(wrongPw.status === 401 && unknown.status === 401 && wrongPw.j.error === r.j.error && unknown.j.error === r.j.error, 'a wrong password, an unknown email and a normal account all get the same answer');
+ok((await db.collection('devicesessions').countDocuments({ userId: plainId })) === before, 'the refused attempt created no session for the normal account');
+ok((await call(null, 'POST', '/admin/auth/login', { email: adminMail })).status === 400, 'a missing password is a 400');
+ok((await call(null, 'GET', '/admin/analytics?days=7')).status === 401, 'the admin API still needs a session');
+ok(await db.collection('adminaudits').countDocuments({ actorEmail: adminMail, action: 'admin.sign_in' }) === 1, 'the admin sign-in is in the audit log');
+// 2FA
+await db.collection('users').updateOne({ email: adminMail }, { $set: { twoFactorEnabled: true } });
+r = await call(null, 'POST', '/admin/auth/login', { email: adminMail, password: 'Password123!' });
+ok(r.status === 202 && r.j.data.require2fa === true, 'with two-step sign-in the admin sign-in asks for the code');
+ok((await call(null, 'POST', '/admin/auth/verify-2fa', { email: plainMail, code: '123456' })).status === 401, 'a normal account cannot use the code step either');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);
