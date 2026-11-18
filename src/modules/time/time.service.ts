@@ -37,6 +37,12 @@ const mondayOf = (day: string): string => {
   return addDays(day, -back);
 };
 
+/**
+ * The last day a timesheet may reach: today, plus a day of slack so people ahead of UTC (their "today" has
+ * already started here) are not refused. The portal limits itself to the person's own today.
+ */
+const latestAllowedDay = (): string => addDays(new Date().toISOString().slice(0, 10), 1);
+
 const parseMinutes = (value: unknown): number => {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 1 || n > 24 * 60)
@@ -90,6 +96,8 @@ class TimeService {
         ? parseDay(query.start, "start")
         : new Date().toISOString().slice(0, 10),
     );
+    if (monday > latestAllowedDay())
+      throw new TimeError(400, "Time cannot be viewed for upcoming weeks");
     const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
     const wantsAll = query.scope === "all";
     const filter: Record<string, unknown> = {
@@ -180,6 +188,8 @@ class TimeService {
     const from = parseDay(query.from, "from");
     const to = parseDay(query.to, "to");
     if (to < from) throw new TimeError(400, "The end date is before the start");
+    if (to > latestAllowedDay())
+      throw new TimeError(400, "The export cannot reach into the future");
     if (addDays(from, 366) < to)
       throw new TimeError(400, "Choose a range of one year or less");
     const wantsOthers = query.scope === "all" || Boolean(query.userId);
