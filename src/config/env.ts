@@ -23,6 +23,8 @@ export interface EnvConfig {
   SMTP_USER?: string;
   SMTP_PASS?: string;
   SMTP_FROM?: string;
+  BREVO_API_KEY?: string;
+  /** Sender address, also read from MAIL_FROM or EMAIL_FROM. */
   REDIS_URL: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL: string;
@@ -49,6 +51,9 @@ const {
   SMTP_USER,
   SMTP_PASS,
   SMTP_FROM,
+  BREVO_API_KEY,
+  MAIL_FROM,
+  EMAIL_FROM,
   REDIS_URL = "redis://127.0.0.1:6379",
   GEMINI_API_KEY,
   GEMINI_MODEL = "gemini-2.0-flash",
@@ -94,7 +99,8 @@ const env: EnvConfig = {
   AI_PROVIDER_MODEL: AI_PROVIDER_MODEL.trim(),
   SMTP_USER: SMTP_USER?.trim() || undefined,
   SMTP_PASS: SMTP_PASS?.trim() || undefined,
-  SMTP_FROM: SMTP_FROM?.trim() || undefined,
+  SMTP_FROM: (EMAIL_FROM || MAIL_FROM || SMTP_FROM)?.trim() || undefined,
+  BREVO_API_KEY: BREVO_API_KEY?.trim() || undefined,
   REDIS_URL: REDIS_URL.trim(),
   GEMINI_API_KEY: GEMINI_API_KEY?.trim() || undefined,
   GEMINI_MODEL: GEMINI_MODEL.trim(),

@@ -12,7 +12,11 @@ export class EmailServiceImpl {
       : 587;
     const smtpSecure = process.env.SMTP_SECURE === "true";
 
-    if (smtpHost && env.SMTP_USER && env.SMTP_PASS) {
+    if (env.BREVO_API_KEY) {
+      logger.info(
+        `[mail] mode=brevo-api from=${env.SMTP_FROM ?? "(not set: set EMAIL_FROM to a sender verified in Brevo)"}`,
+      );
+    } else if (smtpHost && env.SMTP_USER && env.SMTP_PASS) {
       this.transporter = nodemailer.createTransport({
         host: smtpHost,
         port: smtpPort,
@@ -24,9 +28,74 @@ export class EmailServiceImpl {
       });
     } else {
       logger.warn(
-        "SMTP configuration missing. EmailService initialized in mock/log mode.",
+        "No BREVO_API_KEY and no SMTP configuration: emails will only be logged, not sent.",
       );
     }
+  }
+
+  /** "Name <a@b.com>" or "a@b.com" into the parts Brevo wants. */
+  private parseSender(): { name?: string; email: string } {
+    const raw = env.SMTP_FROM || env.SMTP_USER || "no-reply@synctodo.com";
+    const m = raw.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/);
+    return m
+      ? { name: m[1].trim() || undefined, email: m[2].trim() }
+      : { email: raw.trim() };
+  }
+
+  /**
+   * Sends through Brevo's HTTPS API (works where SMTP ports are blocked, such as Render's free plan),
+   * retrying on network errors, 429 and 5xx.
+   */
+  private async sendViaBrevo(
+    to: string,
+    subject: string,
+    text: string,
+    html: string,
+  ): Promise<boolean> {
+    const sender = this.parseSender();
+    const body = JSON.stringify({
+      sender,
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+      textContent: text,
+    });
+    let lastError = "Unknown error";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await fetch(
+          process.env.BREVO_API_URL || "https://api.brevo.com/v3/smtp/email",
+          {
+            method: "POST",
+            headers: {
+              "api-key": env.BREVO_API_KEY as string,
+              "content-type": "application/json",
+              accept: "application/json",
+            },
+            body,
+            signal: AbortSignal.timeout(15_000),
+          },
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          messageId?: string;
+          message?: string;
+        };
+        if (res.ok) {
+          logger.info(
+            `[mail] Brevo accepted "${subject}" for ${to} (messageId ${data.messageId ?? "n/a"})`,
+          );
+          return true;
+        }
+        lastError = `Brevo API ${res.status}: ${data.message ?? res.statusText}`;
+        if (!(res.status === 429 || res.status >= 500)) break;
+      } catch (error) {
+        lastError = `Could not reach Brevo: ${(error as Error).message}`;
+      }
+      if (attempt < 3)
+        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+    }
+    logger.error(`[mail] Brevo REFUSED "${subject}" for ${to}: ${lastError}`);
+    return false;
   }
 
   public async sendEmail(
@@ -35,9 +104,13 @@ export class EmailServiceImpl {
     text: string,
     html?: string,
   ): Promise<boolean> {
+    if (env.BREVO_API_KEY) {
+      return this.sendViaBrevo(to, subject, text, html || text);
+    }
+
     if (!this.transporter) {
-      logger.info(
-        `[MOCK EMAIL] To: ${to} | Subject: ${subject} | Text: ${text}`,
+      logger.warn(
+        `[mail] NOT SENT to ${to}: no BREVO_API_KEY and no SMTP settings. [MOCK EMAIL] Subject: ${subject} | Text: ${text}`,
       );
       return true;
     }

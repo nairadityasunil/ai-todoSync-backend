@@ -22,22 +22,36 @@ export interface InvitationJobData {
   isNewUser?: boolean;
 }
 
-// Create Worker
-export const startInvitationWorker = () => {
-  const worker = new Worker(
-    "invitations",
-    async (job: Job<InvitationJobData>) => {
-      const { email, projectName, inviterName, token, isNewUser } = job.data;
+const esc = (v: string): string =>
+  String(v).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
-      if (job.name === "send-invite-email" && token) {
-        const acceptLink = `${env.FRONTEND_BASE_URL}/accept-invitation?token=${token}`;
-        const rejectLink = `${env.BACKEND_URL}/api/invitations/reject-public?token=${token}`;
-        const subject = `You have been invited to join project: ${projectName}`;
-        const nextStep = isNewUser
-          ? "You do not have a Pristine account yet. Open the link, choose your name and a password, and you will be added to the project and its workspace straight away."
-          : "Open the link and accept, and you will be added to the project and its workspace.";
-        const text = `Hello,\n\nYou have been invited to join the project "${projectName}" on Pristine by ${inviterName}.\n\n${nextStep}\n\n${isNewUser ? "Create your account and join" : "Accept the invitation"}:\n${acceptLink}\n\nDecline the invitation:\n${rejectLink}\n\nThis invitation expires in 14 days.`;
-        const html = `
+/** Sends the email a job describes. Used by the worker, and directly when the queue is not reachable. */
+export const processInvitationJob = async (
+  name: string,
+  data: InvitationJobData,
+): Promise<void> => {
+  const { email, projectName, inviterName, token, isNewUser } = data;
+  const job = { name };
+
+  if (job.name === "send-workspace-added-email") {
+    const dashboardLink = `${env.FRONTEND_BASE_URL}/dashboard`;
+    const workspace = esc(projectName);
+    const by = esc(inviterName);
+    const subject = `You have been added to the workspace: ${projectName}`;
+    const text = `Hello,\n\n${inviterName} added you to the workspace "${projectName}" on Pristine.\n\nOpen your dashboard:\n${dashboardLink}`;
+    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:500px;margin:0 auto;padding:32px;border:1px solid #e1e7e3;border-radius:16px;color:#1c2d27"><div style="text-align:center;font-weight:900;letter-spacing:.25em;margin-bottom:24px">PRISTINE</div><h1 style="font-size:20px;text-align:center;margin:0 0 8px">You are now in a workspace</h1><p style="text-align:center;color:#52635c;font-size:14px;margin:0 0 24px"><strong>${by}</strong> added you to <strong>${workspace}</strong>.</p><p style="text-align:center;margin:0 0 24px"><a href="${dashboardLink}" style="display:inline-block;background:#1c2d27;color:#fff;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:700;font-size:13px">Open dashboard</a></p><p style="font-size:11px;color:#84998e;text-align:center;margin:0">Sent to ${esc(email)}.</p></div>`;
+    if (!(await EmailService.sendEmail(email, subject, text, html))) {
+      throw new Error(`Failed to send workspace email to ${email}`);
+    }
+  } else if (job.name === "send-invite-email" && token) {
+    const acceptLink = `${env.FRONTEND_BASE_URL}/accept-invitation?token=${token}`;
+    const rejectLink = `${env.BACKEND_URL}/api/invitations/reject-public?token=${token}`;
+    const subject = `You have been invited to join project: ${projectName}`;
+    const nextStep = isNewUser
+      ? "You do not have a Pristine account yet. Open the link, choose your name and a password, and you will be added to the project and its workspace straight away."
+      : "Open the link and accept, and you will be added to the project and its workspace.";
+    const text = `Hello,\n\nYou have been invited to join the project "${projectName}" on Pristine by ${inviterName}.\n\n${nextStep}\n\n${isNewUser ? "Create your account and join" : "Accept the invitation"}:\n${acceptLink}\n\nDecline the invitation:\n${rejectLink}\n\nThis invitation expires in 14 days.`;
+    const html = `
           <!DOCTYPE html>
           <html>
           <head>
@@ -72,9 +86,9 @@ export const startInvitationWorker = () => {
               
               <div class="card">
                 <span class="card-label">Project Workspace</span>
-                <div class="card-value">${projectName}</div>
+                <div class="card-value">${esc(projectName)}</div>
                 <div style="font-size: 12px; color: #52635c; margin-top: 8px;">
-                  Invited by <strong>${inviterName}</strong> to collaborate as a team member.
+                  Invited by <strong>${esc(inviterName)}</strong> to collaborate as a team member.
                 </div>
               </div>
               
@@ -90,7 +104,7 @@ export const startInvitationWorker = () => {
               <div class="divider"></div>
               
               <div class="footer">
-                This invitation was sent to <span style="color: #1c2d27; font-weight: 600;">${email}</span>.<br>
+                This invitation was sent to <span style="color: #1c2d27; font-weight: 600;">${esc(email)}</span>.<br>
                 If you did not expect this, you can safely ignore or decline this email.
               </div>
             </div>
@@ -98,15 +112,15 @@ export const startInvitationWorker = () => {
           </html>
         `;
 
-        const result = await EmailService.sendEmail(email, subject, text, html);
-        if (!result) {
-          throw new Error(`Failed to send invitation email to ${email}`);
-        }
-      } else if (job.name === "send-added-directly-email") {
-        const dashboardLink = `${env.FRONTEND_BASE_URL}/dashboard`;
-        const subject = `You have been added to project: ${projectName}`;
-        const text = `Hello,\n\nYou have been added directly to the project "${projectName}" on Pristine by ${inviterName}.\n\nClick the link below to access your dashboard:\n\n${dashboardLink}`;
-        const html = `
+    const result = await EmailService.sendEmail(email, subject, text, html);
+    if (!result) {
+      throw new Error(`Failed to send invitation email to ${email}`);
+    }
+  } else if (job.name === "send-added-directly-email") {
+    const dashboardLink = `${env.FRONTEND_BASE_URL}/dashboard`;
+    const subject = `You have been added to project: ${projectName}`;
+    const text = `Hello,\n\nYou have been added directly to the project "${projectName}" on Pristine by ${inviterName}.\n\nClick the link below to access your dashboard:\n\n${dashboardLink}`;
+    const html = `
           <!DOCTYPE html>
           <html>
           <head>
@@ -140,9 +154,9 @@ export const startInvitationWorker = () => {
               
               <div class="card">
                 <span class="card-label">Project Workspace</span>
-                <div class="card-value">${projectName}</div>
+                <div class="card-value">${esc(projectName)}</div>
                 <div style="font-size: 12px; color: #52635c; margin-top: 8px;">
-                  Added by <strong>${inviterName}</strong>. You can now access and participate in this workspace immediately.
+                  Added by <strong>${esc(inviterName)}</strong>. You can now access and participate in this workspace immediately.
                 </div>
               </div>
               
@@ -157,7 +171,7 @@ export const startInvitationWorker = () => {
               <div class="divider"></div>
               
               <div class="footer">
-                This notification was sent to <span style="color: #1c2d27; font-weight: 600;">${email}</span>.<br>
+                This notification was sent to <span style="color: #1c2d27; font-weight: 600;">${esc(email)}</span>.<br>
                 <a href="${dashboardLink}">Go to Dashboard</a>
               </div>
             </div>
@@ -165,14 +179,57 @@ export const startInvitationWorker = () => {
           </html>
         `;
 
-        const result = await EmailService.sendEmail(email, subject, text, html);
-        if (!result) {
-          throw new Error(
-            `Failed to send added notification email to ${email}`,
-          );
-        }
-      }
-    },
+    const result = await EmailService.sendEmail(email, subject, text, html);
+    if (!result) {
+      throw new Error(`Failed to send added notification email to ${email}`);
+    }
+  }
+};
+
+/**
+ * Queues an invitation email. When the queue (Redis) cannot be reached the email is sent straight away, so an
+ * invitation is never saved without the person hearing about it. Never throws: the invite itself has succeeded.
+ */
+export const enqueueInvitationMail = async (
+  name:
+    | "send-invite-email"
+    | "send-added-directly-email"
+    | "send-workspace-added-email",
+  data: InvitationJobData,
+): Promise<void> => {
+  try {
+    await Promise.race([
+      invitationQueue.add(name, data, {
+        attempts: 5,
+        backoff: { type: "exponential", delay: 5000 },
+        removeOnComplete: 100,
+        removeOnFail: 500,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("queue timed out")), 3000),
+      ),
+    ]);
+  } catch (queueError) {
+    logger.warn(
+      `Invitation queue unavailable (${(queueError as Error).message}); sending the email directly to ${data.email}`,
+    );
+    try {
+      await processInvitationJob(name, data);
+    } catch (sendError) {
+      logger.error(
+        `Could not send the ${name} email to ${data.email}`,
+        sendError as Error,
+      );
+    }
+  }
+};
+
+// Create Worker
+export const startInvitationWorker = () => {
+  const worker = new Worker(
+    "invitations",
+    async (job: Job<InvitationJobData>) =>
+      processInvitationJob(job.name, job.data),
     { connection: connection as any },
   );
 

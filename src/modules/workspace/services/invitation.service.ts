@@ -14,7 +14,7 @@ import {
 } from "../../../modules/project/repositories/project-member.repository.js";
 import { getProjectById } from "../../project/repositories/project.repository.js";
 import { findUserByEmail } from "../../auth/repositories/auth.repository.js";
-import { invitationQueue } from "./invitation-queue.service.js";
+import { enqueueInvitationMail } from "./invitation-queue.service.js";
 import projectService from "../../project/services/project.service.js";
 import activityLogService from "../../audit/services/activity-log.service.js";
 import WorkspaceMemberModel from "../models/workspace-member.model.js";
@@ -127,7 +127,7 @@ class InvitationService {
       }
 
       // Queue the invitation email (with reject link) for registered users too
-      await invitationQueue.add("send-invite-email", {
+      await enqueueInvitationMail("send-invite-email", {
         email,
         projectName: project.name,
         inviterName,
@@ -182,7 +182,7 @@ class InvitationService {
     }
 
     // Queue the invitation email job
-    await invitationQueue.add("send-invite-email", {
+    await enqueueInvitationMail("send-invite-email", {
       email,
       projectName: project.name,
       inviterName,
