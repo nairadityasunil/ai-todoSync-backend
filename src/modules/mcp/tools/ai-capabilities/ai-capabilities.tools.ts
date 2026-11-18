@@ -37,7 +37,7 @@ toolRegistry.register({
         id: t.id,
         title: t.title,
         priority: t.dynamicPriority,
-        dueDate: t.date,
+        dueDate: t.date ?? undefined,
         isBlocked: t.isBlocked,
       }));
 

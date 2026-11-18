@@ -10,7 +10,6 @@ import logger from "./lib/logger.js";
 import env from "./config/env.js";
 import { connectDatabase } from "./config/db.config.js";
 import { ensureIndexesInBackground } from "./config/indexes.js";
-import { scheduleRolloverJob } from "./utils/rollover.js";
 import { scheduleSlaJob } from "./utils/sla-scheduler.js";
 import { schedulePriorityEngineJob } from "./utils/priority-engine-scheduler.js";
 import { scheduleSemanticRollupJob } from "./utils/semantic-rollup-scheduler.js";
@@ -179,7 +178,6 @@ class App {
   }
 
   private initializeCronJobs(): void {
-    scheduleRolloverJob();
     scheduleSlaJob();
     schedulePriorityEngineJob();
     scheduleSemanticRollupJob();
@@ -205,6 +203,24 @@ class App {
       await this.initializeDatabase();
       // Build any declared index that is missing, without holding up the server.
       ensureIndexesInBackground();
+      // People who joined a project before project members were made workspace members (idempotent).
+      void import("./modules/workspace/services/workspace-membership-repair.service.js")
+        .then((m) => m.addMissingWorkspaceMembers())
+        .catch((error) =>
+          logger.error(
+            "Adding project members to their workspaces failed",
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+        );
+      // Bring back tasks an old nightly rollover hid without copying them (idempotent).
+      void import("./modules/task/services/task-repair.service.js")
+        .then((m) => m.restoreRolledOverTasks())
+        .catch((error) =>
+          logger.error(
+            "Restoring rolled-over tasks failed",
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+        );
 
       // Start background worker for project invitations
       try {

@@ -191,18 +191,30 @@ class TelemetryController {
     });
   };
 
+  /** Governance state of every project the caller belongs to, keyed by project id. */
   public projectGovernance = async (
     req: AuthenticatedRequest,
     res: Response,
   ) => {
     const userId = userIdOf(req);
+    const ids = (await projectService.fetchProjects(userId)).map((p) => p.id);
+    res.json({ success: true, data: await governanceReady(ids) });
+  };
+
+  /** Governance state of one project: ready, pending, or null when the caller is not in it. */
+  public projectGovernanceOne = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ) => {
+    const userId = userIdOf(req);
+    const projectId = String(req.params.projectId);
     const mine = new Set(
       (await projectService.fetchProjects(userId)).map((p) => p.id),
     );
-    const ids = String(req.query.projectIds ?? "")
-      .split(",")
-      .filter((id) => mine.has(id));
-    res.json({ success: true, data: await governanceReady(ids) });
+    const state = mine.has(projectId)
+      ? ((await governanceReady([projectId]))[projectId] ?? null)
+      : null;
+    res.json({ success: true, data: { state } });
   };
 }
 

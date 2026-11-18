@@ -4,6 +4,7 @@ import authMiddleware from "../../../middleware/auth.middleware.js";
 import {
   listWorkspaces,
   createWorkspace,
+  markWorkspaceUsed,
   getWorkspaceDetails,
   updateWorkspace,
   deleteWorkspace,
@@ -25,6 +26,7 @@ class WorkspaceRoutes implements Routes {
     // Workspace CRUD
     this.router.get("/", authMiddleware, listWorkspaces);
     this.router.post("/", authMiddleware, createWorkspace);
+    this.router.post("/:id/use", authMiddleware, markWorkspaceUsed);
     this.router.get("/:id", authMiddleware, getWorkspaceDetails);
     this.router.patch("/:id", authMiddleware, updateWorkspace);
     this.router.delete("/:id", authMiddleware, deleteWorkspace);

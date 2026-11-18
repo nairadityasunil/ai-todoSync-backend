@@ -142,7 +142,7 @@ class TaskController {
         title: title ?? "",
         description,
         note,
-        date: date ?? "",
+        date,
         status,
         priority,
         source,

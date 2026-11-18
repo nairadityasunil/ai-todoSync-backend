@@ -1,0 +1,32 @@
+// A task is never hidden for carrying the old mark. Tasks that an old nightly rollover marked "rolled_over" without a live copy come back; ones with a copy stay hidden.
+// Run the repair with: API=... node e2e/projects/restore-rolled-over.mjs  (it restarts nothing: it calls the repair through tsx)
+import mongoose from 'mongoose';
+import { execFileSync } from 'child_process';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, authorization: 'Bearer ' + tok }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const L = await (await fetch(API + '/auth/login', { method: 'POST', headers: H, body: JSON.stringify({ email: 'qa@example.com', password: 'Password123!' }) })).json();
+const tok = L.data.token;
+const s = Date.now().toString(36);
+const proj = (await call(tok, 'POST', '/projects', { name: 'Restore ' + s })).j.data.project;
+const mk = async (title, date) => (await call(tok, 'POST', '/tasks', { title, date, projectId: proj.id })).j.data.task;
+const lost = await mk('Lost ' + s, '2026-11-17');
+const copied = await mk('Copied ' + s, '2026-11-17');
+const copy = await mk('Copied ' + s, '2026-11-18');
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); const db = mongoose.connection.db;
+const oid = (x) => new mongoose.Types.ObjectId(x);
+await db.collection('tasks').updateOne({ _id: oid(lost.id) }, { $set: { status: 'rolled_over', rolledOver: true } });
+await db.collection('tasks').updateOne({ _id: oid(copied.id) }, { $set: { status: 'rolled_over', rolledOver: true } });
+await db.collection('tasks').updateOne({ _id: oid(copy.id) }, { $set: { rolloverCount: 1 } });
+const titles = async () => (await call(tok, 'GET', '/tasks')).j.data.tasks.filter((t) => t.projectId === proj.id).map((t) => `${t.title}|${t.status}`);
+let before = await titles();
+ok(before.includes(`Lost ${s}|TODO`), 'even before the repair, a task with the old mark and no copy is listed (as an ordinary open task)');
+ok(before.filter((t) => t.startsWith('Copied ')).length === 1, 'and a task whose copy exists is listed once');
+execFileSync('npx', ['tsx', '-e', "import('./src/modules/task/services/task-repair.service.ts').then(async (m) => { const mongoose = (await import('mongoose')).default; await mongoose.connect('mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); console.log('restored', await m.restoreRolledOverTasks()); await mongoose.disconnect(); })"], { stdio: 'inherit', env: process.env });
+const after = await titles();
+ok(after.includes(`Lost ${s}|TODO`), 'after the repair the task with no copy is back (as TODO)');
+ok(after.filter((t) => t.startsWith('Copied ')).length === 1, 'a task whose copy exists is shown once, not twice');
+ok((await db.collection('tasks').findOne({ _id: oid(lost.id) })).rolledOver === false, 'the rolled-over flag is cleared');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);

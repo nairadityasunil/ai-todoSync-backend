@@ -162,3 +162,19 @@ export const removeMember = async (
       .json({ error: error.message });
   }
 };
+
+export const markWorkspaceUsed = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
+  try {
+    const userId = req.user!._id.toString();
+    const { id } = req.params as Record<string, string>;
+    await workspaceService.markUsed(userId, id);
+    res.status(200).json({ message: "OK" });
+  } catch (error: any) {
+    res
+      .status(error.statusCode ?? error.status ?? 500)
+      .json({ error: error.message });
+  }
+};

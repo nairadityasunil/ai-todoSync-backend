@@ -86,6 +86,7 @@ class WorkspaceService {
       workspaceId: workspace._id,
       userId,
       role: "OWNER",
+      lastUsedAt: new Date(),
     });
 
     return workspace.toObject();
@@ -117,6 +118,7 @@ class WorkspaceService {
       workspaceId: workspace._id,
       userId,
       role: "OWNER",
+      lastUsedAt: new Date(),
     });
 
     return workspace.toObject();
@@ -164,8 +166,11 @@ class WorkspaceService {
     const roleByWorkspace = new Map(
       memberships.map((m) => [m.workspaceId.toString(), m.role]),
     );
+    const usedByWorkspace = new Map(
+      memberships.map((m) => [m.workspaceId.toString(), m.lastUsedAt ?? null]),
+    );
 
-    return workspaces.map((ws) => {
+    const rows = workspaces.map((ws) => {
       const id = ws._id.toString();
       return {
         id,
@@ -176,8 +181,28 @@ class WorkspaceService {
         memberCount: membersByWorkspace.get(id) ?? 0,
         projectCount: projectsByWorkspace.get(id) ?? 0,
         createdAt: ws.createdAt,
+        lastUsedAt: usedByWorkspace.get(id) ?? null,
       };
     });
+    // The ones this person opened most recently first; never-opened ones keep the order they were created in.
+    return rows.sort((a, b) => {
+      const at = a.lastUsedAt ? new Date(a.lastUsedAt).getTime() : -1;
+      const bt = b.lastUsedAt ? new Date(b.lastUsedAt).getTime() : -1;
+      if (at !== bt) return bt - at;
+      return (
+        new Date(a.createdAt as Date).getTime() -
+        new Date(b.createdAt as Date).getTime()
+      );
+    });
+  }
+
+  /** Records that this person just opened the workspace (for the "recent" list in the switcher). */
+  public async markUsed(userId: string, workspaceId: string): Promise<void> {
+    await this.assertMembership(userId, workspaceId);
+    await WorkspaceMemberModel.updateOne(
+      { workspaceId, userId },
+      { $set: { lastUsedAt: new Date() } },
+    );
   }
 
   public async getWorkspaceDetails(userId: string, workspaceId: string) {

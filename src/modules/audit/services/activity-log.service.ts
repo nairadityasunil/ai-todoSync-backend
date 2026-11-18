@@ -28,7 +28,8 @@ interface GetActivitiesOptions {
   page?: number;
   entityType?: EntityType;
   /** Only these records (e.g. a task and its sub-tasks). */
-  entityIds?: string[];
+  /** Only the history of one task, epic or project. */
+  entityId?: string;
   userId?: string;
   /** "agent": only changes made by an agent; "person": only changes made directly. */
   actor?: "agent" | "person";
@@ -205,7 +206,7 @@ class ActivityLogService {
     if (entityType) {
       filter.entityType = entityType;
     }
-    if (options.entityIds?.length) filter.entityId = { $in: options.entityIds };
+    if (options.entityId) filter.entityId = options.entityId;
     if (options.userId) filter.userId = options.userId;
     if (options.actor === "agent") filter["metadata.agent"] = { $exists: true };
     if (options.actor === "person")

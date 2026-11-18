@@ -4,7 +4,7 @@ import { EmailService } from "../../../shared/services/email.service.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectModel from "../../project/models/project.model.js";
 import TaskModel from "../models/task.model.js";
-import { buildAssignmentEmail } from "./task-assignment-mail.js";
+import { escapeHtml } from "../../email-templates/email-template.service.js";
 
 /**
  * Emails a person when another member assigns them a task. Never the person who made the
@@ -34,25 +34,31 @@ export async function emailAssignee(opts: {
           .lean()
       : [];
     const base = env.FRONTEND_BASE_URL.replace(/\/$/, "");
-    const mail = buildAssignmentEmail({
-      assigneeName: assignee.name || assignee.email,
-      assignerName: assigner?.name || assigner?.email || "Someone",
-      projectName: projects.length === 1 ? projects[0].name : null,
-      tasks: tasks.map((t) => ({
-        title: t.title,
-        priority: t.priority,
-        dueDate: t.date ? String(t.date).slice(0, 10) : null,
-        link: t.projectId
+    const where = projects.length === 1 ? ` in ${projects[0].name}` : "";
+    const many = tasks.length > 1;
+    const items = tasks
+      .map((t) => {
+        const link = t.projectId
           ? `${base}/projects/${t.projectId}?task=${t._id}`
-          : `${base}/dashboard`,
-      })),
+          : `${base}/dashboard`;
+        const priority = t.priority
+          ? ` <span style="color:#52635c">&middot; ${escapeHtml(String(t.priority).toLowerCase())} priority</span>`
+          : "";
+        const due = t.date
+          ? ` <span style="color:#52635c">&middot; due ${escapeHtml(String(t.date).slice(0, 10))}</span>`
+          : "";
+        return `<li style="margin-bottom:10px"><a href="${escapeHtml(link)}" style="color:#1c2d27;font-weight:700;text-decoration:none">${escapeHtml(t.title)}</a>${priority}${due}</li>`;
+      })
+      .join("");
+    await EmailService.sendTemplate(assignee.email, "TASK_ASSIGNED", {
+      assigneeName: assignee.name || assignee.email,
+      inviterName: assigner?.name || assigner?.email || "Someone",
+      taskWord: many ? `${tasks.length} tasks` : "a task",
+      inProject: where,
+      projectName: projects.length === 1 ? projects[0].name : "",
+      taskCount: String(tasks.length),
+      taskListHtml: `<ul style="padding-left:18px;margin:0">${items}</ul>`,
     });
-    await EmailService.sendEmail(
-      assignee.email,
-      mail.subject,
-      mail.text,
-      mail.html,
-    );
   } catch (error) {
     logger.warn("Could not email a task assignee", {
       message: error instanceof Error ? error.message : String(error),

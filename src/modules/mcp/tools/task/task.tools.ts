@@ -150,7 +150,10 @@ toolRegistry.register({
     const overdue = tasks
       .filter(
         (t) =>
-          t.date < today && t.status !== "DONE" && t.status !== "rolled_over",
+          t.date &&
+          t.date < today &&
+          t.status !== "DONE" &&
+          t.status !== "rolled_over",
       )
       .slice(0, limit);
     return { tasks: overdue, total: overdue.length };
@@ -259,12 +262,12 @@ toolRegistry.register({
 toolRegistry.register({
   name: "task:create",
   description:
-    "Create a new task for the authenticated user. Applies SLA fields, priority engine, and analytics tracking. Requires title and date. Optional: description, priority, status, projectId, epicId, subtasks, assignedTo.",
+    "Create a new task for the authenticated user. Applies SLA fields, priority engine, and analytics tracking. Requires a title. Optional: dueDate as date (YYYY-MM-DD; leave it out for no due date), description, priority, status, projectId, epicId, subtasks, assignedTo.",
   domain: "task",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["title", "date"],
+    required: ["title"],
     properties: {
       title: { type: "string", minLength: 1, maxLength: 500 },
       description: { type: "string", maxLength: 5000 },

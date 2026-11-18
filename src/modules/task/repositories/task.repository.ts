@@ -21,7 +21,7 @@ export interface CreateTaskPayload {
   title: string;
   description?: string;
   note?: string;
-  date: string;
+  date?: string | null;
   status?: TaskStatus;
   priority?: TaskPriority;
   basePriority?: TaskPriority;
@@ -57,7 +57,7 @@ export interface UpdateTaskPayload {
   title?: string;
   description?: string;
   note?: string;
-  date?: string;
+  date?: string | null;
   status?: TaskStatus;
   priority?: TaskPriority;
   basePriority?: TaskPriority;
@@ -147,7 +147,7 @@ export const getTasksByUser = async (
 
   return TaskModel.find(filter)
     .populate(taskPopulateOptions)
-    .sort({ date: 1, _id: 1 })
+    .sort({ date: -1, _id: 1 })
     .exec();
 };
 
@@ -229,25 +229,6 @@ export const getTasksByDate = async (
     .populate(taskPopulateOptions)
     .sort({ status: 1, _id: 1 })
     .exec();
-};
-
-export const getPendingTasksByDate = async (
-  date: string,
-): Promise<ITaskDocument[]> =>
-  TaskModel.find({
-    date,
-    status: { $in: ["BACKLOG", "TODO", "IN_PROGRESS", "IN_REVIEW", "BLOCKED"] },
-  }).exec();
-
-export const markTasksRolledOver = async (taskIds: string[]): Promise<void> => {
-  if (!taskIds.length) {
-    return;
-  }
-
-  await TaskModel.updateMany(
-    { _id: { $in: taskIds } },
-    { status: "rolled_over", rolledOver: true },
-  ).exec();
 };
 
 export const clearTaskAssignmentsForUser = async (

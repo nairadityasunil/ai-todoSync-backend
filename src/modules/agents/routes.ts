@@ -99,7 +99,11 @@ class AgentRoutes implements Routes {
     this.router.post("/playbook-runs/:runId/continue", a.continueRun);
     this.router.post("/playbook-runs/:runId/cancel", a.cancelRun);
 
-    this.router.get("/classification", a.getClassification);
+    this.router.get(
+      "/classification/projects/:projectId",
+      a.getProjectClassification,
+    );
+    this.router.get("/classification/tasks/:taskId", a.getTaskClassification);
     this.router.put("/classification", a.setClassification);
     this.router.post("/key-lifecycle/run", a.runKeyLifecycle);
 

@@ -53,13 +53,11 @@ ok((await login(`victim-${s}@example.com`, 'Password123!')).status === 200, 'the
 
 // Safety rules
 ok((await call(adminTok, 'POST', `/admin/users/${adminId}/suspend`, {})).status === 409, 'you cannot suspend yourself');
-ok((await call(adminTok, 'POST', `/admin/users/${adminId}/remove-super-admin`)).status === 409, 'you cannot remove your own super admin access');
+ok((await call(adminTok, 'POST', `/admin/users/${adminId}/remove-super-admin`)).status === 404, 'there is no way to remove super admin access from the panel');
 ok((await call(adminTok, 'DELETE', `/admin/users/${adminId}`, { confirmEmail: `sadmin-${s}@example.com` })).status === 409, 'you cannot delete yourself');
-r = await call(adminTok, 'POST', `/admin/users/${plainId}/make-super-admin`); ok(r.status === 200 && r.j.data.isSuperAdmin === true, 'promote a second super admin');
-ok((await call(userTok, 'GET', '/admin/users')).status === 200, 'the promoted person gets in at once');
-ok((await call(userTok, 'POST', `/admin/users/${adminId}/remove-super-admin`)).status === 200, 'a super admin can demote another');
-ok((await call(adminTok, 'GET', '/admin/users')).status === 403, 'the demoted person loses access at once');
-ok((await call(userTok, 'POST', `/admin/users/${adminId}/make-super-admin`)).status === 200, 'the other super admin restores their access');
+ok((await call(adminTok, 'POST', `/admin/users/${plainId}/make-super-admin`)).status === 404, 'nobody can be made a super admin from the panel');
+r = await call(adminTok, 'POST', '/admin/users', { email: `created-${s}@example.com`, name: 'Created', superAdmin: true });
+ok(r.status === 201 && r.j.data.user.isSuperAdmin === false, 'an account created in the panel is never a super admin, even if asked');
 
 // Reset password, 2FA, sign out
 const victimTok2 = (await login(`victim-${s}@example.com`, 'Password123!')).j.data.token;

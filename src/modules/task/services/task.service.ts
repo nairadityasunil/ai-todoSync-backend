@@ -108,7 +108,7 @@ interface TaskDto {
   notes: TaskNoteDto[];
   /** The project workflow state the task is in, if the project has states. */
   stateId: string | null;
-  date: string;
+  date: string | null;
   status: TaskStatus;
   priority: TaskPriority;
   basePriority: TaskPriority;
@@ -267,14 +267,11 @@ class TaskService {
   }
 
   public async createTask(payload: CreateTaskPayload): Promise<TaskDto> {
-    if (
-      payload.title == null ||
-      payload.title === "" ||
-      payload.date == null ||
-      payload.date === ""
-    ) {
-      throw new HttpError(400, "Title and date are required");
+    if (payload.title == null || payload.title === "") {
+      throw new HttpError(400, "Title is required");
     }
+    // The due date is optional: none given means the task has no due date.
+    payload.date = this.parseDueDate(payload.date);
     if (String(payload.title).trim().length > MAX_TASK_TITLE_LENGTH) {
       throw new HttpError(
         400,
@@ -401,7 +398,38 @@ class TaskService {
           search,
         )
       : await getTasksByUser(userId, projectIds, assigneeId, search);
-    return tasks.map((task) => this.toDto(userId, task, roleMap));
+    return this.withoutDuplicatedRolloverOriginals(tasks).map((task) =>
+      this.toDto(userId, task, roleMap),
+    );
+  }
+
+  /**
+   * An old nightly rollover marked a task "rolled_over" and copied it to the next day. Where that copy exists the
+   * original is a duplicate and is left out; where it does not (the copy was never made) the original is the only
+   * copy of the task, so it stays in the list. A task is never hidden just for carrying that mark.
+   */
+  private withoutDuplicatedRolloverOriginals<
+    T extends {
+      status: string;
+      userId?: unknown;
+      projectId?: unknown;
+      title: string;
+      rolloverCount?: number;
+    },
+  >(tasks: T[]): T[] {
+    if (!tasks.some((task) => task.status === "rolled_over")) return tasks;
+    const key = (task: T, count: number): string =>
+      `${String(task.userId)}|${String(task.projectId ?? "")}|${task.title}|${count}`;
+    const live = new Set(
+      tasks
+        .filter((task) => task.status !== "rolled_over")
+        .map((task) => key(task, task.rolloverCount ?? 0)),
+    );
+    return tasks.filter(
+      (task) =>
+        task.status !== "rolled_over" ||
+        !live.has(key(task, (task.rolloverCount ?? 0) + 1)),
+    );
   }
 
   public async getTasksAssignedToMe(userId: string): Promise<TaskDto[]> {
@@ -489,6 +517,10 @@ class TaskService {
           "Assigned members can only update status, notes, and subtasks",
         );
       }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, "date")) {
+      updates.date = this.parseDueDate(updates.date);
     }
 
     if (Object.prototype.hasOwnProperty.call(updates, "projectId")) {
@@ -994,7 +1026,7 @@ class TaskService {
       note: task.note,
       notes: this.toNoteDtos(task),
       stateId: task.stateId ? String(task.stateId) : null,
-      date: task.date,
+      date: task.date ?? null,
       status: this.normalizeStoredTaskStatus(task.status),
       priority: task.priority || "MEDIUM",
       basePriority: task.basePriority || task.priority || "MEDIUM",
@@ -1378,6 +1410,8 @@ class TaskService {
     const s = status.toUpperCase();
     if (s === "DONE" || s === "COMPLETED") return "DONE";
     if (s === "PENDING") return "TODO";
+    // A task an old rollover marked and never copied: show it as an ordinary open task.
+    if (s === "ROLLED_OVER") return "TODO";
     return s as TaskStatus;
   }
 
@@ -1634,6 +1668,16 @@ class TaskService {
 
     const id = value.trim();
     return id === "" || id === "null" || id === "undefined" ? null : id;
+  }
+
+  /** A due date as YYYY-MM-DD, or null for "no due date" (missing, null or empty). Anything else is a 400. */
+  private parseDueDate(value: unknown): string | null {
+    if (value == null || (typeof value === "string" && value.trim() === ""))
+      return null;
+    const date = this.normalizeDate(value);
+    if (!date)
+      throw new HttpError(400, "The due date must look like 2026-11-30");
+    return date;
   }
 
   private normalizeDate(value: unknown): string | undefined {
