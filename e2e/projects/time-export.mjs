@@ -1,0 +1,33 @@
+// The time range endpoint behind the timesheet export: own time for members, everyone for admins, bounded range.
+import mongoose from 'mongoose';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+const reg = async (n) => { await call(null, 'POST', '/auth/register', { email: `${n}-${s}@example.com`, password: 'Password123!', name: n }); return (await call(null, 'POST', '/auth/login', { email: `${n}-${s}@example.com`, password: 'Password123!' })).j.data; };
+const boss = await reg('te-boss'), mate = await reg('te-mate'), out = await reg('te-out');
+const p = (await call(boss.token, 'POST', '/projects', { name: 'Export ' + s })).j.data.project;
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' });
+const mateId = String((await mongoose.connection.db.collection('users').findOne({ email: `te-mate-${s}@example.com` }))._id);
+const pw = (await mongoose.connection.db.collection('projects').findOne({ _id: new mongoose.Types.ObjectId(p.id) })).workspaceId;
+await mongoose.connection.db.collection('workspacemembers').updateOne({ userId: new mongoose.Types.ObjectId(mateId), workspaceId: pw }, { $setOnInsert: { userId: new mongoose.Types.ObjectId(mateId), workspaceId: pw, role: 'MEMBER', createdAt: new Date(), updatedAt: new Date() } }, { upsert: true });
+console.log('add mate', (await call(boss.token, 'POST', `/projects/${p.id}/members`, { userId: mateId })).status);
+const t = (await call(boss.token, 'POST', '/tasks', { title: 'Export task', date: '2026-11-18', projectId: p.id })).j.data.task;
+for (const [tok, date, minutes, note] of [[boss.token, '2026-10-01', 60, 'a'], [boss.token, '2026-10-15', 90, '=SUM(1,1)'], [boss.token, '2026-11-02', 30, 'late'], [mate.token, '2026-10-10', 45, 'mate']])
+  await call(tok, 'POST', `/projects/${p.id}/time/entries`, { date, minutes, note, taskId: t?.id });
+const R = (tok, q) => call(tok, 'GET', `/projects/${p.id}/time/range?${q}`);
+let r = await R(boss.token, 'from=2026-10-01&to=2026-10-31');
+ok(r.status === 200 && r.j.data.entries.length === 2 && r.j.data.scope === 'me', 'an admin gets their own entries in the range by default, ends included');
+r = await R(boss.token, 'from=2026-10-01&to=2026-11-30&scope=all');
+ok(r.j.data.entries.length === 4 && r.j.data.entries.some((e) => e.userName.startsWith('te-mate')), 'scope=all returns everyone, with names');
+ok(r.j.data.entries.every((e) => e.taskTitle === 'Export task'), 'task titles come with the entries');
+r = await R(mate.token, 'from=2026-10-01&to=2026-11-30');
+ok(r.j.data.entries.length === 1 && r.j.data.entries[0].note === 'mate', 'a member only gets their own time');
+ok((await R(mate.token, 'from=2026-10-01&to=2026-11-30&scope=all')).status === 403, 'a member cannot ask for everyone');
+ok((await R(out.token, 'from=2026-10-01&to=2026-11-30')).status === 403 || (await R(out.token, 'from=2026-10-01&to=2026-11-30')).status === 404, 'a non-member is refused');
+ok((await R(boss.token, 'from=2026-11-30&to=2026-10-01')).status === 400, 'an end before the start is rejected');
+ok((await R(boss.token, 'from=2020-01-01&to=2026-10-01')).status === 400, 'more than a year is rejected');
+ok((await R(boss.token, 'from=nope&to=2026-10-01')).status === 400, 'a bad date is rejected');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);
