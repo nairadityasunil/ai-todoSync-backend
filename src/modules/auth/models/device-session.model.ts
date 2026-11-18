@@ -1,5 +1,6 @@
 import type { Document, Types } from "mongoose";
 import { Schema, model } from "mongoose";
+import { clearAuthCache } from "../../../middleware/auth-cache.js";
 
 export type SessionDeviceKind = "primary" | "companion";
 
@@ -85,7 +86,24 @@ const deviceSessionSchema = new Schema<IDeviceSessionDocument>(
 
 deviceSessionSchema.index({ userId: 1, deviceType: 1, createdAt: -1 });
 deviceSessionSchema.index({ deviceId: 1, revokedAt: 1 });
+// Revoking or listing a person's live sessions, and who was active recently (admin analytics).
+deviceSessionSchema.index({ userId: 1, revokedAt: 1, expiresAt: 1 });
+deviceSessionSchema.index({ lastUsedAt: -1, userId: 1 });
 deviceSessionSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+// Any change to a session (sign out, refresh, revoke) invalidates the short auth memory (see middleware/auth-cache.ts).
+for (const op of [
+  "save",
+  "updateOne",
+  "updateMany",
+  "findOneAndUpdate",
+  "findOneAndDelete",
+  "deleteOne",
+  "deleteMany",
+  "replaceOne",
+] as const) {
+  deviceSessionSchema.post(op as never, clearAuthCache as never);
+}
 
 const DeviceSessionModel = model<IDeviceSessionDocument>(
   "DeviceSession",

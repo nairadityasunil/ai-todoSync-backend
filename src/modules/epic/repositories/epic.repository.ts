@@ -39,6 +39,14 @@ export const getEpicsByProject = async (
     .sort({ order: 1, _id: 1 })
     .exec();
 
+/** Epics of several projects at once, each project's epics in their order. */
+export const getEpicsByProjects = async (
+  projectIds: string[],
+): Promise<IEpicDocument[]> =>
+  EpicModel.find({ projectId: { $in: projectIds } })
+    .sort({ projectId: 1, order: 1, _id: 1 })
+    .exec();
+
 export const getEpicById = async (
   epicId: string,
 ): Promise<IEpicDocument | null> => EpicModel.findById(epicId).exec();

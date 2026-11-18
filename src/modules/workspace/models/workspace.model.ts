@@ -68,6 +68,7 @@ const workspaceSchema = new Schema<IWorkspaceDocument>(
 
 workspaceSchema.index({ ownerId: 1 });
 workspaceSchema.index({ slug: 1 }, { unique: true });
+workspaceSchema.index({ createdAt: -1 });
 
 const WorkspaceModel = model<IWorkspaceDocument>("Workspace", workspaceSchema);
 

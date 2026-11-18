@@ -30,6 +30,7 @@ import {
   type ProjectFeature,
   type ProjectPermissions,
 } from "../project-permissions.js";
+import { requestMemo } from "../../agents/request-context.js";
 import { clearTaskAssignmentsForUser } from "../../task/repositories/task.repository.js";
 import { runInTransaction } from "../../../utils/transaction.js";
 import { ensureDefaultWorkflow } from "../default-workflow.js";
@@ -497,7 +498,17 @@ class ProjectService {
     }));
   }
 
-  public async getProjectAccess(
+  public getProjectAccess(
+    userId: string,
+    projectId: string,
+  ): Promise<ProjectAccess> {
+    // The route middleware and the service behind it both check access: do it once per request.
+    return requestMemo(`project-access:${userId}:${projectId}`, () =>
+      this.loadProjectAccess(userId, projectId),
+    );
+  }
+
+  private async loadProjectAccess(
     userId: string,
     projectId: string,
   ): Promise<ProjectAccess> {

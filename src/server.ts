@@ -6,6 +6,7 @@ import SyncRoutes from "./modules/sync/routes/sync.routes.js";
 import ProjectRoutes from "./modules/project/routes/project.routes.js";
 import NoteRoutes from "./modules/note/routes/note.routes.js";
 import EpicRoutes from "./modules/epic/routes/epic.routes.js";
+import EpicBatchRoutes from "./modules/epic/routes/epic-batch.routes.js";
 import UserRoutes from "./modules/auth/routes/users.routes.js";
 import ChatRoutes from "./modules/chat/routes/chat.routes.js";
 import ActivityHistoryRoutes from "./modules/audit/routes/activity-log.routes.js";
@@ -71,6 +72,7 @@ const server = new App([
   new ProjectRoutes(),
   new UserRoutes(),
   new EpicRoutes(),
+  new EpicBatchRoutes(),
   new NoteRoutes(),
   new SyncRoutes(),
   new ChatRoutes(),

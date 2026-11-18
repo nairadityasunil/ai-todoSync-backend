@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import type { Document } from "mongoose";
 import { Schema, model } from "mongoose";
+import { clearAuthCache } from "../../../middleware/auth-cache.js";
 import { encrypt, decrypt } from "../../../utils/encryption.js";
 
 export interface IUser {
@@ -149,6 +150,24 @@ const userSchema = new Schema<IUserDocument>(
     toObject: { getters: true },
   },
 );
+
+// Newest first in the admin people list, and platform admins.
+userSchema.index({ createdAt: -1 });
+userSchema.index({ platformRole: 1 }, { sparse: true });
+
+// Any change to a person invalidates the short auth memory (see middleware/auth-cache.ts).
+for (const op of [
+  "save",
+  "updateOne",
+  "updateMany",
+  "findOneAndUpdate",
+  "findOneAndDelete",
+  "deleteOne",
+  "deleteMany",
+  "replaceOne",
+] as const) {
+  userSchema.post(op as never, clearAuthCache as never);
+}
 
 userSchema.pre<IUserDocument>("save", async function () {
   if (!this.isModified("password") || this.password == null) {

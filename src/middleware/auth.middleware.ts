@@ -4,6 +4,13 @@ import logger from "../lib/logger.js";
 import type { IUserDocument } from "../modules/auth/models/user.model.js";
 import { findCompanionDeviceById } from "../modules/ai/repositories/companion-device.repository.js";
 import { findUserById } from "../modules/auth/repositories/auth.repository.js";
+import UserModel from "../modules/auth/models/user.model.js";
+import DeviceSessionModel from "../modules/auth/models/device-session.model.js";
+import {
+  authCacheEnabled,
+  getCachedAuth,
+  setCachedAuth,
+} from "./auth-cache.js";
 import agentService, {
   AgentAccessError,
   agentBlockReason,
@@ -77,10 +84,47 @@ export const resolveJwtAuth = async (
     }
 
     const now = new Date();
-    const [user, session] = await Promise.all([
-      findUserById(userId),
-      findActiveDeviceSessionById(sessionId, now),
-    ]);
+    const cacheKey = `${userId}:${sessionId}`;
+    let user: IUserDocument | null = null;
+    let session: IDeviceSessionDocument | null = null;
+    const hit = authCacheEnabled() ? getCachedAuth(cacheKey) : undefined;
+    if (hit) {
+      // Fresh document objects from the remembered data: no database read.
+      user = UserModel.hydrate(hit.user) as IUserDocument;
+      session = DeviceSessionModel.hydrate(
+        hit.session,
+      ) as IDeviceSessionDocument;
+    } else if (authCacheEnabled()) {
+      const [userRaw, sessionRaw] = await Promise.all([
+        UserModel.findById(userId).lean().exec(),
+        DeviceSessionModel.findOne({
+          _id: sessionId,
+          revokedAt: null,
+          expiresAt: { $gt: now },
+        })
+          .lean()
+          .exec(),
+      ]);
+      if (userRaw != null && sessionRaw != null) {
+        user = UserModel.hydrate(userRaw) as IUserDocument;
+        session = DeviceSessionModel.hydrate(
+          sessionRaw,
+        ) as IDeviceSessionDocument;
+        // Companion devices are checked against their device record every time, so they are not remembered.
+        if (sessionRaw.deviceType !== "companion") {
+          setCachedAuth(
+            cacheKey,
+            userRaw as unknown as Record<string, unknown>,
+            sessionRaw as unknown as Record<string, unknown>,
+          );
+        }
+      }
+    } else {
+      [user, session] = await Promise.all([
+        findUserById(userId),
+        findActiveDeviceSessionById(sessionId, now),
+      ]);
+    }
 
     if (user == null || session == null) {
       return null;
@@ -201,6 +245,7 @@ const contextFor = (req: Request, userId: string) => {
   return {
     userId,
     projectId: typeof projectId === "string" ? projectId : null,
+    memo: new Map<string, Promise<unknown>>(),
   };
 };
 
