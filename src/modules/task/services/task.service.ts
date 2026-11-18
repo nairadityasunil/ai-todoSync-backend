@@ -26,6 +26,7 @@ import epicService from "../../epic/services/epic.service.js";
 import chatSocketServer from "../../../socket/chat.socket.js";
 import { emailAssignee } from "./task-assignment-mail.service.js";
 import TaskModel from "../models/task.model.js";
+import ProjectModel from "../../project/models/project.model.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
 import {
@@ -60,6 +61,7 @@ const UPDATABLE_TASK_FIELDS = new Set([
   "assignedTo",
   "subtasks",
   "estimatedHours",
+  "stateId",
 ]);
 
 interface TaskUserDto {
@@ -103,6 +105,8 @@ interface TaskDto {
   note?: string;
   /** Every note on the task, oldest first. A single older `note` shows as one note. */
   notes: TaskNoteDto[];
+  /** The project workflow state the task is in, if the project has states. */
+  stateId: string | null;
   date: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -166,7 +170,95 @@ class HttpError extends Error {
 
 export const MAX_TASK_TITLE_LENGTH = 300;
 
+/** A workflow state's category decides which built-in status a task gets, so SLA and analytics keep working. */
+const STATE_CATEGORY_STATUS: Record<string, string> = {
+  BACKLOG: "BACKLOG",
+  UNSTARTED: "TODO",
+  STARTED: "IN_PROGRESS",
+  COMPLETED: "DONE",
+  CANCELED: "DONE",
+};
+const STATUS_STATE_CATEGORY: Record<string, string> = {
+  BACKLOG: "BACKLOG",
+  TODO: "UNSTARTED",
+  IN_PROGRESS: "STARTED",
+  IN_REVIEW: "STARTED",
+  BLOCKED: "STARTED",
+  DONE: "COMPLETED",
+};
+
+interface WorkflowStateLite {
+  _id?: unknown;
+  category: string;
+  position?: number;
+}
+
 class TaskService {
+  private async projectStates(
+    projectId: string | null,
+  ): Promise<WorkflowStateLite[]> {
+    if (!projectId || !mongoose.Types.ObjectId.isValid(projectId)) return [];
+    const project = await ProjectModel.findById(projectId)
+      .select("states")
+      .lean();
+    return ((project?.states ?? []) as WorkflowStateLite[])
+      .slice()
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+  }
+
+  /**
+   * Keeps a task's workflow state and its built-in status in step. Picking a state sets the status from the
+   * state's category; changing the status picks the project's first state of the matching category.
+   */
+  private async applyWorkflowState(
+    projectId: string | null,
+    fields: { status?: string; stateId?: unknown; projectChanged?: boolean },
+  ): Promise<{ status?: string; stateId?: string | null }> {
+    const out: { status?: string; stateId?: string | null } = {};
+    if (!projectId) {
+      if (fields.stateId !== undefined || fields.projectChanged)
+        out.stateId = null;
+      return out;
+    }
+    const states = await this.projectStates(projectId);
+    if (
+      fields.stateId !== undefined &&
+      fields.stateId !== null &&
+      fields.stateId !== ""
+    ) {
+      const state = states.find(
+        (s) => String(s._id) === String(fields.stateId),
+      );
+      if (!state)
+        throw new HttpError(400, "That workflow state is not in this project");
+      out.stateId = String(state._id);
+      out.status = STATE_CATEGORY_STATUS[state.category] ?? "TODO";
+      return out;
+    }
+    if (fields.stateId === null || fields.stateId === "") {
+      out.stateId = null;
+      return out;
+    }
+    if (
+      (fields.status !== undefined || fields.projectChanged) &&
+      states.length
+    ) {
+      const category =
+        STATUS_STATE_CATEGORY[fields.status ?? "TODO"] ?? "UNSTARTED";
+      // No state of that kind? Use the nearest column: open work goes to the first one, finished work to the last.
+      const match =
+        states.find((s) => s.category === category) ??
+        (category === "COMPLETED"
+          ? (states.find((s) => s.category === "CANCELED") ??
+            states[states.length - 1])
+          : states[0]);
+      out.stateId = match ? String(match._id) : null;
+    } else if (fields.projectChanged) {
+      out.stateId = null;
+    }
+    return out;
+  }
+
   public async createTask(payload: CreateTaskPayload): Promise<TaskDto> {
     if (
       payload.title == null ||
@@ -207,6 +299,16 @@ class TaskService {
 
     if (payload.status != null) {
       payload.status = this.normalizeTaskStatus(payload.status);
+    }
+
+    {
+      const wf = await this.applyWorkflowState(payload.projectId ?? null, {
+        status: payload.status ?? "TODO",
+        stateId: (payload as { stateId?: unknown }).stateId,
+      });
+      if (wf.status !== undefined)
+        payload.status = wf.status as typeof payload.status;
+      (payload as { stateId?: string | null }).stateId = wf.stateId ?? null;
     }
 
     payload.subtasks = this.normalizeSubtasks(payload.subtasks);
@@ -439,6 +541,34 @@ class TaskService {
         else stored.pop();
         (updates as Record<string, unknown>).notes = stored;
         updates.note = stored.length ? stored[stored.length - 1].text : "";
+      }
+    }
+
+    {
+      const has = (k: string) =>
+        Object.prototype.hasOwnProperty.call(updates, k);
+      const nextProject = has("projectId")
+        ? ((updates.projectId as string | null) ?? null)
+        : (currentTask.projectId?.toString() ?? null);
+      const projectChanged =
+        has("projectId") &&
+        nextProject !== (currentTask.projectId?.toString() ?? null);
+      if (has("stateId") || has("status") || projectChanged) {
+        const wf = await this.applyWorkflowState(nextProject, {
+          status: has("status")
+            ? (updates.status as string)
+            : projectChanged
+              ? this.normalizeStoredTaskStatus(currentTask.status)
+              : undefined,
+          stateId: has("stateId")
+            ? (updates as { stateId?: unknown }).stateId
+            : undefined,
+          projectChanged,
+        });
+        if (wf.status !== undefined)
+          updates.status = wf.status as typeof updates.status;
+        if (wf.stateId !== undefined)
+          (updates as { stateId?: string | null }).stateId = wf.stateId;
       }
     }
 
@@ -856,6 +986,7 @@ class TaskService {
       description: task.description,
       note: task.note,
       notes: this.toNoteDtos(task),
+      stateId: task.stateId ? String(task.stateId) : null,
       date: task.date,
       status: this.normalizeStoredTaskStatus(task.status),
       priority: task.priority || "MEDIUM",

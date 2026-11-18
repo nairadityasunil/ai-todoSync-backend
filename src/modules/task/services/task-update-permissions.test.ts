@@ -5,6 +5,7 @@ import { Types } from "mongoose";
 import taskService from "./task.service.js";
 import TaskModel from "../models/task.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
+import ProjectModel from "../../project/models/project.model.js";
 import slaService from "./sla.service.js";
 import priorityEngineService from "./priority-engine.service.js";
 
@@ -15,8 +16,10 @@ const query = (result: unknown) => {
     select: () => chain,
     lean: () => chain,
     exec: async () => result,
-    then: (resolve: (value: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-      Promise.resolve(result).then(resolve, reject),
+    then: (
+      resolve: (value: unknown) => unknown,
+      reject?: (e: unknown) => unknown,
+    ) => Promise.resolve(result).then(resolve, reject),
   };
   return chain as any;
 };
@@ -39,18 +42,38 @@ const makeTask = () => ({
 
 let lastUpdate: Record<string, unknown> | null = null;
 
-const stubCommon = (task: ReturnType<typeof makeTask>, role: "ADMIN" | "MEMBER") => {
+const stubCommon = (
+  task: ReturnType<typeof makeTask>,
+  role: "ADMIN" | "MEMBER",
+) => {
   mock.method(ProjectMemberModel, "find", () =>
     query([{ projectId, userId: memberId, role }]),
   );
+  mock.method(ProjectModel, "findById", () => query({ states: [] }));
   mock.method(TaskModel, "findOne", () => query(task));
-  mock.method(TaskModel, "findByIdAndUpdate", (_id: unknown, update: Record<string, unknown>) => {
-    lastUpdate = update;
-    return query({ ...task, ...update });
-  });
-  mock.method(slaService, "applyPriorityChange", async (_u: unknown, _t: unknown, u: unknown) => u);
-  mock.method(slaService, "applyStatusTransition", (_t: unknown, u: unknown) => u);
-  mock.method(priorityEngineService, "evaluateAndPersist", async () => undefined);
+  mock.method(
+    TaskModel,
+    "findByIdAndUpdate",
+    (_id: unknown, update: Record<string, unknown>) => {
+      lastUpdate = update;
+      return query({ ...task, ...update });
+    },
+  );
+  mock.method(
+    slaService,
+    "applyPriorityChange",
+    async (_u: unknown, _t: unknown, u: unknown) => u,
+  );
+  mock.method(
+    slaService,
+    "applyStatusTransition",
+    (_t: unknown, u: unknown) => u,
+  );
+  mock.method(
+    priorityEngineService,
+    "evaluateAndPersist",
+    async () => undefined,
+  );
 };
 
 afterEach(() => {

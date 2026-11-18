@@ -45,6 +45,8 @@ export interface ITask {
   title: string;
   description?: string;
   note?: string;
+  /** The project workflow state the task is in (when the project defines states). `status` follows its category. */
+  stateId?: Types.ObjectId | string | null;
   /** Several notes per task. `note` stays as the text of the newest one, for older readers. */
   notes?: ITaskNote[];
   date: string;
@@ -143,6 +145,7 @@ const taskSchema = new Schema<ITaskDocument>(
       type: String,
       default: "",
     },
+    stateId: { type: Schema.Types.ObjectId, default: null },
     notes: {
       type: [
         new Schema(
