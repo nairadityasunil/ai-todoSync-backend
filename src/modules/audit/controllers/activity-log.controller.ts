@@ -24,9 +24,9 @@ class ActivityLogController {
         limit: limitStr ? parseInt(limitStr, 10) : 50,
         page: pageStr ? parseInt(pageStr, 10) : 1,
         entityType: entityTypeStr as EntityType | undefined,
-        entityIds:
-          typeof req.query.entityIds === "string"
-            ? req.query.entityIds.split(",").filter(Boolean).slice(0, 200)
+        entityId:
+          typeof req.query.entityId === "string" && req.query.entityId.trim()
+            ? req.query.entityId.trim()
             : undefined,
         userId:
           typeof req.query.userId === "string" ? req.query.userId : undefined,

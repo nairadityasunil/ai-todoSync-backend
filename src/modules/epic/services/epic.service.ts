@@ -75,20 +75,20 @@ class EpicService {
   }
 
   /**
-   * The epics of several projects in one go (the dashboard shows a page of projects). Projects the person is
-   * not in are left out rather than refused, so one stale id cannot break the whole page.
+   * The epics of every project the person belongs to, or of one project (`projectId`). The server knows the
+   * person's projects, so nothing needs to send a list of ids.
    */
-  public async fetchEpicsForProjects(
+  public async fetchMyEpics(
     userId: string,
-    projectIds: string[],
+    projectId?: string,
   ): Promise<EpicDto[]> {
-    const wanted = [
-      ...new Set(projectIds.filter((id) => /^[a-f0-9]{24}$/i.test(id))),
-    ].slice(0, 100);
-    if (wanted.length === 0) return [];
+    if (projectId) {
+      await projectService.assertProjectMembership(userId, projectId);
+      const epics = await getEpicsByProjects([projectId]);
+      return epics.map((epic) => this.toDto(epic));
+    }
     const memberships = await getProjectMembershipsByUser(userId);
-    const allowed = new Set(memberships.map((m) => m.projectId.toString()));
-    const ids = wanted.filter((id) => allowed.has(id));
+    const ids = memberships.map((m) => m.projectId.toString());
     if (ids.length === 0) return [];
     const epics = await getEpicsByProjects(ids);
     return epics.map((epic) => this.toDto(epic));

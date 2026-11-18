@@ -28,7 +28,7 @@ const calls = [
 ];
 // the dashboard fans out one epics request per project
 const epicsFanOut = async () => { const t = performance.now(); await Promise.all(projects.map((p) => get(`/projects/${p.id}/epics`))); return { ms: performance.now() - t, status: 200 }; };
-const epicsBatch = async () => { const t = performance.now(); await get(`/epics?projectIds=${projects.map((p) => p.id).join(',')}`); return { ms: performance.now() - t, status: 200 }; };
+const epicsBatch = async () => { const t = performance.now(); await get('/epics'); return { ms: performance.now() - t, status: 200 }; };
 const stat = (xs) => { const s = [...xs].sort((a, b) => a - b); return { p50: s[Math.floor(s.length / 2)], max: s[s.length - 1] }; };
 const rows = [];
 for (const [name, path] of calls) {
