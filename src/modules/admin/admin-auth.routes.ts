@@ -7,24 +7,13 @@ import { Routes } from "../../interfaces/routes.interface.js";
 import { findUserByEmail } from "../auth/repositories/auth.repository.js";
 import authService, { HttpError } from "../auth/services/auth.service.js";
 import type { IUserDocument } from "../auth/models/user.model.js";
-import type { AuthResult } from "../../types/auth.js";
+import { authBody } from "../auth/auth-cookies.js";
 import AdminAuditModel from "./admin-audit.model.js";
 import { isSuperAdmin } from "./super-admin.js";
 
 const GENERIC = "Invalid email or password.";
 // Checked when the account is not a platform admin, so the answer takes as long as a real password check.
 const DUMMY_HASH = bcrypt.hashSync("not-a-real-password", 10);
-
-const body = (result: AuthResult) => ({
-  token: result.token,
-  accessToken: result.accessToken,
-  refreshToken: result.refreshToken,
-  accessTokenExpiresIn: result.accessTokenExpiresIn,
-  refreshTokenExpiresIn: result.refreshTokenExpiresIn,
-  syncApiKey: result.syncApiKey,
-  user: result.user,
-  session: result.session,
-});
 
 const fail = (res: Response, error: unknown): void => {
   const status = error instanceof HttpError ? error.status : 500;
@@ -33,11 +22,9 @@ const fail = (res: Response, error: unknown): void => {
     res.status(401).json({ error: GENERIC });
     return;
   }
-  res
-    .status(status)
-    .json({
-      error: status === 500 ? "Sign-in failed." : (error as Error).message,
-    });
+  res.status(status).json({
+    error: status === 500 ? "Sign-in failed." : (error as Error).message,
+  });
 };
 
 /**
@@ -89,18 +76,17 @@ class AdminAuthRoutes implements Routes {
           },
         );
         if ("require2fa" in result) {
-          res
-            .status(202)
-            .json({
-              message: "2FA code required",
-              data: { require2fa: true, email: result.email },
-            });
+          res.status(202).json({
+            message: "2FA code required",
+            data: { require2fa: true, email: result.email },
+          });
           return;
         }
         await this.recordSignIn(user, req);
-        res
-          .status(200)
-          .json({ message: "Login successful", data: body(result) });
+        res.status(200).json({
+          message: "Login successful",
+          data: authBody(req, res, result),
+        });
       } catch (error) {
         fail(res, error);
       }
@@ -129,12 +115,10 @@ class AdminAuthRoutes implements Routes {
             userAgent: req.get("user-agent") ?? null,
           });
           await this.recordSignIn(user, req);
-          res
-            .status(200)
-            .json({
-              message: "2FA verification successful",
-              data: body(result),
-            });
+          res.status(200).json({
+            message: "2FA verification successful",
+            data: authBody(req, res, result),
+          });
         } catch (error) {
           fail(res, error);
         }
