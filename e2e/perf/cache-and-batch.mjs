@@ -31,13 +31,9 @@ await call(fourth.accessToken ?? fourth.token, 'GET', '/auth/me');
 const lo = await call(fourth.accessToken ?? fourth.token, 'POST', '/auth/logout', { refreshToken: fourth.refreshToken });
 if (lo.status === 200) ok((await call(fourth.accessToken ?? fourth.token, 'GET', '/auth/me')).status === 401, 'logging out ends the warm session at once');
 else console.log('  (logout endpoint answered', lo.status + '; skipped)');
-// Role change is picked up at once
-const p3 = await reg('cb-role'); const p3id = String((await db.collection('users').findOne({ email: `cb-role-${s}@example.com` }))._id);
+// Roles can no longer be changed from the panel (only by the seeder or the server setting), so there is no in-app change to catch.
+const p3 = await reg('cb-role');
 ok((await call(p3.token, 'GET', '/admin/users')).status === 403, 'a normal person is refused by the admin API');
-await call(bossTok, 'POST', `/admin/users/${p3id}/make-super-admin`);
-ok((await call(p3.token, 'GET', '/admin/users')).status === 200, 'promoting them works on their very next request');
-await call(bossTok, 'POST', `/admin/users/${p3id}/remove-super-admin`);
-ok((await call(p3.token, 'GET', '/admin/users')).status === 403, 'and so does taking it away');
 
 // Batch epics
 const A = (await call(bossTok, 'POST', '/projects', { name: 'Epics A ' + s })).j.data.project;

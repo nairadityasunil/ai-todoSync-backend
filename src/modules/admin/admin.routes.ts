@@ -73,18 +73,6 @@ class AdminRoutes implements Routes {
       handle((req) => users.reactivate(actorOf(req), param(req.params.id))),
     );
     r.post(
-      "/users/:id/make-super-admin",
-      handle((req) =>
-        users.setSuperAdmin(actorOf(req), param(req.params.id), true),
-      ),
-    );
-    r.post(
-      "/users/:id/remove-super-admin",
-      handle((req) =>
-        users.setSuperAdmin(actorOf(req), param(req.params.id), false),
-      ),
-    );
-    r.post(
       "/users/:id/reset-password",
       handle((req) => users.resetPassword(actorOf(req), param(req.params.id))),
     );
