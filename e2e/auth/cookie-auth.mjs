@@ -31,4 +31,9 @@ ok((await call('POST', '/auth/logout', { headers: { cookie: cookie2 } })).status
 const lo = await call('POST', '/auth/logout', { headers: { cookie: cookie2, origin: ORIGIN } });
 ok(lo.status === 200 && lo.setCookie.some((c) => c.startsWith('pristine_at=;')), 'logout clears the cookies');
 ok((await call('GET', '/auth/me', { headers: { cookie: cookie2, origin: ORIGIN } })).status === 401, 'the session is revoked on the server, not just forgotten');
+const sess = await call('POST', '/auth/login', { headers: { origin: ORIGIN, 'x-auth-mode': 'cookie' }, body: { email, password: 'Password123!', rememberMe: false } });
+const sat = sess.setCookie.find((c) => c.startsWith('pristine_at='));
+ok(sat && !/Max-Age|Expires/i.test(sat), 'without "remember me" the cookies last only until the browser closes');
+const keep = await call('POST', '/auth/login', { headers: { origin: ORIGIN, 'x-auth-mode': 'cookie' }, body: { email, password: 'Password123!', rememberMe: true } });
+ok(/Max-Age/i.test(keep.setCookie.find((c) => c.startsWith('pristine_at='))), 'with "remember me" they persist');
 console.log(fails ? `\n${fails} FAILED` : '\nall passed'); process.exit(fails ? 1 : 0);
