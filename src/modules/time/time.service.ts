@@ -158,6 +158,85 @@ class TimeService {
     };
   }
 
+  /**
+   * Every entry between two days (inclusive, at most a year), for exporting a timesheet. A member gets
+   * their own time; a project admin may ask for everyone (`scope: "all"`) or one person (`userId`).
+   */
+  public async getRange(
+    actorId: string,
+    projectId: string,
+    query: { from?: unknown; to?: unknown; scope?: unknown; userId?: unknown },
+  ): Promise<{
+    from: string;
+    to: string;
+    scope: "me" | "all";
+    entries: WeekResult["entries"];
+  }> {
+    const access = await projectService.assertProjectPermission(
+      actorId,
+      projectId,
+      "time",
+    );
+    const from = parseDay(query.from, "from");
+    const to = parseDay(query.to, "to");
+    if (to < from) throw new TimeError(400, "The end date is before the start");
+    if (addDays(from, 366) < to)
+      throw new TimeError(400, "Choose a range of one year or less");
+    const wantsOthers = query.scope === "all" || Boolean(query.userId);
+    if (wantsOthers && access.role !== "ADMIN")
+      throw new TimeError(
+        403,
+        "Only project admins can see other people's time",
+      );
+    const filter: Record<string, unknown> = {
+      projectId: new Types.ObjectId(projectId),
+      date: { $gte: from, $lte: to },
+    };
+    let scope: "me" | "all" = "me";
+    if (wantsOthers) {
+      if (query.userId) filter.userId = oid(query.userId, "userId");
+      else scope = "all";
+    } else {
+      filter.userId = new Types.ObjectId(actorId);
+    }
+    const entries = await TimeEntryModel.find(filter)
+      .sort({ date: 1, createdAt: 1 })
+      .limit(20000)
+      .lean();
+    const taskIds = [
+      ...new Set(entries.filter((e) => e.taskId).map((e) => String(e.taskId))),
+    ].map((id) => new Types.ObjectId(id));
+    const [tasks, members] = await Promise.all([
+      taskIds.length
+        ? TaskModel.find({ _id: { $in: taskIds } })
+            .select("title")
+            .lean()
+        : Promise.resolve([]),
+      projectService.fetchProjectMembers(actorId, projectId),
+    ]);
+    const names = new Map(
+      members.map((m) => [m.userId, m.user.name || m.user.email]),
+    );
+    const titles = new Map(tasks.map((t) => [String(t._id), t.title]));
+    return {
+      from,
+      to,
+      scope,
+      entries: entries.map((e) => ({
+        id: String(e._id),
+        userId: String(e.userId),
+        userName: names.get(String(e.userId)) ?? "Former member",
+        taskId: e.taskId ? String(e.taskId) : null,
+        taskTitle: e.taskId
+          ? (titles.get(String(e.taskId)) ?? "Deleted task")
+          : null,
+        date: e.date,
+        minutes: e.minutes,
+        note: e.note ?? "",
+      })),
+    };
+  }
+
   public async addEntry(
     actorId: string,
     projectId: string,

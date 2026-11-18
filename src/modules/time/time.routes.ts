@@ -49,6 +49,10 @@ class TimeRoutes implements Routes {
       "/week",
       run((u, p, req) => timeService.getWeek(u, p, req.query)),
     );
+    this.router.get(
+      "/range",
+      run((u, p, req) => timeService.getRange(u, p, req.query)),
+    );
     this.router.post(
       "/entries",
       run(
