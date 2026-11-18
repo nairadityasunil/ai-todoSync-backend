@@ -27,6 +27,7 @@ import chatSocketServer from "../../../socket/chat.socket.js";
 import { emailAssignee } from "./task-assignment-mail.service.js";
 import TaskModel from "../models/task.model.js";
 import ProjectModel from "../../project/models/project.model.js";
+import { ensureDefaultWorkflow } from "../../project/default-workflow.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
 import {
@@ -198,9 +199,15 @@ class TaskService {
     projectId: string | null,
   ): Promise<WorkflowStateLite[]> {
     if (!projectId || !mongoose.Types.ObjectId.isValid(projectId)) return [];
-    const project = await ProjectModel.findById(projectId)
-      .select("states")
+    let project = await ProjectModel.findById(projectId)
+      .select("states statesInitialized")
       .lean();
+    if (project && !project.statesInitialized) {
+      await ensureDefaultWorkflow(projectId);
+      project = await ProjectModel.findById(projectId)
+        .select("states statesInitialized")
+        .lean();
+    }
     return ((project?.states ?? []) as WorkflowStateLite[])
       .slice()
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0));

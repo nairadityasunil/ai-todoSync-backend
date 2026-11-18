@@ -32,6 +32,7 @@ import {
 } from "../project-permissions.js";
 import { clearTaskAssignmentsForUser } from "../../task/repositories/task.repository.js";
 import { runInTransaction } from "../../../utils/transaction.js";
+import { ensureDefaultWorkflow } from "../default-workflow.js";
 import operationalAnalyticsService from "../../analytics/services/operational-analytics.service.js";
 import WorkspaceMemberModel from "../../workspace/models/workspace-member.model.js";
 
@@ -176,6 +177,9 @@ class ProjectService {
       if (project == null) {
         throw new HttpError(500, "Project could not be created");
       }
+
+      // Same four stages everywhere (settings, board, task status) from the start.
+      await ensureDefaultWorkflow(project._id.toString());
 
       operationalAnalyticsService.recordEventSafely({
         eventName: "project_created",

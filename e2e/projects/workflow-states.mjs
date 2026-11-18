@@ -11,6 +11,28 @@ const tok = (await call(null, 'POST', '/auth/login', { email: `wf-${s}@example.c
 const P = (await call(tok, 'POST', '/projects', { name: 'Flow ' + s })).j.data.project;
 const Q = (await call(tok, 'POST', '/projects', { name: 'Other ' + s })).j.data.project;
 const day = '2026-11-18';
+// New projects start with the default workflow (checked below). To test other workflows, clear the defaults first.
+const clearStates = async (pid) => { for (const st of (await call(tok, 'GET', `/projects/${pid}/states`)).j.states) await call(tok, 'DELETE', `/projects/${pid}/states/${st._id}`); };
+const defaults = (await call(tok, 'GET', `/projects/${P.id}/states`)).j.states;
+ok(defaults.map((x) => x.name).join(',') === 'Backlog,In Progress,Review,Done' && defaults.map((x) => x.category).join(',') === 'BACKLOG,STARTED,STARTED,COMPLETED', 'a new project starts with four states: Backlog, In Progress, Review, Done');
+const first = await (async () => (await call(tok, 'POST', '/tasks', { title: 'First', date: '2026-11-18', projectId: P.id })).j.data.task)();
+ok(first.stateId === defaults[0]._id, 'the first task goes to the first state (Backlog) and the board and dropdown show only these four');
+await clearStates(P.id); await clearStates(Q.id);
+ok((await call(tok, 'GET', `/projects/${P.id}/states`)).j.states.length === 0, 'deleting every state on purpose leaves the project with none (the defaults are not added again)');
+// A project made before states existed gets the defaults once, and its tasks are placed by status
+const legacy = (await call(tok, 'POST', '/projects', { name: 'Legacy ' + s })).j.data.project;
+await clearStates(legacy.id);
+const lt = (await call(tok, 'POST', '/tasks', { title: 'Old todo', date: '2026-11-18', projectId: legacy.id })).j.data.task;
+const ld = (await call(tok, 'POST', '/tasks', { title: 'Old done', date: '2026-11-18', projectId: legacy.id, status: 'DONE' })).j.data.task;
+const mg = (await import('mongoose')).default; await mg.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' });
+await mg.connection.db.collection('projects').updateOne({ _id: new mg.Types.ObjectId(legacy.id) }, { $set: { states: [], statesInitialized: false } });
+await mg.connection.db.collection('tasks').updateMany({ projectId: new mg.Types.ObjectId(legacy.id) }, { $unset: { stateId: '' } });
+let ls = (await call(tok, 'GET', `/projects/${legacy.id}/states`)).j.states;
+ok(ls.map((x) => x.name).join(',') === 'Backlog,In Progress,Review,Done', 'an older project gets the same four states when they are first read');
+const back = (await call(tok, 'GET', `/tasks?projectId=${legacy.id}&date=2026-11-18`)).j.data.tasks;
+ok(back.find((t) => t.id === lt.id).stateId === ls[0]._id && back.find((t) => t.id === ld.id).stateId === ls[3]._id, 'and its tasks are placed by status (to do in Backlog, done in Done)');
+ls = (await call(tok, 'GET', `/projects/${legacy.id}/states`)).j.states; ok(ls.length === 4, 'reading again does not add them twice');
+await mg.disconnect();
 const mk = async (pid, body = {}) => (await call(tok, 'POST', '/tasks', { title: 'T ' + Math.random().toString(36).slice(2, 6), date: day, projectId: pid, ...body })).j.data.task;
 const get = async (pid, id) => (await call(tok, 'GET', `/tasks?projectId=${pid}&date=${day}`)).j.data.tasks.find((t) => t.id === id);
 
@@ -37,6 +59,7 @@ r = await call(tok, 'PATCH', `/tasks/${t.id}/status`, { status: 'DONE' }); ok(r.
 
 // A workflow with no state of a task's kind: the task still lands in a column
 const odd = (await call(tok, 'POST', '/projects', { name: 'Odd ' + s })).j.data.project;
+await clearStates(odd.id);
 const oddStates = {};
 for (const [name, category] of [['Open', 'STARTED'], ['Shipped', 'COMPLETED']]) oddStates[name] = (await call(tok, 'POST', `/projects/${odd.id}/states`, { name, category, color: '#3B82F6' })).j.state?._id;
 let ot = await mk(odd.id); ok(ot.status === 'TODO' && ot.stateId === oddStates['Open'], 'no "not started" state: a new task goes to the first column');
@@ -53,7 +76,7 @@ r = await call(tok, 'PATCH', `/tasks/${t.id}`, { stateId: null }); ok(r.status =
 const m = await mk(P.id, { stateId: states['Review'] });
 r = await call(tok, 'PATCH', `/tasks/${m.id}`, { projectId: Q.id }); ok(r.j.data.task.stateId === otherState, "moving to another project drops the old project's state and picks that project's matching one");
 r = await call(tok, 'PATCH', `/tasks/${m.id}`, { projectId: P.id }); ok(r.j.data.task.stateId === states['In Progress'], 'moving back picks the state that matches the status');
-const plain = (await call(tok, 'POST', '/projects', { name: 'Plain ' + s })).j.data.project; r = await call(tok, 'PATCH', `/tasks/${m.id}`, { projectId: plain.id }); ok(r.j.data.task.stateId === null, 'moving to a project with no states clears the state');
+const plain = (await call(tok, 'POST', '/projects', { name: 'Plain ' + s })).j.data.project; await clearStates(plain.id); r = await call(tok, 'PATCH', `/tasks/${m.id}`, { projectId: plain.id }); ok(r.j.data.task.stateId === null, 'moving to a project with no states clears the state');
 
 // Blocked tasks cannot be completed through a state either
 const b = await mk(P.id); await call(tok, 'PATCH', `/tasks/${b.id}/block`, {});

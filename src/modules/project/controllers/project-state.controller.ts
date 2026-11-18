@@ -1,6 +1,7 @@
 import type { Response } from "express";
 import type { AuthenticatedRequest } from "../../../types/auth.js";
 import ProjectModel from "../models/project.model.js";
+import { ensureDefaultWorkflow } from "../default-workflow.js";
 import projectService from "../services/project.service.js";
 import { AppError } from "../../../utils/app-error.js";
 
@@ -76,6 +77,7 @@ export const getProjectStates = async (
     const userId = req.user!._id.toString();
     const { id: projectId } = req.params as Record<string, string>;
     await projectService.assertProjectMembership(userId, projectId);
+    await ensureDefaultWorkflow(projectId);
 
     const project = await ProjectModel.findById(projectId).lean();
     if (!project) throw new AppError(404, "Project not found", "NOT_FOUND");
