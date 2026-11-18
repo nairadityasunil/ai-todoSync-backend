@@ -79,7 +79,20 @@ export class PromptCanaryService {
       );
     }
 
-    const legacyVersion = prompt.productionVersion || 1;
+    // A canary compares the candidate with what is in production, so something must be deployed first.
+    const productionDoc = await PromptVersionModel.findOne({
+      promptId: rootId,
+      environment: "production",
+    })
+      .select("version")
+      .lean();
+    if (!productionDoc) {
+      throw new HttpError(
+        400,
+        "Deploy a version to production before starting a canary rollout.",
+      );
+    }
+    const legacyVersion = productionDoc.version;
     if (candidateVersionDoc.version === legacyVersion) {
       throw new HttpError(
         400,

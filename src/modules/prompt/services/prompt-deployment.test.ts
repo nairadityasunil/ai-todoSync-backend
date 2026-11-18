@@ -60,6 +60,26 @@ describe("Prompt Version Environment & Deployment Lifecycle Tests", () => {
     assert.equal(v1.environment, "development");
   });
 
+  test("1b. Nothing is in production until someone deploys it", async () => {
+    await assert.rejects(
+      () =>
+        promptVersionResolverService.resolveVersion(createdPromptId, {
+          isProduction: true,
+        }),
+      /no production version/i,
+    );
+    const root = await PromptLibraryModel.findById(createdPromptId).lean();
+    assert.equal(root?.productionVersion ?? null, null);
+    assert.equal(root?.isProductionPublished, false);
+    await assert.rejects(
+      () =>
+        promptCanaryService.startCanary(dummyWorkspaceId, dummyUserId, createdPromptId, {
+          candidateVersion: 1,
+        } as any),
+      /deploy a version to production|production/i,
+    );
+  });
+
   test("2. Moving Version 1 to staging updates environment to staging", async () => {
     const v1Staging = await promptLibraryService.moveToStaging(
       dummyWorkspaceId,

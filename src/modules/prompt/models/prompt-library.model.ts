@@ -104,8 +104,9 @@ const promptLibrarySchema = new Schema<IPromptLibraryDocument>(
       index: true,
     },
     version: { type: Number, default: 0, min: 0 },
-    productionVersion: { type: Number, default: 1, min: 1 },
-    isProductionPublished: { type: Boolean, default: true },
+    // Nothing is in production until someone deploys a version.
+    productionVersion: { type: Number, min: 1 },
+    isProductionPublished: { type: Boolean, default: false },
     publishedAt: { type: Date, default: Date.now },
     hash: { type: String, default: "" },
     isLatest: { type: Boolean, default: true, index: true },
