@@ -70,7 +70,8 @@ class InvitationService {
     payload: InviteUserPayload,
   ): Promise<any> {
     const email = payload.email.toLowerCase().trim();
-    const role = payload.role || "MEMBER";
+    // People are invited to a project as members only; a project admin is never created through an invitation.
+    const role = "MEMBER" as const;
 
     // 1. Verify that the actor is an ADMIN in the project
     await projectService.assertProjectRole(actorUserId, projectId, "ADMIN");
@@ -321,7 +322,8 @@ class InvitationService {
           {
             projectId: invitation.projectId.toString(),
             userId: user._id.toString(),
-            role: invitation.role,
+            // Invitations sent before this rule may still say ADMIN; nobody joins as an admin.
+            role: "MEMBER",
           },
           session,
         );
@@ -366,7 +368,7 @@ class InvitationService {
         projectId: invitation.projectId.toString(),
         workspaceId: project?.workspaceId ? String(project.workspaceId) : null,
         projectName: project?.name ?? null,
-        role: invitation.role,
+        role: "MEMBER",
         status: "ACCEPTED",
       };
     });

@@ -79,8 +79,12 @@ export const getProjectsByUser = async (
 const projectIdQuery = (
   projectIds: string[],
   search?: string,
+  workspaceId?: string,
 ): Record<string, unknown> => {
   const query: Record<string, unknown> = buildSafeRefInMatch("_id", projectIds);
+  // Only the projects in this workspace (the ids are already limited to the ones the person belongs to).
+  if (workspaceId)
+    Object.assign(query, buildSafeRefMatch("workspaceId", workspaceId));
   if (search) {
     query.name = { $regex: escapeRegex(search), $options: "i" };
   }
@@ -91,13 +95,18 @@ const projectIdQuery = (
 export const getProjectsPageByIds = async (params: {
   projectIds: string[];
   search?: string;
+  workspaceId?: string;
   skip?: number;
   limit?: number;
 }): Promise<{ projects: IProjectDocument[]; total: number }> => {
   if (params.projectIds.length === 0) {
     return { projects: [], total: 0 };
   }
-  const query = projectIdQuery(params.projectIds, params.search);
+  const query = projectIdQuery(
+    params.projectIds,
+    params.search,
+    params.workspaceId,
+  );
   const [projects, total] = await Promise.all([
     ProjectModel.find(query)
       .populate(projectPopulateOptions)

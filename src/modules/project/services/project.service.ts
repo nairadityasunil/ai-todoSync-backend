@@ -240,6 +240,7 @@ class ProjectService {
     page: number,
     limit: number,
     search?: string,
+    workspaceId?: string,
   ): Promise<PaginatedProjects> {
     const skip = (page - 1) * limit;
     // Memberships give both the project ids and the user's roles, so load
@@ -250,6 +251,7 @@ class ProjectService {
         membership.projectId.toString(),
       ),
       search,
+      workspaceId,
       skip,
       limit,
     });
