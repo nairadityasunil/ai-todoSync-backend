@@ -82,30 +82,18 @@ export class PromptVersionResolverService {
       }
     }
 
-    // 3. Resolve Production version
-    let prodVersionDoc = await PromptVersionModel.findOne({
+    // 3. Resolve Production version. Only a version someone deployed counts: nothing is in production
+    // by default, so a prompt that was never deployed is not served (no fallback to version 1 or the latest).
+    const prodVersionDoc = await PromptVersionModel.findOne({
       promptId,
       environment: "production",
     }).sort({ version: -1 });
 
     if (!prodVersionDoc) {
-      const root = await PromptLibraryModel.findById(promptId);
-      if (root && root.productionVersion) {
-        prodVersionDoc = await PromptVersionModel.findOne({
-          promptId,
-          version: root.productionVersion,
-        });
-      }
-    }
-
-    if (!prodVersionDoc) {
-      prodVersionDoc = await PromptVersionModel.findOne({
-        promptId,
-      }).sort({ version: -1 });
-    }
-
-    if (!prodVersionDoc) {
-      throw new HttpError(404, `No version found for prompt ${promptId}`);
+      throw new HttpError(
+        404,
+        "This prompt has no production version. Deploy a version to production first, or ask for a specific version.",
+      );
     }
 
     return {
