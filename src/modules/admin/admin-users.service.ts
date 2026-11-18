@@ -354,7 +354,6 @@ class AdminUsersService {
       email?: unknown;
       name?: unknown;
       password?: unknown;
-      superAdmin?: unknown;
     },
   ) {
     const email =
@@ -382,7 +381,9 @@ class AdminUsersService {
       firstName: parts[0] ?? null,
       lastName: parts.slice(1).join(" ") || null,
       authProvider: "local",
-      platformRole: body.superAdmin === true ? "super_admin" : "user",
+      // Nobody is made a super admin from the panel: super admins are created with `npm run seed:super-admin`
+      // or listed in SUPER_ADMIN_EMAILS on the server.
+      platformRole: "user",
     });
     try {
       const ws = (await import("../workspace/services/workspace.service.js"))
@@ -391,12 +392,11 @@ class AdminUsersService {
     } catch {
       /* the person gets a workspace on first sign-in if this fails */
     }
-    await this.record(
-      actor,
-      "user.create",
-      { type: "user", id: String(user._id), label: email },
-      { superAdmin: body.superAdmin === true },
-    );
+    await this.record(actor, "user.create", {
+      type: "user",
+      id: String(user._id),
+      label: email,
+    });
     return { user: this.row(user), temporaryPassword: given ? null : password };
   }
 
@@ -469,42 +469,6 @@ class AdminUsersService {
       id: userId,
       label: user.email,
     });
-    return this.row(user);
-  }
-
-  public async setSuperAdmin(actor: Actor, userId: string, on: boolean) {
-    const user = await this.load(userId);
-    if (on) {
-      if (this.status(user) !== "active")
-        throw new AdminError(
-          409,
-          "Only an active account can be a super admin.",
-        );
-      user.platformRole = "super_admin";
-    } else {
-      if (String(user._id) === actor.id)
-        throw new AdminError(
-          409,
-          "You cannot remove your own super admin access.",
-        );
-      if (isEnvSuperAdmin(user.email))
-        throw new AdminError(
-          409,
-          "This person is a super admin through the SUPER_ADMIN_EMAILS setting. Remove them there.",
-        );
-      if (
-        isSuperAdmin(user) &&
-        (await this.otherActiveSuperAdmins(userId)) === 0
-      )
-        throw new AdminError(409, "That is the last super admin.");
-      user.platformRole = "user";
-    }
-    await user.save();
-    await this.record(
-      actor,
-      on ? "user.make_super_admin" : "user.remove_super_admin",
-      { type: "user", id: userId, label: user.email },
-    );
     return this.row(user);
   }
 
