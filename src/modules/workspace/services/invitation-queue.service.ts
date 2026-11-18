@@ -18,6 +18,8 @@ export interface InvitationJobData {
   projectName: string;
   inviterName: string;
   token?: string;
+  /** The invited email has no Pristine account yet. */
+  isNewUser?: boolean;
 }
 
 // Create Worker
@@ -25,13 +27,16 @@ export const startInvitationWorker = () => {
   const worker = new Worker(
     "invitations",
     async (job: Job<InvitationJobData>) => {
-      const { email, projectName, inviterName, token } = job.data;
+      const { email, projectName, inviterName, token, isNewUser } = job.data;
 
       if (job.name === "send-invite-email" && token) {
         const acceptLink = `${env.FRONTEND_BASE_URL}/accept-invitation?token=${token}`;
         const rejectLink = `${env.BACKEND_URL}/api/invitations/reject-public?token=${token}`;
         const subject = `You have been invited to join project: ${projectName}`;
-        const text = `Hello,\n\nYou have been invited to join the project "${projectName}" on Pristine by ${inviterName}.\n\nAccept the invitation:\n${acceptLink}\n\nDecline the invitation:\n${rejectLink}\n\nIf you do not have an account, you will be prompted to register first.`;
+        const nextStep = isNewUser
+          ? "You do not have a Pristine account yet. Open the link, choose your name and a password, and you will be added to the project and its workspace straight away."
+          : "Open the link and accept, and you will be added to the project and its workspace.";
+        const text = `Hello,\n\nYou have been invited to join the project "${projectName}" on Pristine by ${inviterName}.\n\n${nextStep}\n\n${isNewUser ? "Create your account and join" : "Accept the invitation"}:\n${acceptLink}\n\nDecline the invitation:\n${rejectLink}\n\nThis invitation expires in 14 days.`;
         const html = `
           <!DOCTYPE html>
           <html>
@@ -74,12 +79,12 @@ export const startInvitationWorker = () => {
               </div>
               
               <div class="btn-row">
-                <a href="${acceptLink}" class="btn-accept" style="color: #ffffff;">Accept Invitation</a>
+                <a href="${acceptLink}" class="btn-accept" style="color: #ffffff;">${isNewUser ? "Create account and join" : "Accept Invitation"}</a>
                 <a href="${rejectLink}" class="btn-decline" style="color: #52635c;">Decline</a>
               </div>
               
               <p style="font-size: 13px; color: #52635c; line-height: 1.6; text-align: center; margin-bottom: 20px;">
-                If you do not have a Pristine account, you will be guided to create one first. Once registered, you will need to accept from your notification panel.
+                ${nextStep}
               </p>
               
               <div class="divider"></div>
