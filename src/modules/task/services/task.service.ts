@@ -87,12 +87,22 @@ interface TaskPermissionsDto {
   canReassign: boolean;
 }
 
+interface TaskNoteDto {
+  id: string;
+  text: string;
+  authorId: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 interface TaskDto {
   id: string;
   userId: string;
   title: string;
   description?: string;
   note?: string;
+  /** Every note on the task, oldest first. A single older `note` shows as one note. */
+  notes: TaskNoteDto[];
   date: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -418,6 +428,18 @@ class TaskService {
 
     if (Object.prototype.hasOwnProperty.call(updates, "note")) {
       updates.note = this.normalizeOptionalText(updates.note);
+      // Older callers set one `note`. With several notes, that edits the newest one (empty removes it).
+      const stored = (currentTask.notes ?? []).map((n) => ({
+        _id: n._id,
+        text: n.text,
+        authorId: n.authorId,
+      }));
+      if (stored.length > 0) {
+        if (updates.note) stored[stored.length - 1].text = updates.note;
+        else stored.pop();
+        (updates as Record<string, unknown>).notes = stored;
+        updates.note = stored.length ? stored[stored.length - 1].text : "";
+      }
     }
 
     if (
@@ -833,6 +855,7 @@ class TaskService {
       title: task.title,
       description: task.description,
       note: task.note,
+      notes: this.toNoteDtos(task),
       date: task.date,
       status: this.normalizeStoredTaskStatus(task.status),
       priority: task.priority || "MEDIUM",
@@ -924,6 +947,134 @@ class TaskService {
         membership.role,
       ]),
     );
+  }
+
+  /** The task's notes; a legacy single `note` with no stored notes shows as one note with the id "legacy". */
+  private toNoteDtos(task: TaskDocumentWithAssignee): TaskNoteDto[] {
+    const stored = (task.notes ?? []).map((n) => ({
+      id: String(n._id),
+      text: n.text,
+      authorId: n.authorId ? String(n.authorId) : null,
+      createdAt: n.createdAt ? new Date(n.createdAt).toISOString() : null,
+      updatedAt: n.updatedAt ? new Date(n.updatedAt).toISOString() : null,
+    }));
+    if (stored.length === 0 && task.note?.trim()) {
+      return [
+        {
+          id: "legacy",
+          text: task.note.trim(),
+          authorId: null,
+          createdAt: null,
+          updatedAt: null,
+        },
+      ];
+    }
+    return stored;
+  }
+
+  private async loadTaskForNotes(taskId: string, userId: string) {
+    const memberships = await getProjectMembershipsByUser(userId);
+    const roleMap = this.buildRoleMap(memberships);
+    const task = await getTaskByIdAndUser(
+      taskId,
+      userId,
+      Array.from(roleMap.keys()),
+    );
+    if (task == null) throw new HttpError(404, "Task not found");
+    const role = task.projectId
+      ? (roleMap.get(task.projectId.toString()) ?? null)
+      : null;
+    const permission = this.getTaskPermission(userId, task, role);
+    if (permission.canUpdate === false)
+      throw new HttpError(403, "Task update not allowed");
+    return { task, permission, roleMap };
+  }
+
+  /** Moves an older single `note` into the notes list the first time notes are changed. */
+  private migrateLegacyNote(task: TaskDocumentWithAssignee): void {
+    if ((task.notes ?? []).length === 0 && task.note?.trim()) {
+      task.notes = [{ text: task.note.trim(), authorId: task.userId }] as never;
+    }
+  }
+
+  private noteText(value: unknown): string {
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text) throw new HttpError(400, "A note cannot be empty");
+    if (text.length > 5000)
+      throw new HttpError(400, "A note can be at most 5000 characters");
+    return text;
+  }
+
+  private async saveNotes(
+    task: TaskDocumentWithAssignee,
+    userId: string,
+    roleMap: Map<string, ProjectRole>,
+  ): Promise<TaskDto> {
+    const notes = task.notes ?? [];
+    task.note = notes.length ? notes[notes.length - 1].text : "";
+    await task.save();
+    return this.toDto(userId, task, roleMap);
+  }
+
+  public async addTaskNote(
+    taskId: string,
+    userId: string,
+    text: unknown,
+  ): Promise<TaskDto> {
+    const { task, roleMap } = await this.loadTaskForNotes(taskId, userId);
+    const clean = this.noteText(text);
+    this.migrateLegacyNote(task);
+    task.notes = [
+      ...(task.notes ?? []),
+      { text: clean, authorId: userId },
+    ] as never;
+    return this.saveNotes(task, userId, roleMap);
+  }
+
+  public async updateTaskNote(
+    taskId: string,
+    noteId: string,
+    userId: string,
+    text: unknown,
+  ): Promise<TaskDto> {
+    const { task, permission, roleMap } = await this.loadTaskForNotes(
+      taskId,
+      userId,
+    );
+    const clean = this.noteText(text);
+    this.migrateLegacyNote(task);
+    const note = (task.notes ?? []).find(
+      (n) =>
+        String(n._id) === noteId ||
+        (noteId === "legacy" && (task.notes ?? []).length === 1),
+    );
+    if (!note) throw new HttpError(404, "Note not found");
+    if (!permission.canEdit && String(note.authorId ?? "") !== userId)
+      throw new HttpError(403, "You can only edit your own notes");
+    note.text = clean;
+    return this.saveNotes(task, userId, roleMap);
+  }
+
+  public async deleteTaskNote(
+    taskId: string,
+    noteId: string,
+    userId: string,
+  ): Promise<TaskDto> {
+    const { task, permission, roleMap } = await this.loadTaskForNotes(
+      taskId,
+      userId,
+    );
+    this.migrateLegacyNote(task);
+    const list = task.notes ?? [];
+    const note = list.find(
+      (n) =>
+        String(n._id) === noteId || (noteId === "legacy" && list.length === 1),
+    );
+    if (!note) throw new HttpError(404, "Note not found");
+    if (!permission.canEdit && String(note.authorId ?? "") !== userId)
+      throw new HttpError(403, "You can only delete your own notes");
+    task.notes = list.filter((n) => n !== note) as never;
+    return this.saveNotes(task, userId, roleMap);
   }
 
   private getTaskPermission(

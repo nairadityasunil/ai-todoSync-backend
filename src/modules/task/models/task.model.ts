@@ -18,6 +18,15 @@ export type TaskSlaState =
   | "PAUSED"
   | "COMPLETED";
 
+/** One note on a task. A task can have several; each remembers who wrote it. */
+export interface ITaskNote {
+  _id?: any;
+  text: string;
+  authorId?: Types.ObjectId | string | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 export interface ISubtask {
   _id?: any;
   title: string;
@@ -36,6 +45,8 @@ export interface ITask {
   title: string;
   description?: string;
   note?: string;
+  /** Several notes per task. `note` stays as the text of the newest one, for older readers. */
+  notes?: ITaskNote[];
   date: string;
   status: TaskStatus;
   priority: TaskPriority;
@@ -131,6 +142,22 @@ const taskSchema = new Schema<ITaskDocument>(
     note: {
       type: String,
       default: "",
+    },
+    notes: {
+      type: [
+        new Schema(
+          {
+            text: { type: String, required: true, trim: true, maxlength: 5000 },
+            authorId: {
+              type: Schema.Types.ObjectId,
+              ref: "User",
+              default: null,
+            },
+          },
+          { timestamps: true },
+        ),
+      ],
+      default: [],
     },
     date: {
       type: String,
@@ -230,7 +257,11 @@ const taskSchema = new Schema<ITaskDocument>(
       ref: "Project",
       default: null,
     },
-    classification: { type: String, enum: ["public", "internal", "confidential", "restricted", null], default: null },
+    classification: {
+      type: String,
+      enum: ["public", "internal", "confidential", "restricted", null],
+      default: null,
+    },
     epicId: {
       type: Schema.Types.ObjectId,
       ref: "Epic",
