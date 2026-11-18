@@ -176,6 +176,52 @@ class TaskController {
     }
   };
 
+  private noteHandler =
+    (
+      run: (
+        taskId: string,
+        noteId: string,
+        userId: string,
+        text: unknown,
+      ) => Promise<unknown>,
+      status = 200,
+    ) =>
+    async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+      try {
+        const user = req.user;
+        if (user == null) {
+          res.status(401).json({ error: "Authentication required" });
+          return;
+        }
+        const task = await run(
+          getRouteParam(req.params.id),
+          getRouteParam(req.params.noteId),
+          user._id.toString(),
+          (req.body as { text?: unknown } | undefined)?.text,
+        );
+        res
+          .status(status)
+          .json({ message: "Task notes updated", data: { task } });
+      } catch (error) {
+        const code = (error as { status?: number }).status ?? 500;
+        res.status(code).json({ error: (error as Error).message });
+      }
+    };
+
+  public addNote = this.noteHandler(
+    (taskId, _noteId, userId, text) =>
+      taskService.addTaskNote(taskId, userId, text),
+    201,
+  );
+
+  public updateNote = this.noteHandler((taskId, noteId, userId, text) =>
+    taskService.updateTaskNote(taskId, noteId, userId, text),
+  );
+
+  public deleteNote = this.noteHandler((taskId, noteId, userId) =>
+    taskService.deleteTaskNote(taskId, noteId, userId),
+  );
+
   public updateTask = async (
     req: AuthenticatedRequest,
     res: Response,
