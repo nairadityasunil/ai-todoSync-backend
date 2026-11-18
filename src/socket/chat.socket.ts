@@ -1,3 +1,8 @@
+import {
+  ACCESS_COOKIE,
+  isTrustedOrigin,
+  parseCookie,
+} from "../modules/auth/auth-cookies.js";
 import type { Server as HTTPServer } from "http";
 import { Server, type Socket } from "socket.io";
 
@@ -211,9 +216,14 @@ class ChatSocketServer {
       const token = socket.handshake.query.token;
       rawToken = Array.isArray(token) ? token[0] : token;
     } else if (socket.handshake.headers.cookie) {
-      const match = socket.handshake.headers.cookie.match(/token=([^;]+)/);
-      if (match) {
-        rawToken = match[1];
+      // Browser sign-in: the HttpOnly cookie. A cookie is sent by any site that opens a socket, so the page
+      // that opened it must be one of ours.
+      const cookieToken = parseCookie(
+        socket.handshake.headers.cookie,
+        ACCESS_COOKIE,
+      );
+      if (cookieToken && isTrustedOrigin(socket.handshake.headers.origin)) {
+        rawToken = cookieToken;
       }
     }
 

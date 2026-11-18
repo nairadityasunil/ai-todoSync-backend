@@ -1,3 +1,4 @@
+import { authBody } from "../../auth/auth-cookies.js";
 import { Response } from "express";
 import crypto from "crypto";
 import { AuthenticatedRequest } from "../../../types/auth.js";
@@ -332,12 +333,7 @@ export const pairCompanionDeviceWithQr = async (
 
   res.status(200).json({
     message: "Companion device linked successfully via QR Code",
-    data: {
-      user: authResult.user,
-      token: authResult.token,
-      refreshToken: authResult.refreshToken,
-      session: authResult.session,
-    },
+    data: authBody(req, res, authResult),
   });
 };
 
@@ -362,12 +358,7 @@ export const pairCompanionDeviceWithKey = async (
 
   res.status(200).json({
     message: "Companion device paired successfully",
-    data: {
-      user: authResult.user,
-      token: authResult.token,
-      refreshToken: authResult.refreshToken,
-      session: authResult.session,
-    },
+    data: authBody(req, res, authResult),
   });
 };
 
