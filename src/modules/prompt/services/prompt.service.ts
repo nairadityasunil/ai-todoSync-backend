@@ -25,7 +25,9 @@ import { HttpError } from "../../../shared/errors/http-error.js";
 
 export { HttpError };
 
-export class PromptService {
+export const DRAFT_NOTE = "Initial prompt version 1";
+
+class PromptService {
   // Delegate helper methods for backward-compatibility
   public validateVariableSchema = promptVariableService.validateVariableSchema;
   public assertPromptAccess = promptAuthorizationService.assertPromptAccess;
@@ -197,7 +199,9 @@ export class PromptService {
               modelName: newModelName,
               parameters: newParameters,
               changedBy: userId,
-              changeNote: "Initial prompt version 1",
+              // Only a draft (a blank "New prompt") may be replaced by its first save; anything made
+              // with content keeps it as version 1 and the next edit becomes version 2.
+              changeNote: payload.draft ? DRAFT_NOTE : "Initial version",
             },
           ],
           { session },
@@ -507,11 +511,7 @@ export class PromptService {
     session: any,
   ): Promise<boolean> {
     if (existing.version !== 1 || existing.parentId) return false;
-    if (
-      latest?.version !== 1 ||
-      latest.changeNote !== "Initial prompt version 1"
-    )
-      return false;
+    if (latest?.version !== 1 || latest.changeNote !== DRAFT_NOTE) return false;
     const [events, runs] = await Promise.all([
       PromptDeploymentEventModel.countDocuments({
         promptId: rootPromptId,
