@@ -24,6 +24,8 @@ interface CreateTaskRequestBody {
   epicId?: string | null;
   subtasks?: ISubtask[];
   assignedTo?: string;
+  /** A workflow state of the project; the status follows its category. */
+  stateId?: string | null;
 }
 
 interface AssignTaskRequestBody {
@@ -133,6 +135,7 @@ class TaskController {
         epicId,
         subtasks,
         assignedTo,
+        stateId,
       } = req.body as CreateTaskRequestBody;
       const payload: CreateTaskPayload = {
         userId: user._id.toString(),
@@ -147,7 +150,8 @@ class TaskController {
         epicId,
         subtasks,
         assignedTo: assignedTo || user._id.toString(),
-      };
+        ...(stateId ? { stateId } : {}),
+      } as CreateTaskPayload;
       const task = await taskService.createTask(payload);
 
       res.status(201).json({
