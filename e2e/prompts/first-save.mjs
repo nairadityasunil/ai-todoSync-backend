@@ -17,7 +17,18 @@ const ws = String((await db.collection('workspacemembers').find({ userId: me._id
 const P = `/workspaces/${ws}/prompts`;
 const stamp = Date.now().toString(36);
 const versions = async (id) => (await db.collection('promptversions').find({ promptId: new mongoose.Types.ObjectId(id) }).sort({ version: 1 }).toArray());
-const create = async (name) => (await call('POST', P, { token: login.token, body: { name, body: 'Write a short answer.' } })).body.data;
+// A blank starting point, as the playground's New prompt button makes it.
+const create = async (name) => (await call('POST', P, { token: login.token, body: { name, body: 'Write a short answer.', draft: true } })).body.data;
+// A prompt made with content (API, library): its content is version 1 and the next edit is version 2.
+const createWithContent = async (name) => (await call('POST', P, { token: login.token, body: { name, body: 'Write a short answer.' } })).body.data;
+
+await step('a prompt made with content keeps it as version 1 and the next edit is version 2', async () => {
+  const p = await createWithContent('With content ' + stamp);
+  const r = await call('PATCH', `${P}/${p._id}`, { token: login.token, body: { body: 'A different answer.' } });
+  expect(r.status === 200 && r.body.data.version === 2, r.body.data?.version);
+  const v = await versions(p._id);
+  expect(v.length === 2 && v[0].body === 'Write a short answer.', v.map((x) => x.version));
+});
 
 await step('a new prompt starts with one placeholder version 1', async () => {
   const p = await create('First save ' + stamp);

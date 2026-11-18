@@ -118,6 +118,8 @@ export interface IPromptFavorite {
 }
 
 export interface CreatePromptPayload {
+  /** A blank starting point made by a "New prompt" button: the first save replaces it as version 1. */
+  draft?: boolean;
   name: string;
   description?: string;
   category?: PromptCategory;
