@@ -118,6 +118,7 @@ class WorkspaceService {
       workspaceId: workspace._id,
       userId,
       role: "OWNER",
+      lastUsedAt: new Date(),
     });
 
     return workspace.toObject();
