@@ -25,6 +25,12 @@ export interface IUser {
   passwordResetAttempts?: number;
   /** Last password change or reset (agent session risk). */
   passwordChangedAt?: Date | null;
+  /** Platform role: super admins run the admin panel. Also granted by the SUPER_ADMIN_EMAILS setting. */
+  platformRole?: "user" | "super_admin";
+  /** Suspended people cannot sign in or use the API; deleted accounts are anonymised. */
+  accountStatus?: "active" | "suspended" | "deleted";
+  suspendedAt?: Date | null;
+  suspendedReason?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -123,6 +129,19 @@ const userSchema = new Schema<IUserDocument>(
       default: 0,
     },
     passwordChangedAt: { type: Date, default: null },
+    platformRole: {
+      type: String,
+      enum: ["user", "super_admin"],
+      default: "user",
+    },
+    accountStatus: {
+      type: String,
+      enum: ["active", "suspended", "deleted"],
+      default: "active",
+      index: true,
+    },
+    suspendedAt: { type: Date, default: null },
+    suspendedReason: { type: String, default: null },
   },
   {
     timestamps: true,

@@ -22,6 +22,7 @@ import SurveyRoutes from "./modules/surveys/routes.js";
 import TargetingRoutes from "./modules/targeting/routes.js";
 import AiPlanningRoutes from "./modules/ai-planner/routes/ai-planning.routes.js";
 import TimeRoutes from "./modules/time/time.routes.js";
+import AdminRoutes from "./modules/admin/admin.routes.js";
 import SdkIntegrationRoutes from "./modules/sdk-integrations/routes.js";
 import InvitationRoutes from "./modules/workspace/routes/invitation.routes.js";
 import WorkspaceRoutes from "./modules/workspace/routes/workspace.routes.js";
@@ -75,6 +76,7 @@ const server = new App([
   new ChatRoutes(),
   new AiPlanningRoutes(),
   new TimeRoutes(),
+  new AdminRoutes(),
   new ActivityHistoryRoutes(),
   new CommentRoutes(),
   new InvitationRoutes(),
