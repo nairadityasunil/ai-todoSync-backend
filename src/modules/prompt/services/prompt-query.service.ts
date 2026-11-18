@@ -156,7 +156,7 @@ export class PromptQueryService {
         tags: p.tags || [],
         folderId: p.folderId ? String(p.folderId) : null,
         deployed: Boolean(prod),
-        productionVersion: prod?.version ?? p.productionVersion ?? 1,
+        productionVersion: prod?.version ?? null,
         provider: prod?.provider ?? p.provider,
         modelName: prod?.modelName ?? p.modelName,
         // The variables of the version that will run.

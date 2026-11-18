@@ -1,0 +1,37 @@
+// A paired companion device lasts one month, is not an agent, and is cut off when the month ends.
+import mongoose from 'mongoose';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36); const email = `cd-${s}@example.com`;
+await call(null, 'POST', '/auth/register', { email, password: 'Password123!', name: 'cd' });
+const primary = (await call(null, 'POST', '/auth/login', { email, password: 'Password123!' })).j.data;
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); const db = mongoose.connection.db;
+const user = await db.collection('users').findOne({ email });
+const key = await call(primary.token, 'POST', '/auth/companion-keys', { deviceName: 'Test phone', deviceType: 'mobile' });
+const pairing = key.j.data?.key ?? key.j.data?.companionKey?.key ?? key.j.key;
+ok(key.status === 200 || key.status === 201, 'a pairing key is created (' + key.status + ')');
+const comp = await call(null, 'POST', '/auth/companion-login', { key: pairing, deviceName: 'Test phone', deviceType: 'mobile' });
+ok(comp.status === 200 && !!comp.j.data.token, 'the device pairs with the key (' + comp.status + ')');
+const cTok = comp.j.data.token, cRef = comp.j.data.refreshToken;
+ok((await call(cTok, 'GET', '/auth/me')).status === 200, 'the paired device is signed in');
+const device = await db.collection('companiondevices').findOne({ userId: user._id });
+const days = (device.expiresAt - Date.now()) / 864e5;
+ok(days > 29.9 && days <= 30.01, `the pairing lasts 30 days (${days.toFixed(2)})`);
+const session = await db.collection('devicesessions').findOne({ userId: user._id, deviceType: 'companion' });
+ok(Math.abs(session.expiresAt - device.expiresAt) < 5000, "the device's token ends when its month ends");
+const list = (await call(primary.token, 'GET', '/auth/devices')).j.data;
+const row = (list.devices ?? list).find((d) => d.deviceName === 'Test phone');
+ok(row && row.expiresAt, 'the device list tells when it will be removed');
+ok((await db.collection('agents').countDocuments({ ownerUserId: user._id, kind: 'companion' })) === 0, 'a paired companion device is not registered as an agent');
+const rf = await call(null, 'POST', '/auth/refresh', { refreshToken: cRef });
+ok(rf.status === 200, 'refreshing works within the month');
+const session2 = await db.collection('devicesessions').findOne({ _id: session._id });
+ok(Math.abs(session2.expiresAt - session.expiresAt) < 1000, 'refreshing does not give the device more time');
+// the month ends
+await db.collection('companiondevices').updateOne({ _id: device._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+ok((await call(rf.j.data.token, 'GET', '/auth/me')).status === 401, 'the very next request after the month ends is refused');
+console.log('email', email);
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);

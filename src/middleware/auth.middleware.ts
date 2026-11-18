@@ -22,7 +22,9 @@ import { withRequestContext } from "../modules/agents/request-context.js";
 import { guardAgentRequest } from "../modules/agents/rest-guard.js";
 import { findActiveDeviceSessionById } from "../modules/auth/repositories/device-session.repository.js";
 import type { IDeviceSessionDocument } from "../modules/auth/models/device-session.model.js";
-import authService from "../modules/auth/services/auth.service.js";
+import authService, {
+  COMPANION_LIFETIME_MS,
+} from "../modules/auth/services/auth.service.js";
 import type { AuthenticatedRequest } from "../types/auth.js";
 import {
   ACCESS_COOKIE,
@@ -152,6 +154,16 @@ export const resolveJwtAuth = async (
         session.deviceId.toString(),
       );
 
+      // The pairing lasts a month (devices paired before that rule count from the day they were paired).
+      const pairedUntil =
+        companionDevice?.expiresAt ??
+        (companionDevice?.createdAt
+          ? new Date(companionDevice.createdAt.getTime() + COMPANION_LIFETIME_MS)
+          : null);
+      if (pairedUntil != null && pairedUntil.getTime() <= now.getTime()) {
+        return null;
+      }
+
       if (companionDevice == null || companionDevice.status !== "active") {
         return null;
       }
@@ -185,20 +197,14 @@ export const extractApiKey = (req: Request): string | undefined => {
 
 /**
  * The agent behind a signed-in session: ChatGPT Actions sessions carry an
- * agentId, companion devices register themselves. Portal sessions have none.
+ * agentId. Portal sessions and paired companion devices (phones and desktops signed in by QR or key) are
+ * people on their own devices, not agents, so they have none.
  */
 export const resolveSessionAgent = async (
   user: IUserDocument,
   session: IDeviceSessionDocument,
 ): Promise<IAgentDocument | null> => {
   if (session.agentId) return agentService.getById(session.agentId.toString());
-  if (session.deviceType === "companion" && session.deviceId) {
-    return agentService.registerCompanion(
-      user,
-      session.deviceId.toString(),
-      session.deviceName,
-    );
-  }
   return null;
 };
 

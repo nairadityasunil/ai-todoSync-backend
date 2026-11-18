@@ -107,3 +107,31 @@ export const updateCompanionDevice = async (
     runValidators: true,
   }).exec();
 };
+
+/** Active devices whose month is over (devices paired before expiry existed count from the day they were paired). */
+export const findExpiredCompanionDevices = async (
+  now: Date,
+  lifetimeMs: number,
+): Promise<ICompanionDeviceDocument[]> =>
+  CompanionDeviceModel.find({
+    status: "active",
+    $or: [
+      { expiresAt: { $lte: now } },
+      {
+        expiresAt: null,
+        createdAt: { $lte: new Date(now.getTime() - lifetimeMs) },
+      },
+    ],
+  })
+    .limit(500)
+    .exec();
+
+export const revokeCompanionDeviceById = async (
+  deviceId: string,
+  revokedAt: Date,
+): Promise<void> => {
+  await CompanionDeviceModel.updateOne(
+    { _id: deviceId, status: { $ne: "revoked" } },
+    { status: "revoked", revokedAt },
+  ).exec();
+};

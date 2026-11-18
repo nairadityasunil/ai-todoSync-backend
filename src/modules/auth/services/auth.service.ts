@@ -9,6 +9,8 @@ import {
   countActiveCompanionDevices,
   createCompanionDevice,
   findCompanionDeviceByIdForUser,
+  findExpiredCompanionDevices,
+  revokeCompanionDeviceById,
   listCompanionDevicesByUser,
   revokeCompanionDevice,
   updateCompanionDevice,
@@ -101,7 +103,12 @@ interface SessionIssueResult extends IssuedTokens {
   companionDevice: ICompanionDeviceDocument | null;
 }
 
+/** How long a paired companion device stays signed in: one month, fixed from the day it was paired. */
+export const COMPANION_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+
 interface DeviceDescriptor {
+  /** When the session must end whatever refreshes happen (companion devices). */
+  hardExpiresAt?: Date | null;
   deviceId: string | null;
   deviceType: SessionDeviceKind;
   deviceName: string;
@@ -117,6 +124,8 @@ export interface CompanionDeviceSummary {
   createdAt: Date | undefined;
   updatedAt: Date | undefined;
   revokedAt: Date | null | undefined;
+  /** When this device is removed automatically. */
+  expiresAt?: Date | null;
 }
 
 export interface CompanionKeyResult {
@@ -601,6 +610,7 @@ class AuthService {
       deviceType: "companion",
       deviceName: companionDevice.deviceName,
       companionDeviceType: companionDevice.deviceType,
+      hardExpiresAt: companionDevice.expiresAt ?? null,
       userAgent: this.normalizeOptionalText(input.userAgent),
     });
 
@@ -642,6 +652,7 @@ class AuthService {
       deviceType: "companion",
       deviceName: companionDevice.deviceName,
       companionDeviceType: companionDevice.deviceType,
+      hardExpiresAt: companionDevice.expiresAt ?? null,
       userAgent: this.normalizeOptionalText(input.userAgent),
     });
 
@@ -664,6 +675,11 @@ class AuthService {
       createdAt: device.createdAt,
       updatedAt: device.updatedAt,
       revokedAt: device.revokedAt,
+      expiresAt:
+        device.expiresAt ??
+        (device.createdAt
+          ? new Date(device.createdAt.getTime() + COMPANION_LIFETIME_MS)
+          : null),
     }));
 
     const pendingList: CompanionDeviceSummary[] = pendingKeys.map((key) => ({
@@ -748,6 +764,25 @@ class AuthService {
       updatedAt: updatedKey.updatedAt,
       revokedAt: null,
     };
+  }
+
+  /**
+   * Removes companion devices whose month is over and revokes every token they hold. Run by the scheduler;
+   * requests are also refused as soon as the month ends (see the auth middleware), so nothing waits for it.
+   */
+  public async removeExpiredCompanionDevices(
+    now: Date = new Date(),
+  ): Promise<number> {
+    const expired = await findExpiredCompanionDevices(
+      now,
+      COMPANION_LIFETIME_MS,
+    );
+    for (const device of expired) {
+      const id = device._id.toString();
+      await revokeCompanionDeviceById(id, now);
+      await revokeDeviceSessionsByDeviceId(id, now);
+    }
+    return expired.length;
   }
 
   public async revokeCompanionDevice(
@@ -887,7 +922,9 @@ class AuthService {
       deviceName: descriptor.deviceName,
       companionDeviceType: descriptor.companionDeviceType,
       refreshTokenHash: placeholderHash,
-      expiresAt: new Date(Date.now() + this.refreshTokenExpiresInMs()),
+      expiresAt:
+        descriptor.hardExpiresAt ??
+        new Date(Date.now() + this.refreshTokenExpiresInMs()),
       userAgent: descriptor.userAgent,
       revokedAt: null,
       lastRotatedAt: null,
@@ -904,7 +941,8 @@ class AuthService {
     const refreshedSession = await updateDeviceSessionRefreshToken(
       session._id.toString(),
       this.hashSecret(tokens.refreshToken),
-      new Date(Date.now() + this.refreshTokenExpiresInMs()),
+      descriptor.hardExpiresAt ??
+        new Date(Date.now() + this.refreshTokenExpiresInMs()),
       new Date(),
     );
 
@@ -940,7 +978,10 @@ class AuthService {
     const refreshedSession = await updateDeviceSessionRefreshToken(
       session._id.toString(),
       this.hashSecret(tokens.refreshToken),
-      new Date(now.getTime() + this.refreshTokenExpiresInMs()),
+      // A companion device never gets more time by refreshing: its month ends on the day set when it was paired.
+      session.deviceType === "companion" && session.expiresAt
+        ? session.expiresAt
+        : new Date(now.getTime() + this.refreshTokenExpiresInMs()),
       now,
     );
 
@@ -1077,6 +1118,7 @@ class AuthService {
           deviceType: normalizedType,
           status: "active",
           revokedAt: null,
+          expiresAt: new Date(Date.now() + COMPANION_LIFETIME_MS),
         });
       } catch (error) {
         if (this.isDuplicateKeyError(error)) {
