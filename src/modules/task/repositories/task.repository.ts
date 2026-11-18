@@ -21,7 +21,7 @@ export interface CreateTaskPayload {
   title: string;
   description?: string;
   note?: string;
-  date: string;
+  date?: string | null;
   status?: TaskStatus;
   priority?: TaskPriority;
   basePriority?: TaskPriority;
@@ -57,7 +57,7 @@ export interface UpdateTaskPayload {
   title?: string;
   description?: string;
   note?: string;
-  date?: string;
+  date?: string | null;
   status?: TaskStatus;
   priority?: TaskPriority;
   basePriority?: TaskPriority;
