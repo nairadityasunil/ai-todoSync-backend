@@ -84,12 +84,17 @@ class ProjectController {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 10;
       const search = req.query.search as string | undefined;
+      const workspaceId =
+        typeof req.query.workspaceId === "string" && req.query.workspaceId
+          ? req.query.workspaceId
+          : undefined;
 
       const result = await projectService.fetchProjectsPaginated(
         user._id.toString(),
         page,
         limit,
         search,
+        workspaceId,
       );
 
       res.status(200).json({
