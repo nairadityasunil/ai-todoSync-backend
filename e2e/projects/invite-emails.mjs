@@ -9,7 +9,7 @@ let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c)
 const call = async (tok, method, path, body) => { const r = await fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
 const s = Date.now().toString(36);
 const reg = async (n) => { await call(null, 'POST', '/auth/register', { email: `${n}-${s}@example.com`, password: 'Password123!', name: n }); return (await call(null, 'POST', '/auth/login', { email: `${n}-${s}@example.com`, password: 'Password123!' })).j.data; };
-const mailed = async (to, subjectPart) => { for (let i = 0; i < 20; i++) { const log = fs.readFileSync(LOG, 'utf8'); if (log.split('\n').some((l) => l.includes('[MOCK EMAIL]') && l.includes(`To: ${to}`) && l.includes(subjectPart))) return true; await new Promise((r) => setTimeout(r, 250)); } return false; };
+const mailed = async (to, subjectPart) => { for (let i = 0; i < 20; i++) { const log = fs.readFileSync(LOG, 'utf8'); if (log.split('\n').some((l) => l.includes('[mail] Brevo accepted') && l.includes(`for ${to} `) && l.includes(subjectPart))) return true; await new Promise((r) => setTimeout(r, 250)); } return false; };
 const boss = await reg('ie-boss'); const old = await reg('ie-old'); const oldMail = `ie-old-${s}@example.com`;
 const proj = (await call(boss.token, 'POST', '/projects', { name: 'Mail <b>Proj</b> ' + s })).j.data.project;
 const newMail = `ie-new-${s}@example.com`;
