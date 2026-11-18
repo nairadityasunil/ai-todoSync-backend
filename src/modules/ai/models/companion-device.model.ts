@@ -11,6 +11,8 @@ export interface ICompanionDevice {
   slot: number;
   status: CompanionDeviceStatus;
   revokedAt?: Date | null;
+  /** The pairing lasts one month; then the device is removed and its tokens revoked. */
+  expiresAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -53,6 +55,10 @@ const companionDeviceSchema = new Schema<ICompanionDeviceDocument>(
       type: Date,
       default: null,
     },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );
@@ -63,6 +69,7 @@ companionDeviceSchema.index({
   status: 1,
   updatedAt: -1,
 });
+companionDeviceSchema.index({ status: 1, expiresAt: 1 });
 companionDeviceSchema.index(
   { userId: 1, slot: 1 },
   {
