@@ -13,6 +13,15 @@ import type {
   UpdateCompanionDeviceInput,
 } from "../../../modules/auth/services/auth.service.js";
 import type { AuthResult, AuthenticatedRequest } from "../../../types/auth.js";
+import {
+  ACCESS_COOKIE,
+  REFRESH_COOKIE,
+  authBody,
+  clearAuthCookies,
+  readCookie,
+  requestIsTrusted,
+  setAuthCookies,
+} from "../auth-cookies.js";
 
 class AuthController {
   public register = async (req: Request, res: Response): Promise<void> => {
@@ -42,7 +51,7 @@ class AuthController {
         );
         res.status(201).json({
           message: "User registered successfully",
-          data: { ...this.buildAuthResponse(auth), joined },
+          data: { ...authBody(req, res, auth), joined },
         });
         return;
       }
@@ -53,7 +62,7 @@ class AuthController {
 
       res.status(201).json({
         message: "User registered successfully",
-        data: this.buildAuthResponse(authResult),
+        data: authBody(req, res, authResult),
       });
     } catch (error) {
       this.respondWithError(res, error);
@@ -85,7 +94,7 @@ class AuthController {
 
       res.status(200).json({
         message: "Login successful",
-        data: this.buildAuthResponse(authResult),
+        data: authBody(req, res, authResult),
       });
     } catch (error) {
       this.respondWithError(res, error);
@@ -103,7 +112,7 @@ class AuthController {
 
       res.status(200).json({
         message: "2FA verification successful",
-        data: this.buildAuthResponse(authResult),
+        data: authBody(req, res, authResult),
       });
     } catch (error) {
       this.respondWithError(res, error);
@@ -166,14 +175,46 @@ class AuthController {
     }
   };
 
+  /** Ends this browser's session: revokes it on the server and clears the cookies. */
+  public logout = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const cookieAuth = !req.headers.authorization;
+      if (cookieAuth && !requestIsTrusted(req)) {
+        res.status(403).json({ error: "Untrusted origin" });
+        return;
+      }
+      await authService.logoutFromToken(
+        req.headers.authorization?.replace(/^Bearer\s+/i, "").trim() ||
+          readCookie(req, ACCESS_COOKIE) ||
+          "",
+      );
+      clearAuthCookies(res);
+      res.status(200).json({ message: "Signed out" });
+    } catch (error) {
+      clearAuthCookies(res);
+      this.respondWithError(res, error);
+    }
+  };
+
   public refresh = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { refreshToken } = req.body as { refreshToken?: string };
-      const authResult = await authService.refreshTokens(refreshToken ?? "");
+      const bodyToken = (req.body as { refreshToken?: string } | undefined)
+        ?.refreshToken;
+      const cookieToken = bodyToken
+        ? undefined
+        : readCookie(req, REFRESH_COOKIE);
+      // A refresh that relies on the cookie must come from one of our own pages.
+      if (cookieToken && !requestIsTrusted(req)) {
+        res.status(403).json({ error: "Untrusted origin" });
+        return;
+      }
+      const authResult = await authService.refreshTokens(
+        bodyToken ?? cookieToken ?? "",
+      );
 
       res.status(200).json({
         message: "Tokens refreshed successfully",
-        data: this.buildAuthResponse(authResult),
+        data: authBody(req, res, authResult),
       });
     } catch (error) {
       this.respondWithError(res, error);
@@ -241,7 +282,7 @@ class AuthController {
 
       res.status(200).json({
         message: "Companion device login successful",
-        data: this.buildAuthResponse(authResult),
+        data: authBody(req, res, authResult),
       });
     } catch (error) {
       this.respondWithError(res, error);
@@ -462,12 +503,10 @@ class AuthController {
       if (finalRedirectUrl.origin !== redirectOrigin) {
         finalRedirectUrl = new URL("/", redirectOrigin);
       }
-      // Tokens go in the fragment: browsers never send it to servers, so it
-      // stays out of access logs and Referer headers.
-      finalRedirectUrl.hash = new URLSearchParams({
-        token: authResult.accessToken,
-        refreshToken: authResult.refreshToken,
-      }).toString();
+      // Tokens are never put in the URL: the sign-in lives in HttpOnly cookies set on this response.
+      setAuthCookies(res, authResult);
+      // Tells the portal to pick up the cookie sign-in when it loads.
+      finalRedirectUrl.hash = "signin=1";
 
       logger.info(
         `Google OAuth redirecting to ${finalRedirectUrl.origin}${finalRedirectUrl.pathname}`,
@@ -596,19 +635,6 @@ class AuthController {
       this.respondWithError(res, error);
     }
   };
-
-  private buildAuthResponse(result: AuthResult) {
-    return {
-      token: result.token,
-      accessToken: result.accessToken,
-      refreshToken: result.refreshToken,
-      accessTokenExpiresIn: result.accessTokenExpiresIn,
-      refreshTokenExpiresIn: result.refreshTokenExpiresIn,
-      syncApiKey: result.syncApiKey,
-      user: result.user,
-      session: result.session,
-    };
-  }
 
   private extractDeviceMetadata(req: Request): DeviceMetadataInput {
     const body = (req.body ?? {}) as {

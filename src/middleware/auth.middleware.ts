@@ -24,6 +24,11 @@ import { findActiveDeviceSessionById } from "../modules/auth/repositories/device
 import type { IDeviceSessionDocument } from "../modules/auth/models/device-session.model.js";
 import authService from "../modules/auth/services/auth.service.js";
 import type { AuthenticatedRequest } from "../types/auth.js";
+import {
+  ACCESS_COOKIE,
+  readCookie,
+  requestIsTrusted,
+} from "../modules/auth/auth-cookies.js";
 
 const respondUnauthorized = (res: Response): Response =>
   res.status(401).json({ error: "Unauthorized" });
@@ -301,7 +306,15 @@ const authMiddleware = async (
   }
 
   const authorizationHeader = getHeaderValue(req.headers.authorization);
-  const bearerToken = getBearerToken(authorizationHeader);
+  const headerToken = getBearerToken(authorizationHeader);
+  // The browser portal signs in with an HttpOnly cookie; an Authorization header (API clients) wins over it.
+  const cookieToken = headerToken ? undefined : readCookie(req, ACCESS_COOKIE);
+  if (cookieToken && !requestIsTrusted(req)) {
+    // A cookie travels on cross-site requests too, so changes must come from one of our own pages.
+    res.status(403).json({ error: "Untrusted origin" });
+    return;
+  }
+  const bearerToken = headerToken ?? cookieToken;
   const jwtAuth = bearerToken ? await resolveJwtAuth(bearerToken) : null;
 
   if (jwtAuth) {

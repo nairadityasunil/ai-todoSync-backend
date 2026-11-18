@@ -392,6 +392,19 @@ class AuthService {
     return this.buildProfile(user);
   }
 
+  /** Revokes the device session an access token belongs to. A bad or expired token is not an error. */
+  public async logoutFromToken(token: string): Promise<void> {
+    if (!token) return;
+    try {
+      const decoded = this.verifyAccessToken(token);
+      if (typeof decoded.sessionId === "string") {
+        await revokeDeviceSession(decoded.sessionId, new Date());
+      }
+    } catch {
+      // already signed out or expired: nothing to revoke
+    }
+  }
+
   public async refreshTokens(refreshToken: string): Promise<AuthResult> {
     if (!refreshToken) {
       throw new HttpError(400, "Refresh token is required");
