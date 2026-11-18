@@ -35,6 +35,14 @@ r = await call(tok, 'PATCH', `/tasks/${t.id}`, { stateId: states['Dropped'] }); 
 r = await call(tok, 'PATCH', `/tasks/${t.id}`, { status: 'IN_PROGRESS' }); ok(r.j.data.task.stateId === states['In Progress'], 'changing the built-in status picks the matching state (older clients keep working)');
 r = await call(tok, 'PATCH', `/tasks/${t.id}/status`, { status: 'DONE' }); ok(r.status === 200 && r.j.data.task.stateId === states['Done'], 'the status endpoint keeps the state in step too');
 
+// A workflow with no state of a task's kind: the task still lands in a column
+const odd = (await call(tok, 'POST', '/projects', { name: 'Odd ' + s })).j.data.project;
+const oddStates = {};
+for (const [name, category] of [['Open', 'STARTED'], ['Shipped', 'COMPLETED']]) oddStates[name] = (await call(tok, 'POST', `/projects/${odd.id}/states`, { name, category, color: '#3B82F6' })).j.state?._id;
+let ot = await mk(odd.id); ok(ot.status === 'TODO' && ot.stateId === oddStates['Open'], 'no "not started" state: a new task goes to the first column');
+r = await call(tok, 'PATCH', `/tasks/${ot.id}`, { status: 'DONE' }); ok(r.j.data.task.stateId === oddStates['Shipped'], 'and finished work to the completed column');
+r = await call(tok, 'PATCH', `/tasks/${ot.id}`, { status: 'BACKLOG' }); ok(r.j.data.task.stateId === oddStates['Open'], 'a backlog task with no backlog state also goes to the first column');
+
 // Validation
 const otherState = (await call(tok, 'POST', `/projects/${Q.id}/states`, { name: 'Elsewhere', category: 'STARTED', color: '#10B981' })).j.state?._id;
 r = await call(tok, 'PATCH', `/tasks/${t.id}`, { stateId: otherState }); ok(r.status === 400, 'a state from another project is refused (' + r.status + ')');

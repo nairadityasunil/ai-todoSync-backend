@@ -245,7 +245,13 @@ class TaskService {
     ) {
       const category =
         STATUS_STATE_CATEGORY[fields.status ?? "TODO"] ?? "UNSTARTED";
-      const match = states.find((s) => s.category === category);
+      // No state of that kind? Use the nearest column: open work goes to the first one, finished work to the last.
+      const match =
+        states.find((s) => s.category === category) ??
+        (category === "COMPLETED"
+          ? (states.find((s) => s.category === "CANCELED") ??
+            states[states.length - 1])
+          : states[0]);
       out.stateId = match ? String(match._id) : null;
     } else if (fields.projectChanged) {
       out.stateId = null;
