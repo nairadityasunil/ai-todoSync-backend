@@ -203,6 +203,15 @@ class App {
       await this.initializeDatabase();
       // Build any declared index that is missing, without holding up the server.
       ensureIndexesInBackground();
+      // People who joined a project before project members were made workspace members (idempotent).
+      void import("./modules/workspace/services/workspace-membership-repair.service.js")
+        .then((m) => m.addMissingWorkspaceMembers())
+        .catch((error) =>
+          logger.error(
+            "Adding project members to their workspaces failed",
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+        );
       // Bring back tasks an old nightly rollover hid without copying them (idempotent).
       void import("./modules/task/services/task-repair.service.js")
         .then((m) => m.restoreRolledOverTasks())
