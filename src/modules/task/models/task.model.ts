@@ -21,6 +21,8 @@ export type TaskSlaState =
 /** One note on a task. A task can have several; each remembers who wrote it. */
 export interface ITaskNote {
   _id?: any;
+  /** Short heading shown in the list of notes; older notes have none and show the start of their text. */
+  title?: string;
   text: string;
   authorId?: Types.ObjectId | string | null;
   createdAt?: Date;
@@ -151,6 +153,7 @@ const taskSchema = new Schema<ITaskDocument>(
       type: [
         new Schema(
           {
+            title: { type: String, trim: true, maxlength: 200, default: "" },
             text: {
               type: String,
               required: true,
