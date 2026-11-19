@@ -331,6 +331,7 @@ class TaskService {
       payload.priority,
       payload.status,
       now,
+      payload.projectId ? String(payload.projectId) : null,
     );
 
     const basePriority = payload.priority ?? "MEDIUM";

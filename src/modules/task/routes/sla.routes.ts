@@ -16,6 +16,18 @@ class SlaRoutes implements Routes {
     this.router.use(authMiddleware);
     this.router.get("/config", slaController.getConfigs);
     this.router.patch("/config", slaController.updateConfig);
+    this.router.get(
+      "/projects/:projectId/config",
+      slaController.getProjectConfigs,
+    );
+    this.router.patch(
+      "/projects/:projectId/config",
+      slaController.updateProjectConfig,
+    );
+    this.router.delete(
+      "/projects/:projectId/config/:priority",
+      slaController.resetProjectConfig,
+    );
     this.router.get("/tasks/:taskId/status", slaController.getTaskStatus);
     this.router.get("/breached-tasks", slaController.getBreachedTasks);
     this.router.get("/analytics", slaController.getAnalytics);
