@@ -71,6 +71,15 @@ export const mcpAuthMiddleware = async (
   try {
     const jwtAuth = bearerToken ? await resolveJwtAuth(bearerToken) : null;
     if (jwtAuth) {
+      // Companion devices (paired phones, tablets, apps) are not MCP clients.
+      if (jwtAuth.session?.deviceType === "companion") {
+        res.status(403).json({
+          error: "companion_not_mcp",
+          message:
+            "Companion devices cannot use MCP. Connect MCP clients with an API key.",
+        });
+        return;
+      }
       user = jwtAuth.user;
       const sessionAgent = await resolveSessionAgent(
         jwtAuth.user,
@@ -132,7 +141,9 @@ export const mcpAuthMiddleware = async (
   req.mcpUserId = user._id.toString();
   req.mcpAgent = agent ?? undefined;
   // An agent's standing scopes plus any just-in-time grant still running.
-  req.mcpScopes = agent ? [...(await effectiveScopes(agent))] : [...(personScopes ?? [])];
+  req.mcpScopes = agent
+    ? [...(await effectiveScopes(agent))]
+    : [...(personScopes ?? [])];
 
   const body = (
     req.body && typeof req.body === "object" ? req.body : {}
