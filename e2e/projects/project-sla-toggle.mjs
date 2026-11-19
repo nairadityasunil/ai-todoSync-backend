@@ -31,7 +31,8 @@ r = await call(A.token, 'GET', `/sla/projects/${proj.id}/config`);
 ok(r.j.data.enabled === false && r.j.data.configs.length === 4, 'the SLA settings say it is off and still hold the times');
 
 const t2 = (await call(A.token, 'POST', '/tasks', { title: 'while off ' + s, projectId: proj.id, priority: 'HIGH' })).j.data.task;
-ok(t2.slaResponseDueAt == null && t2.slaResolutionDueAt == null, 'a task made while it is off has no due dates');
+ok(t2.slaResponseDueAt == null && t2.slaResolutionDueAt == null && t2.slaTracked === false, 'a task made while it is off has no due dates and is marked untracked');
+ok((await taskOf(t1.id)).slaTracked === false, 'and the existing tasks of the project are marked untracked too');
 an = (await call(A.token, 'GET', `/sla/analytics?projectId=${proj.id}`)).j.data.summary;
 ok(an.totalBreached === 0 && an.responseCompliancePercent === 100, 'the project reports nothing while off');
 ok((await call(A.token, 'GET', '/sla/breached-tasks')).j.data.tasks.every((t) => t.id !== t1.id), "and its tasks are left out of the breached list");
@@ -45,7 +46,14 @@ ok(r.status === 200 && r.j.data.task.slaResolutionDueAt == null, 'changing a pri
 r = await call(A.token, 'PATCH', `/sla/projects/${proj.id}/enabled`, { enabled: true });
 ok(r.status === 200 && r.j.data.enabled === true, 'turning it back on');
 const t2b = await taskOf(t2.id);
-ok(t2b.slaResolutionDueAt != null && t2b.slaResponseDueAt != null, 'the task made while it was off now has due dates');
+ok(t2b.slaResolutionDueAt != null && t2b.slaResponseDueAt != null && t2b.slaTracked === true, 'the task made while it was off now has due dates and is tracked again');
 an = (await call(A.token, 'GET', `/sla/analytics?projectId=${proj.id}`)).j.data.summary;
 ok(an.totalBreached === 1, 'and the earlier breach counts again');
+// moving a task between projects follows the destination's setting
+const off = (await call(A.token, 'POST', '/projects', { name: 'Off ' + s })).j.data.project;
+await call(A.token, 'PATCH', `/sla/projects/${off.id}/enabled`, { enabled: false });
+r = await call(A.token, 'PATCH', `/tasks/${t2.id}`, { projectId: off.id });
+ok(r.status === 200 && r.j.data.task.slaTracked === false, 'a task moved into a project with SLA off becomes untracked');
+r = await call(A.token, 'PATCH', `/tasks/${t2.id}`, { projectId: proj.id });
+ok(r.status === 200 && r.j.data.task.slaTracked === true, 'and tracked again when moved back');
 console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);

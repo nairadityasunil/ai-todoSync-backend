@@ -74,6 +74,7 @@ type InitialSlaFields = Pick<
   | "slaPausedAt"
   | "totalPausedDuration"
   | "currentSlaState"
+  | "slaTracked"
 >;
 
 class HttpError extends Error {
@@ -277,6 +278,7 @@ class SlaService {
     const isPaused = status === "BLOCKED";
 
     return {
+      slaTracked: tracked,
       slaResponseDueAt: tracked
         ? addHours(now, config.responseTimeHours)
         : null,
@@ -399,7 +401,7 @@ class SlaService {
     if (!updates.priority || updates.priority === currentTask.priority) {
       return updates;
     }
-    if (!(await this.isProjectSlaEnabled(currentTask.projectId))) {
+    if (currentTask.slaTracked === false) {
       return updates;
     }
 
@@ -438,7 +440,6 @@ class SlaService {
 
   public async listBreachedTasks(userId: string): Promise<ITaskDocument[]> {
     const projectIds = await this.getAccessibleProjectIds(userId);
-    const untracked = await this.untrackedProjectIds();
 
     return TaskModel.find({
       $or: [
@@ -447,7 +448,7 @@ class SlaService {
       ],
       $and: [
         { $or: [{ responseBreached: true }, { resolutionBreached: true }] },
-        ...(untracked.length ? [{ projectId: { $nin: untracked } }] : []),
+        { slaTracked: { $ne: false } },
       ],
     })
       .sort({ priority: 1, slaResolutionDueAt: 1 })
@@ -469,10 +470,7 @@ class SlaService {
       if (!projectIds.includes(scope.projectId)) {
         throw new HttpError(403, "You do not have access to this project");
       }
-      // Tracking off: there is nothing to report for this project.
-      filter = (await this.isProjectSlaEnabled(scope.projectId))
-        ? buildRefMatch("projectId", scope.projectId)
-        : { _id: { $in: [] } };
+      filter = buildRefMatch("projectId", scope.projectId);
     } else if (scope.workspaceId) {
       const inWorkspace = await ProjectModel.find(
         buildSafeRefMatch("workspaceId", scope.workspaceId),
@@ -481,27 +479,20 @@ class SlaService {
         .lean()
         .exec();
       const mine = new Set(projectIds);
-      const off = new Set(await this.untrackedProjectIds());
       filter = buildRefInMatch(
         "projectId",
-        inWorkspace
-          .map((p) => String(p._id))
-          .filter((id) => mine.has(id) && !off.has(id)),
+        inWorkspace.map((p) => String(p._id)).filter((id) => mine.has(id)),
       );
     } else {
-      const off = await this.untrackedProjectIds();
       filter = {
-        $and: [
-          {
-            $or: [
-              buildRefMatch("userId", userId),
-              buildRefInMatch("projectId", projectIds),
-            ],
-          },
-          ...(off.length ? [{ projectId: { $nin: off } }] : []),
+        $or: [
+          buildRefMatch("userId", userId),
+          buildRefInMatch("projectId", projectIds),
         ],
       };
     }
+    // Tasks of a project with SLA tracking off are not part of any SLA number.
+    filter = { $and: [filter, { slaTracked: { $ne: false } }] };
     // Only the fields the numbers need, as plain objects: this used to load every task in full
     // (subtasks, notes and all), which grows with the workspace.
     const tasks = await TaskModel.find(filter)
@@ -574,12 +565,9 @@ class SlaService {
   }
 
   public async updateBreaches(now = new Date()): Promise<number> {
-    const untracked = await this.untrackedProjectIds();
     const candidates = await TaskModel.find({
       status: { $nin: ["DONE", "rolled_over", "BLOCKED"] },
-      ...(untracked.length
-        ? { projectId: { $nin: untracked.map(String) } }
-        : {}),
+      slaTracked: { $ne: false },
       $or: [
         {
           responseBreached: false,
@@ -634,15 +622,6 @@ class SlaService {
     return project?.slaEnabled !== false;
   }
 
-  /** Projects with SLA tracking off: their tasks are left out of breach checks, analytics and breached lists. */
-  private async untrackedProjectIds(): Promise<string[]> {
-    const rows = await ProjectModel.find({ slaEnabled: false })
-      .select({ _id: 1 })
-      .lean()
-      .exec();
-    return rows.map((r) => String(r._id));
-  }
-
   /** Turns SLA tracking on or off for a project (project admins only). Turning it back on dates its open tasks. */
   public async setProjectSlaEnabled(
     userId: string,
@@ -657,6 +636,10 @@ class SlaService {
       { _id: projectId },
       { $set: { slaEnabled: enabled } },
     ).exec();
+    // Every task of the project follows, so lists and numbers need no lookup. Nothing else on the tasks is touched.
+    await TaskModel.updateMany(buildRefMatch("projectId", projectId), {
+      $set: { slaTracked: enabled },
+    }).exec();
     // Tasks made while it was off have no due dates: give them the project's times, counted from when they were made.
     if (enabled && !before) {
       for (const priority of SLA_PRIORITIES) {
