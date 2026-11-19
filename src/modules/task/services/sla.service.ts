@@ -2,6 +2,7 @@ import type { UpdateQuery } from "mongoose";
 
 import SlaConfigModel from "../models/sla-config.model.js";
 import ProjectSlaConfigModel from "../models/project-sla-config.model.js";
+import ProjectModel from "../../project/models/project.model.js";
 import TaskModel, {
   type ITaskDocument,
   type TaskPriority,
@@ -432,16 +433,45 @@ class SlaService {
       .exec();
   }
 
-  public async getAnalytics(userId: string): Promise<SlaAnalyticsDto> {
+  /**
+   * SLA numbers for the tasks of one project, of one workspace (the projects of it the person belongs to), or,
+   * with no scope, of everything the person can see. A screen about one project must pass its scope: the numbers
+   * are computed from the tasks themselves, so a wider scope shows other projects' tasks as this one's.
+   */
+  public async getAnalytics(
+    userId: string,
+    scope: { projectId?: string; workspaceId?: string } = {},
+  ): Promise<SlaAnalyticsDto> {
     const projectIds = await this.getAccessibleProjectIds(userId);
+    let filter: Record<string, unknown>;
+    if (scope.projectId) {
+      if (!projectIds.includes(scope.projectId)) {
+        throw new HttpError(403, "You do not have access to this project");
+      }
+      filter = buildRefMatch("projectId", scope.projectId);
+    } else if (scope.workspaceId) {
+      const inWorkspace = await ProjectModel.find(
+        buildSafeRefMatch("workspaceId", scope.workspaceId),
+      )
+        .select({ _id: 1 })
+        .lean()
+        .exec();
+      const mine = new Set(projectIds);
+      filter = buildRefInMatch(
+        "projectId",
+        inWorkspace.map((p) => String(p._id)).filter((id) => mine.has(id)),
+      );
+    } else {
+      filter = {
+        $or: [
+          buildRefMatch("userId", userId),
+          buildRefInMatch("projectId", projectIds),
+        ],
+      };
+    }
     // Only the fields the numbers need, as plain objects: this used to load every task in full
     // (subtasks, notes and all), which grows with the workspace.
-    const tasks = await TaskModel.find({
-      $or: [
-        buildRefMatch("userId", userId),
-        buildRefInMatch("projectId", projectIds),
-      ],
-    })
+    const tasks = await TaskModel.find(filter)
       .select(
         "priority responseBreached resolutionBreached firstResponseAt completedAt createdAt totalPausedDuration",
       )

@@ -1,0 +1,33 @@
+// SLA numbers on a project's screen are about that project's tasks only.
+import mongoose from 'mongoose';
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const send = () => fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let r; try { r = await send(); } catch { r = await send(); } let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+const reg = async (n) => { await call(null, 'POST', '/auth/register', { email: `${n}-${s}@example.com`, password: 'Password123!', name: n }); return (await call(null, 'POST', '/auth/login', { email: `${n}-${s}@example.com`, password: 'Password123!' })).j.data; };
+await mongoose.connect(process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27017/', { dbName: 'pristine' }); const db = mongoose.connection.db;
+const A = await reg('sa-a'), B = await reg('sa-b');
+const wsr = (await call(A.token, 'POST', '/workspaces', { name: 'SLA scope ' + s })).j; const ws = wsr.workspace ?? wsr.data; const wsId = ws.id ?? ws._id;
+const p1 = (await call(A.token, 'POST', '/projects', { name: 'Clean ' + s, workspaceId: wsId })).j.data.project;
+const p2 = (await call(A.token, 'POST', '/projects', { name: 'Late ' + s, workspaceId: wsId })).j.data.project;
+const t1 = (await call(A.token, 'POST', '/tasks', { title: 'fresh ' + s, projectId: p1.id })).j.data.task;
+const t2 = (await call(A.token, 'POST', '/tasks', { title: 'late ' + s, projectId: p2.id })).j.data.task;
+const t3 = (await call(A.token, 'POST', '/tasks', { title: 'personal late ' + s })).j.data.task;
+const past = new Date(Date.now() - 5 * 36e5);
+for (const t of [t2, t3]) await db.collection('tasks').updateOne({ _id: new mongoose.Types.ObjectId(t.id) }, { $set: { responseBreached: true, resolutionBreached: true, slaResolutionDueAt: past, slaResponseDueAt: past } });
+const an = async (tok, q) => { const r = await call(tok, 'GET', '/sla/analytics' + q); return { status: r.status, s: r.j.data?.summary }; };
+
+let r = await an(A.token, `?projectId=${p1.id}`);
+ok(r.s.totalBreached === 0, `the clean project shows 0 breached (${r.s.totalBreached})`);
+ok(r.s.responseCompliancePercent === 100 && r.s.resolutionCompliancePercent === 100 && r.s.averageResolutionTimeHours === 0, 'and 100% / 100% / 0h, not other projects\' numbers');
+r = await an(A.token, `?projectId=${p2.id}`);
+ok(r.s.totalBreached === 1, `the late project shows its one breached task (${r.s.totalBreached})`);
+r = await an(A.token, `?workspaceId=${wsId}`);
+ok(r.s.totalBreached === 1, `the workspace shows only its projects' breaches, not the personal task (${r.s.totalBreached})`);
+r = await an(A.token, '');
+ok(r.s.totalBreached >= 2, `with no scope it still covers everything (${r.s.totalBreached})`);
+ok((await an(B.token, `?projectId=${p1.id}`)).status === 403, 'someone outside the project cannot read its numbers');
+ok((await an(B.token, `?workspaceId=${wsId}`)).s.totalBreached === 0, 'a workspace you are not in shows nothing');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); await mongoose.disconnect(); process.exit(fails ? 1 : 0);
