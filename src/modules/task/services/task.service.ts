@@ -1,3 +1,4 @@
+import { richTextToPlain, sanitizeRichText } from "../../../utils/rich-text.js";
 import mongoose from "mongoose";
 import {
   createTask,
@@ -299,7 +300,7 @@ class TaskService {
     payload.projectId = resolved.projectId;
     payload.epicId = resolved.epicId;
 
-    payload.note = this.normalizeOptionalText(payload.note);
+    payload.note = this.normalizeNote(payload.note);
 
     if (payload.status != null) {
       payload.status = this.normalizeTaskStatus(payload.status);
@@ -569,7 +570,7 @@ class TaskService {
     }
 
     if (Object.prototype.hasOwnProperty.call(updates, "note")) {
-      updates.note = this.normalizeOptionalText(updates.note);
+      updates.note = this.normalizeNote(updates.note);
       // Older callers set one `note`. With several notes, that edits the newest one (empty removes it).
       const stored = (currentTask.notes ?? []).map((n) => ({
         _id: n._id,
@@ -1169,10 +1170,12 @@ class TaskService {
   }
 
   private noteText(value: unknown): string {
-    const text = typeof value === "string" ? value.trim() : "";
-    if (!text) throw new HttpError(400, "A note cannot be empty");
-    if (text.length > 5000)
-      throw new HttpError(400, "A note can be at most 5000 characters");
+    const text =
+      typeof value === "string" ? sanitizeRichText(value.trim()) : "";
+    if (!text || !richTextToPlain(text))
+      throw new HttpError(400, "A note cannot be empty");
+    // Formatting adds markup, so the limit is on the stored text; the writing itself is far shorter.
+    if (text.length > 20000) throw new HttpError(400, "A note is too long");
     return text;
   }
 
@@ -1374,7 +1377,10 @@ class TaskService {
 
     const subtask = value as Record<string, unknown>;
     const title = typeof subtask.title === "string" ? subtask.title.trim() : "";
-    const note = typeof subtask.note === "string" ? subtask.note.trim() : "";
+    const note =
+      typeof subtask.note === "string"
+        ? sanitizeRichText(subtask.note.trim())
+        : "";
 
     if (!title) {
       throw new HttpError(400, `Subtask at index ${index} requires a title`);
@@ -1648,6 +1654,12 @@ class TaskService {
     }
 
     return new Date();
+  }
+
+  /** A task or subtask note: trimmed, and cleaned if it holds HTML (see utils/rich-text). */
+  private normalizeNote(value: unknown): string | undefined {
+    const text = this.normalizeOptionalText(value);
+    return text === undefined ? undefined : sanitizeRichText(text);
   }
 
   private normalizeOptionalText(value: unknown): string | undefined {

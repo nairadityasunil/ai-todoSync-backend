@@ -1,3 +1,4 @@
+import { richTextToPlain, sanitizeRichText } from "../../../utils/rich-text.js";
 import type { INoteDocument } from "../models/note.model.js";
 import {
   createNote,
@@ -291,7 +292,8 @@ class NoteService {
       throw new HttpError(400, "Note content must be a string");
     }
 
-    const trimmed = value.replace(/<[^>]*>/g, "").trim();
+    const clean = sanitizeRichText(value);
+    const trimmed = richTextToPlain(clean);
     if (value.length > 0 && trimmed.length === 0) {
       throw new HttpError(
         400,
@@ -299,7 +301,7 @@ class NoteService {
       );
     }
 
-    return value;
+    return clean;
   }
 
   private appendContent(
