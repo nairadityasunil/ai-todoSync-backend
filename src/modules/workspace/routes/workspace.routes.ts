@@ -12,6 +12,7 @@ import {
   inviteMember,
   updateMemberRole,
   removeMember,
+  leaveWorkspace,
 } from "../../../modules/workspace/controllers/workspace.controller.js";
 
 class WorkspaceRoutes implements Routes {
@@ -27,6 +28,7 @@ class WorkspaceRoutes implements Routes {
     this.router.get("/", authMiddleware, listWorkspaces);
     this.router.post("/", authMiddleware, createWorkspace);
     this.router.post("/:id/use", authMiddleware, markWorkspaceUsed);
+    this.router.post("/:id/leave", authMiddleware, leaveWorkspace);
     this.router.get("/:id", authMiddleware, getWorkspaceDetails);
     this.router.patch("/:id", authMiddleware, updateWorkspace);
     this.router.delete("/:id", authMiddleware, deleteWorkspace);

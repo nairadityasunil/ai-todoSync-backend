@@ -8,6 +8,14 @@ import WorkspaceMemberModel, {
 } from "../../../modules/workspace/models/workspace-member.model.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectModel from "../../project/models/project.model.js";
+import ProjectMemberModel from "../../project/models/project-member.model.js";
+import { deleteProjectMembership } from "../../project/repositories/project-member.repository.js";
+import { clearTaskAssignmentsForUser } from "../../task/repositories/task.repository.js";
+import { runInTransaction } from "../../../utils/transaction.js";
+import {
+  buildSafeRefInMatch,
+  buildSafeRefMatch,
+} from "../../../utils/mongo-ref.js";
 import { AppError } from "../../../utils/app-error.js";
 import { countOwnersByWorkspace } from "../repositories/workspace-member.repository.js";
 
@@ -356,6 +364,60 @@ class WorkspaceService {
     };
   }
 
+  /**
+   * Takes a person out of a workspace: out of every project in it too (otherwise being a project member would
+   * make them a workspace member again), with their task assignments there cleared. Someone who is the admin of a
+   * project in the workspace must hand it over or delete it first, the same rule as leaving a single project.
+   */
+  private async detachFromWorkspace(
+    targetUserId: string,
+    workspaceId: string,
+  ): Promise<void> {
+    const projects = await ProjectModel.find(
+      buildSafeRefMatch("workspaceId", workspaceId),
+    )
+      .select({ _id: 1, name: 1 })
+      .lean()
+      .exec();
+    const projectIds = projects.map((p) => String(p._id));
+
+    if (projectIds.length > 0) {
+      const adminOf = await ProjectMemberModel.find({
+        ...buildSafeRefInMatch("projectId", projectIds),
+        ...buildSafeRefMatch("userId", targetUserId),
+        role: "ADMIN",
+      })
+        .select({ projectId: 1 })
+        .lean()
+        .exec();
+      if (adminOf.length > 0) {
+        const names = adminOf
+          .map(
+            (m) =>
+              projects.find((p) => String(p._id) === String(m.projectId))?.name,
+          )
+          .filter(Boolean)
+          .join(", ");
+        throw new AppError(
+          409,
+          `Project admins cannot leave their projects. Delete ${names} first.`,
+          "CONFLICT",
+        );
+      }
+    }
+
+    await runInTransaction(async (session) => {
+      for (const projectId of projectIds) {
+        await deleteProjectMembership(projectId, targetUserId, session);
+        await clearTaskAssignmentsForUser(projectId, targetUserId, session);
+      }
+      await WorkspaceMemberModel.findOneAndDelete(
+        { workspaceId, userId: targetUserId },
+        { session: session as any },
+      );
+    });
+  }
+
   public async removeMember(
     userId: string,
     workspaceId: string,
@@ -370,10 +432,27 @@ class WorkspaceService {
       throw new AppError(400, "Cannot remove workspace owner", "BAD_REQUEST");
     }
 
-    await WorkspaceMemberModel.findOneAndDelete({
+    await this.detachFromWorkspace(targetUserId, workspaceId);
+
+    return { success: true };
+  }
+
+  /** A member leaves a workspace on their own. The owner cannot: they delete the workspace instead. */
+  public async leaveWorkspace(userId: string, workspaceId: string) {
+    const { workspace, member } = await this.assertMembership(
+      userId,
       workspaceId,
-      userId: targetUserId,
-    });
+    );
+
+    if (member.role === "OWNER" || workspace.ownerId.toString() === userId) {
+      throw new AppError(
+        400,
+        "The owner cannot leave the workspace. Delete it instead.",
+        "BAD_REQUEST",
+      );
+    }
+
+    await this.detachFromWorkspace(userId, workspaceId);
 
     return { success: true };
   }
