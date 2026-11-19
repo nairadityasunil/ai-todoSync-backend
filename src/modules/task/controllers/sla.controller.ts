@@ -197,7 +197,12 @@ class SlaController {
         return;
       }
 
-      const summary = await slaService.getAnalytics(user._id.toString());
+      const one = (v: unknown): string | undefined =>
+        typeof v === "string" && v ? v : undefined;
+      const summary = await slaService.getAnalytics(user._id.toString(), {
+        projectId: one(req.query.projectId),
+        workspaceId: one(req.query.workspaceId),
+      });
       res
         .status(200)
         .json({ message: "SLA analytics fetched", data: { summary } });
