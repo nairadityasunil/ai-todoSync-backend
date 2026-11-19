@@ -1,0 +1,46 @@
+// A project can set its own SLA times; its tasks use them, only project admins change them, and reset goes back to defaults.
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const send = () => fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let r; try { r = await send(); } catch { r = await send(); } let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+const reg = async (n) => { await call(null, 'POST', '/auth/register', { email: `${n}-${s}@example.com`, password: 'Password123!', name: n }); return (await call(null, 'POST', '/auth/login', { email: `${n}-${s}@example.com`, password: 'Password123!' })).j.data; };
+const A = await reg('ps-a'), B = await reg('ps-b'), C = await reg('ps-c');
+const p = (await call(A.token, 'POST', '/projects', { name: 'SLA ' + s })).j.data.project;
+const other = (await call(A.token, 'POST', '/projects', { name: 'SLA other ' + s })).j.data.project;
+await call(A.token, 'POST', `/invitations/projects/${p.id}`, { email: `ps-b-${s}@example.com` });
+const tok = (await call(B.token, 'GET', '/invitations/me')).j.data[0].token;
+await call(B.token, 'POST', '/invitations/accept', { token: tok });
+const hrs = (t, f) => Math.round(((new Date(t[f]) - new Date(t.createdAt ?? Date.now())) / 36e5) * 10) / 10;
+
+let r = await call(A.token, 'GET', `/sla/projects/${p.id}/config`);
+const crit = r.j.data.configs.find((c) => c.priority === 'CRITICAL');
+ok(r.status === 200 && crit.custom === false && crit.responseTimeHours === 1, 'before any change the project shows the defaults (CRITICAL 1h / 4h), not custom');
+ok((await call(B.token, 'GET', `/sla/projects/${p.id}/config`)).status === 200, 'a member can read the project SLA');
+ok((await call(C.token, 'GET', `/sla/projects/${p.id}/config`)).status === 403, 'someone outside the project cannot');
+ok((await call(B.token, 'PATCH', `/sla/projects/${p.id}/config`, { priority: 'CRITICAL', responseTimeHours: 2, resolutionTimeHours: 8 })).status === 403, 'a member cannot change it');
+ok((await call(A.token, 'PATCH', `/sla/projects/${p.id}/config`, { priority: 'CRITICAL', responseTimeHours: 8, resolutionTimeHours: 8 })).status === 400, 'response must be shorter than resolution');
+r = await call(A.token, 'PATCH', `/sla/projects/${p.id}/config`, { priority: 'CRITICAL', responseTimeHours: 2, resolutionTimeHours: 8 });
+ok(r.status === 200 && r.j.data.config.custom === true, 'a project admin sets CRITICAL to 2h / 8h');
+
+const mk = async (projectId, priority) => (await call(A.token, 'POST', '/tasks', { title: `t ${priority} ${s}`, priority, ...(projectId ? { projectId } : {}) })).j.data.task;
+const due = async (id) => { const st = (await call(A.token, 'GET', `/sla/tasks/${id}/status`)).j.data.status; return { resp: (new Date(st.responseDueAt) - Date.now()) / 36e5, res: (new Date(st.resolutionDueAt) - Date.now()) / 36e5 }; };
+const near = (v, e) => Math.abs(v - e) < 0.1;
+let t = await mk(p.id, 'CRITICAL'); let d = await due(t.id);
+ok(near(d.resp, 2) && near(d.res, 8), `a new CRITICAL task in the project is due in ~2h / ~8h (${d.resp.toFixed(2)} / ${d.res.toFixed(2)})`);
+let to = await mk(other.id, 'CRITICAL'); d = await due(to.id);
+ok(near(d.resp, 1) && near(d.res, 4), 'the same priority in another project keeps 1h / 4h');
+let tm = await mk(p.id, 'MEDIUM'); d = await due(tm.id);
+ok(near(d.resp, 24) && near(d.res, 72), 'a priority the project did not change keeps the defaults (24h / 72h)');
+await call(A.token, 'PATCH', `/sla/projects/${p.id}/config`, { priority: 'CRITICAL', responseTimeHours: 3, resolutionTimeHours: 12 });
+d = await due(t.id);
+ok(near(d.resp, 3) && near(d.res, 12), 'changing the times re-dates the open tasks of that priority');
+await call(A.token, 'PATCH', '/sla/config', { priority: 'CRITICAL', responseTimeHours: 1, resolutionTimeHours: 4 });
+d = await due(t.id);
+ok(near(d.resp, 3) && near(d.res, 12), "a person's own default change does not override the project's times");
+ok((await call(B.token, 'DELETE', `/sla/projects/${p.id}/config/CRITICAL`)).status === 403, 'a member cannot reset it');
+ok((await call(A.token, 'DELETE', `/sla/projects/${p.id}/config/CRITICAL`)).status === 200, 'an admin resets CRITICAL');
+d = await due(t.id);
+ok(near(d.resp, 1) && near(d.res, 4), 'the task goes back to the defaults (1h / 4h)');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); process.exit(fails ? 1 : 0);

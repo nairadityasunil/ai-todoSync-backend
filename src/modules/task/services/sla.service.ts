@@ -1,13 +1,17 @@
 import type { UpdateQuery } from "mongoose";
 
 import SlaConfigModel from "../models/sla-config.model.js";
+import ProjectSlaConfigModel from "../models/project-sla-config.model.js";
 import TaskModel, {
   type ITaskDocument,
   type TaskPriority,
   type TaskSlaState,
   type TaskStatus,
 } from "../../../modules/task/models/task.model.js";
-import { getProjectMembershipsByUser } from "../../project/repositories/project-member.repository.js";
+import {
+  getProjectMembership,
+  getProjectMembershipsByUser,
+} from "../../project/repositories/project-member.repository.js";
 import type { UpdateTaskPayload } from "../repositories/task.repository.js";
 import {
   buildRefInMatch,
@@ -27,6 +31,11 @@ interface SlaConfigDto {
   priority: TaskPriority;
   responseTimeHours: number;
   resolutionTimeHours: number;
+}
+
+interface ProjectSlaConfigDto extends SlaConfigDto {
+  /** True when the project sets its own times for this priority; false when it uses the person's defaults. */
+  custom: boolean;
 }
 
 interface SlaStatusDto {
@@ -145,14 +154,114 @@ class SlaService {
     };
   }
 
+  /** Every priority's times for a project, marking which ones the project sets itself. Any member can read them. */
+  public async getProjectConfigs(
+    userId: string,
+    projectId: string,
+  ): Promise<ProjectSlaConfigDto[]> {
+    await this.assertProjectMember(userId, projectId);
+    const [own, personal] = await Promise.all([
+      ProjectSlaConfigModel.find({
+        ...buildSafeRefMatch("projectId", projectId),
+      })
+        .lean()
+        .exec(),
+      this.getConfigs(userId),
+    ]);
+    return personal.map((fallback) => {
+      const mine = own.find((c) => c.priority === fallback.priority);
+      return {
+        id: mine?._id.toString() ?? fallback.id,
+        priority: fallback.priority,
+        responseTimeHours:
+          mine?.responseTimeHours ?? fallback.responseTimeHours,
+        resolutionTimeHours:
+          mine?.resolutionTimeHours ?? fallback.resolutionTimeHours,
+        custom: Boolean(mine),
+      };
+    });
+  }
+
+  /** Sets a project's own times for one priority. Only project admins can. Open tasks of that priority are re-dated. */
+  public async updateProjectConfig(
+    userId: string,
+    projectId: string,
+    payload: {
+      priority?: unknown;
+      responseTimeHours?: unknown;
+      resolutionTimeHours?: unknown;
+    },
+  ): Promise<ProjectSlaConfigDto> {
+    await this.assertProjectAdmin(userId, projectId);
+    const priority = this.normalizePriority(payload.priority);
+    const responseTimeHours = this.normalizeHours(
+      payload.responseTimeHours,
+      "responseTimeHours",
+    );
+    const resolutionTimeHours = this.normalizeHours(
+      payload.resolutionTimeHours,
+      "resolutionTimeHours",
+    );
+    if (responseTimeHours >= resolutionTimeHours) {
+      throw new HttpError(
+        400,
+        "Response SLA must be shorter than resolution SLA",
+      );
+    }
+
+    const config = await ProjectSlaConfigModel.findOneAndUpdate(
+      { ...buildSafeRefMatch("projectId", projectId), priority },
+      {
+        projectId,
+        priority,
+        responseTimeHours,
+        resolutionTimeHours,
+        updatedBy: userId,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    ).exec();
+    if (!config) {
+      throw new HttpError(500, "Unable to update the project SLA");
+    }
+
+    await this.recalculateOpenTasksForProject(projectId, priority);
+    return {
+      id: config._id.toString(),
+      priority,
+      responseTimeHours,
+      resolutionTimeHours,
+      custom: true,
+    };
+  }
+
+  /** Removes a project's own times for a priority, so it goes back to the person's defaults. */
+  public async resetProjectConfig(
+    userId: string,
+    projectId: string,
+    priorityInput: unknown,
+  ): Promise<void> {
+    await this.assertProjectAdmin(userId, projectId);
+    const priority = this.normalizePriority(priorityInput);
+    await ProjectSlaConfigModel.deleteOne({
+      ...buildSafeRefMatch("projectId", projectId),
+      priority,
+    }).exec();
+    await this.recalculateOpenTasksForProject(projectId, priority);
+  }
+
   public async buildInitialSlaFields(
     userId: string,
     priority: TaskPriority | undefined,
     status: TaskStatus | undefined,
     now = new Date(),
+    projectId?: string | null,
   ): Promise<InitialSlaFields> {
     const normalizedPriority = priority ?? "MEDIUM";
-    const config = await this.getConfigForPriority(userId, normalizedPriority);
+    const config = await this.getConfigForPriority(
+      userId,
+      normalizedPriority,
+      projectId,
+    );
     const firstResponseAt =
       status && status !== "TODO" && status !== "BACKLOG" ? now : null;
     const completedAt = status === "DONE" ? now : null;
@@ -274,7 +383,11 @@ class SlaService {
       return updates;
     }
 
-    const config = await this.getConfigForPriority(userId, updates.priority);
+    const config = await this.getConfigForPriority(
+      userId,
+      updates.priority,
+      currentTask.projectId ? String(currentTask.projectId) : null,
+    );
     const start = currentTask.createdAt ?? new Date();
     const paused = currentTask.totalPausedDuration ?? 0;
 
@@ -462,10 +575,26 @@ class SlaService {
     );
   }
 
+  /** The times that apply: the project's own for this priority if it sets them, else the person's, else the defaults. */
   private async getConfigForPriority(
     userId: string,
     priority: TaskPriority,
+    projectId?: string | null,
   ): Promise<{ responseTimeHours: number; resolutionTimeHours: number }> {
+    if (projectId) {
+      const own = await ProjectSlaConfigModel.findOne({
+        ...buildSafeRefMatch("projectId", projectId),
+        priority,
+      })
+        .lean()
+        .exec();
+      if (own) {
+        return {
+          responseTimeHours: own.responseTimeHours,
+          resolutionTimeHours: own.resolutionTimeHours,
+        };
+      }
+    }
     await this.ensureDefaultConfigs(userId);
     const config = await SlaConfigModel.findOne({
       ...buildRefMatch("userId", userId),
@@ -480,11 +609,34 @@ class SlaService {
     priority: TaskPriority,
   ): Promise<void> {
     const config = await this.getConfigForPriority(userId, priority);
-    const tasks = await TaskModel.find({
+    const allTasks = await TaskModel.find({
       ...buildRefMatch("userId", userId),
       priority,
       status: { $nin: ["DONE", "rolled_over"] },
     }).exec();
+
+    // Tasks in a project that sets its own times for this priority keep the project's times.
+    const projectIds = [
+      ...new Set(
+        allTasks.filter((t) => t.projectId).map((t) => String(t.projectId)),
+      ),
+    ];
+    const overridden = new Set(
+      projectIds.length === 0
+        ? []
+        : (
+            await ProjectSlaConfigModel.find({
+              ...buildRefInMatch("projectId", projectIds),
+              priority,
+            })
+              .select({ projectId: 1 })
+              .lean()
+              .exec()
+          ).map((c) => String(c.projectId)),
+    );
+    const tasks = allTasks.filter(
+      (t) => !t.projectId || !overridden.has(String(t.projectId)),
+    );
 
     const now = new Date();
     for (const task of tasks) {
@@ -503,6 +655,62 @@ class SlaService {
         slaResolutionDueAt: resolutionDueAt,
       };
       await TaskModel.updateOne({ _id: task._id }, update).exec();
+    }
+  }
+
+  private async assertProjectMember(
+    userId: string,
+    projectId: string,
+  ): Promise<{ role: string }> {
+    const membership = await getProjectMembership(projectId, userId);
+    if (!membership) {
+      throw new HttpError(403, "You do not have access to this project");
+    }
+    return membership;
+  }
+
+  private async assertProjectAdmin(
+    userId: string,
+    projectId: string,
+  ): Promise<void> {
+    const membership = await this.assertProjectMember(userId, projectId);
+    if (membership.role !== "ADMIN") {
+      throw new HttpError(403, "Only project admins can change the SLA");
+    }
+  }
+
+  /** Re-dates the open tasks of a project for one priority after its times changed (or were reset). */
+  private async recalculateOpenTasksForProject(
+    projectId: string,
+    priority: TaskPriority,
+  ): Promise<void> {
+    const tasks = await TaskModel.find({
+      ...buildRefMatch("projectId", projectId),
+      priority,
+      status: { $nin: ["DONE", "rolled_over"] },
+    }).exec();
+    const now = new Date();
+    for (const task of tasks) {
+      const config = await this.getConfigForPriority(
+        String(task.userId),
+        priority,
+        projectId,
+      );
+      const start = task.createdAt ?? now;
+      const paused = task.totalPausedDuration ?? 0;
+      await TaskModel.updateOne(
+        { _id: task._id },
+        {
+          slaResponseDueAt: addMilliseconds(
+            addHours(start, config.responseTimeHours),
+            paused,
+          ),
+          slaResolutionDueAt: addMilliseconds(
+            addHours(start, config.resolutionTimeHours),
+            paused,
+          ),
+        },
+      ).exec();
     }
   }
 

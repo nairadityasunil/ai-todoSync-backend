@@ -61,6 +61,75 @@ class SlaController {
     }
   };
 
+  public getProjectConfigs = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const configs = await slaService.getProjectConfigs(
+        user._id.toString(),
+        getRouteParam(req.params.projectId),
+      );
+      res
+        .status(200)
+        .json({ message: "Project SLA fetched", data: { configs } });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public updateProjectConfig = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const config = await slaService.updateProjectConfig(
+        user._id.toString(),
+        getRouteParam(req.params.projectId),
+        req.body ?? {},
+      );
+      res
+        .status(200)
+        .json({ message: "Project SLA updated", data: { config } });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public resetProjectConfig = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      await slaService.resetProjectConfig(
+        user._id.toString(),
+        getRouteParam(req.params.projectId),
+        getRouteParam(req.params.priority),
+      );
+      res.status(200).json({ message: "Project SLA reset to defaults" });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
   public getTaskStatus = async (
     req: AuthenticatedRequest,
     res: Response,
