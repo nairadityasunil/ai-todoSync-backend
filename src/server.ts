@@ -23,6 +23,7 @@ import SurveyRoutes from "./modules/surveys/routes.js";
 import TargetingRoutes from "./modules/targeting/routes.js";
 import AiPlanningRoutes from "./modules/ai-planner/routes/ai-planning.routes.js";
 import TimeRoutes from "./modules/time/time.routes.js";
+import MyTimeRoutes from "./modules/time/my-time.routes.js";
 import AdminAuthRoutes from "./modules/admin/admin-auth.routes.js";
 import AdminRoutes from "./modules/admin/admin.routes.js";
 import SdkIntegrationRoutes from "./modules/sdk-integrations/routes.js";
@@ -79,6 +80,7 @@ const server = new App([
   new ChatRoutes(),
   new AiPlanningRoutes(),
   new TimeRoutes(),
+  new MyTimeRoutes(),
   // the admin sign-in is public, so it is registered before the admin routes that need a signed-in super admin
   new AdminAuthRoutes(),
   new AdminRoutes(),

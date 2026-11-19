@@ -2,6 +2,7 @@ import { Types } from "mongoose";
 
 import TaskModel from "../task/models/task.model.js";
 import projectService from "../project/services/project.service.js";
+import ProjectModel from "../project/models/project.model.js";
 import TimeEntryModel from "./time-entry.model.js";
 
 class TimeError extends Error {
@@ -41,7 +42,8 @@ const mondayOf = (day: string): string => {
  * The last day a timesheet may reach: today, plus a day of slack so people ahead of UTC (their "today" has
  * already started here) are not refused. The portal limits itself to the person's own today.
  */
-const latestAllowedDay = (): string => addDays(new Date().toISOString().slice(0, 10), 1);
+const latestAllowedDay = (): string =>
+  addDays(new Date().toISOString().slice(0, 10), 1);
 
 const parseMinutes = (value: unknown): number => {
   const n = Number(value);
@@ -76,7 +78,88 @@ export interface WeekResult {
   tasks: Array<{ id: string; title: string; estimatedHours: number | null }>;
 }
 
+export interface MyWeekResult {
+  /** Monday of the week. */
+  weekStart: string;
+  /** The seven days, Monday first. */
+  days: string[];
+  /** Only projects the person logged time on this week, the most time first. */
+  projects: Array<{
+    projectId: string;
+    name: string;
+    minutes: number;
+    /** Minutes for each of the seven days. */
+    byDay: number[];
+  }>;
+  totalMinutes: number;
+  /** Minutes for each of the seven days, across projects. */
+  totalByDay: number[];
+}
+
 class TimeService {
+  /**
+   * The signed-in person's own time for one week across every project: minutes per project and per day.
+   * Projects with no time that week are left out.
+   */
+  public async getMyWeek(
+    userId: string,
+    query: { start?: unknown },
+  ): Promise<MyWeekResult> {
+    const monday = mondayOf(
+      query.start
+        ? parseDay(query.start, "start")
+        : new Date().toISOString().slice(0, 10),
+    );
+    if (monday > latestAllowedDay())
+      throw new TimeError(400, "Time cannot be viewed for upcoming weeks");
+    const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+    const entries = await TimeEntryModel.find({
+      userId: new Types.ObjectId(userId),
+      date: { $gte: days[0], $lte: days[6] },
+    })
+      .select("projectId date minutes")
+      .lean();
+
+    const byProject = new Map<string, number[]>();
+    for (const e of entries) {
+      const slot = days.indexOf(e.date);
+      if (slot < 0) continue;
+      const id = String(e.projectId);
+      const row = byProject.get(id) ?? Array<number>(7).fill(0);
+      row[slot] += e.minutes;
+      byProject.set(id, row);
+    }
+    const names = new Map(
+      (
+        await ProjectModel.find({
+          _id: { $in: [...byProject.keys()].map((k) => new Types.ObjectId(k)) },
+        })
+          .select("name")
+          .lean()
+      ).map((p) => [String(p._id), p.name]),
+    );
+    const sum = (a: number[]): number => a.reduce((n, v) => n + v, 0);
+    const projects = [...byProject]
+      .map(([projectId, byDay]) => ({
+        projectId,
+        name: names.get(projectId) ?? "Deleted project",
+        minutes: sum(byDay),
+        byDay,
+      }))
+      .filter((p) => p.minutes > 0)
+      .sort((a, b) => b.minutes - a.minutes || a.name.localeCompare(b.name));
+    const totalByDay = days.map((_, i) =>
+      projects.reduce((n, p) => n + p.byDay[i], 0),
+    );
+    return {
+      weekStart: monday,
+      days,
+      projects,
+      totalMinutes: sum(totalByDay),
+      totalByDay,
+    };
+  }
+
   /**
    * One week of time for the project. A member sees their own; an admin may ask for `scope: "all"`
    * (everyone) or a single `userId`.
