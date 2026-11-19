@@ -45,4 +45,21 @@ ok(r.status === 400, 'upcoming weeks are refused');
 ok((await call(A.token, 'GET', '/time/my-week?start=nonsense')).status === 400, 'a bad date is refused');
 ok((await call(null, 'GET', '/time/my-week')).status === 401, 'signing in is required');
 r = await call(B.token, 'GET', '/time/my-week'); ok(r.j.data.projects.length === 1 && r.j.data.totalMinutes === 600, "each person sees only their own time (B: " + r.j.data.totalMinutes + ")");
+
+// grouped by workspace: every workspace the person is in, with the time in its projects
+const mkWs = async (name) => { const r = (await call(A.token, 'POST', '/workspaces', { name })).j; const w = r.workspace ?? r.data; return w.id ?? w._id; };
+const w2 = await mkWs('Second ' + s), w3 = await mkWs('Empty ' + s);
+const p4 = (await call(A.token, 'POST', '/projects', { name: 'Gamma ' + s, workspaceId: w2 })).j.data.project;
+await log(A.token, p4, mon, 75);
+r = await call(A.token, 'GET', '/time/my-week'); w = r.j.data;
+const byName = (n) => w.workspaces.find((x) => x.name.startsWith(n));
+ok(Array.isArray(w.workspaces) && byName('Second ' + s) && byName('Empty ' + s), 'every workspace the person is in is listed: ' + w.workspaces.map((x) => `${x.name.split(' ')[0]} ${x.minutes}`).join(', '));
+ok(byName('Second ' + s).minutes === 75 && byName('Second ' + s).projects.length === 1 && byName('Second ' + s).projects[0].name.startsWith('Gamma'), 'a workspace shows the time in its own projects');
+ok(byName('Empty ' + s).minutes === 0 && byName('Empty ' + s).projects.length === 0, 'a workspace with no time is listed with 0 and no projects');
+const home = w.workspaces.find((x) => x.projects.some((p) => p.name.startsWith('Alpha')));
+ok(home && home.minutes === 135 && home.projects.length === 2 && !home.projects.some((p) => p.name.startsWith('Idle') || p.name.startsWith('Gamma')), "the first workspace holds Alpha and Beta only (no project without time, none from another workspace)");
+ok(w.workspaces.reduce((n, x) => n + x.minutes, 0) === w.totalMinutes && w.totalMinutes === 210, 'the workspace totals add up to the week total (' + w.totalMinutes + ')');
+ok(w.projects.length === 3, 'the flat project list still has all projects with time');
+r = await call(B.token, 'GET', '/time/my-week'); const wb = r.j.data;
+ok(wb.workspaces.length >= 2 && wb.workspaces.some((x) => x.minutes === 600 && x.projects.length === 1), "another person's view lists their own workspaces and their own time");
 console.log(fails ? `\n${fails} FAILED` : '\nall passed'); process.exit(fails ? 1 : 0);
