@@ -3,6 +3,8 @@ import { Types } from "mongoose";
 import TaskModel from "../task/models/task.model.js";
 import projectService from "../project/services/project.service.js";
 import ProjectModel from "../project/models/project.model.js";
+import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
+import WorkspaceModel from "../workspace/models/workspace.model.js";
 import TimeEntryModel from "./time-entry.model.js";
 
 class TimeError extends Error {
@@ -94,6 +96,16 @@ export interface MyWeekResult {
   totalMinutes: number;
   /** Minutes for each of the seven days, across projects. */
   totalByDay: number[];
+  /**
+   * The same time grouped by workspace: every workspace the person is part of (even with no time that week)
+   * and any other workspace they logged time in, each with its projects that have time.
+   */
+  workspaces: Array<{
+    workspaceId: string | null;
+    name: string;
+    minutes: number;
+    projects: MyWeekResult["projects"];
+  }>;
 }
 
 class TimeService {
@@ -129,20 +141,25 @@ class TimeService {
       row[slot] += e.minutes;
       byProject.set(id, row);
     }
-    const names = new Map(
-      (
-        await ProjectModel.find({
-          _id: { $in: [...byProject.keys()].map((k) => new Types.ObjectId(k)) },
-        })
-          .select("name")
-          .lean()
-      ).map((p) => [String(p._id), p.name]),
+    const projectDocs = await ProjectModel.find({
+      _id: { $in: [...byProject.keys()].map((k) => new Types.ObjectId(k)) },
+    })
+      .select("name workspaceId")
+      .lean();
+    const info = new Map(
+      projectDocs.map((p) => [
+        String(p._id),
+        {
+          name: p.name,
+          workspaceId: p.workspaceId ? String(p.workspaceId) : null,
+        },
+      ]),
     );
     const sum = (a: number[]): number => a.reduce((n, v) => n + v, 0);
     const projects = [...byProject]
       .map(([projectId, byDay]) => ({
         projectId,
-        name: names.get(projectId) ?? "Deleted project",
+        name: info.get(projectId)?.name ?? "Deleted project",
         minutes: sum(byDay),
         byDay,
       }))
@@ -151,12 +168,50 @@ class TimeService {
     const totalByDay = days.map((_, i) =>
       projects.reduce((n, p) => n + p.byDay[i], 0),
     );
+
+    // Group by workspace: all the person's workspaces, plus any other one they logged time in.
+    const memberships = await WorkspaceMemberModel.find({
+      userId: new Types.ObjectId(userId),
+    })
+      .select("workspaceId")
+      .lean();
+    const groupIds = new Set(memberships.map((m) => String(m.workspaceId)));
+    for (const p of projects) {
+      const w = info.get(p.projectId)?.workspaceId;
+      if (w) groupIds.add(w);
+    }
+    const workspaceNames = new Map(
+      (
+        await WorkspaceModel.find({
+          _id: { $in: [...groupIds].map((k) => new Types.ObjectId(k)) },
+        })
+          .select("name")
+          .lean()
+      ).map((w) => [String(w._id), w.name]),
+    );
+    const grouped = new Map<string | null, typeof projects>();
+    for (const id of groupIds) grouped.set(id, []);
+    for (const p of projects) {
+      const w = info.get(p.projectId)?.workspaceId ?? null;
+      grouped.set(w, [...(grouped.get(w) ?? []), p]);
+    }
+    const workspaces = [...grouped]
+      .map(([workspaceId, list]) => ({
+        workspaceId,
+        name: workspaceId
+          ? (workspaceNames.get(workspaceId) ?? "Workspace")
+          : "No workspace",
+        minutes: list.reduce((n, p) => n + p.minutes, 0),
+        projects: list,
+      }))
+      .sort((a, b) => b.minutes - a.minutes || a.name.localeCompare(b.name));
     return {
       weekStart: monday,
       days,
       projects,
       totalMinutes: sum(totalByDay),
       totalByDay,
+      workspaces,
     };
   }
 
