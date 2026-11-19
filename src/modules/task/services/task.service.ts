@@ -655,7 +655,12 @@ class TaskService {
       currentTask,
       updates,
     );
-    updates = slaService.applyStatusTransition(currentTask, updates);
+    updates = slaService.applyStatusTransition(
+      currentTask,
+      updates,
+      new Date(),
+      await slaService.isProjectSlaEnabled(currentTask.projectId),
+    );
 
     const updated = await updateTask(taskId, updates);
 

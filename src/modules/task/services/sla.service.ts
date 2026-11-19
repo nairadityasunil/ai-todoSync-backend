@@ -156,6 +156,14 @@ class SlaService {
   }
 
   /** Every priority's times for a project, marking which ones the project sets itself. Any member can read them. */
+  public async getProjectSla(
+    userId: string,
+    projectId: string,
+  ): Promise<{ enabled: boolean; configs: ProjectSlaConfigDto[] }> {
+    const configs = await this.getProjectConfigs(userId, projectId);
+    return { enabled: await this.isProjectSlaEnabled(projectId), configs };
+  }
+
   public async getProjectConfigs(
     userId: string,
     projectId: string,
@@ -258,19 +266,23 @@ class SlaService {
     projectId?: string | null,
   ): Promise<InitialSlaFields> {
     const normalizedPriority = priority ?? "MEDIUM";
-    const config = await this.getConfigForPriority(
-      userId,
-      normalizedPriority,
-      projectId,
-    );
+    // A project with SLA tracking off gets tasks without due dates.
+    const tracked = await this.isProjectSlaEnabled(projectId);
+    const config = tracked
+      ? await this.getConfigForPriority(userId, normalizedPriority, projectId)
+      : DEFAULT_SLA_CONFIG[normalizedPriority];
     const firstResponseAt =
       status && status !== "TODO" && status !== "BACKLOG" ? now : null;
     const completedAt = status === "DONE" ? now : null;
     const isPaused = status === "BLOCKED";
 
     return {
-      slaResponseDueAt: addHours(now, config.responseTimeHours),
-      slaResolutionDueAt: addHours(now, config.resolutionTimeHours),
+      slaResponseDueAt: tracked
+        ? addHours(now, config.responseTimeHours)
+        : null,
+      slaResolutionDueAt: tracked
+        ? addHours(now, config.resolutionTimeHours)
+        : null,
       responseBreached: false,
       resolutionBreached: false,
       firstResponseAt,
@@ -289,6 +301,7 @@ class SlaService {
     currentTask: ITaskDocument,
     updates: UpdateTaskPayload,
     now = new Date(),
+    slaEnabled = true,
   ): UpdateTaskPayload {
     const nextStatus = (updates.status ?? currentTask.status) as TaskStatus;
     const previousStatus = currentTask.status;
@@ -339,10 +352,13 @@ class SlaService {
       patch.completedAt = currentTask.completedAt ?? now;
     }
 
-    const responseDueAt =
-      patch.slaResponseDueAt ?? currentTask.slaResponseDueAt;
-    const resolutionDueAt =
-      patch.slaResolutionDueAt ?? currentTask.slaResolutionDueAt;
+    // With SLA tracking off nothing can become breached; earlier breach flags are kept, never erased.
+    const responseDueAt = slaEnabled
+      ? (patch.slaResponseDueAt ?? currentTask.slaResponseDueAt)
+      : null;
+    const resolutionDueAt = slaEnabled
+      ? (patch.slaResolutionDueAt ?? currentTask.slaResolutionDueAt)
+      : null;
     const firstResponseAt =
       patch.firstResponseAt ?? currentTask.firstResponseAt;
     const completedAt = patch.completedAt ?? currentTask.completedAt;
@@ -383,6 +399,9 @@ class SlaService {
     if (!updates.priority || updates.priority === currentTask.priority) {
       return updates;
     }
+    if (!(await this.isProjectSlaEnabled(currentTask.projectId))) {
+      return updates;
+    }
 
     const config = await this.getConfigForPriority(
       userId,
@@ -419,6 +438,7 @@ class SlaService {
 
   public async listBreachedTasks(userId: string): Promise<ITaskDocument[]> {
     const projectIds = await this.getAccessibleProjectIds(userId);
+    const untracked = await this.untrackedProjectIds();
 
     return TaskModel.find({
       $or: [
@@ -427,6 +447,7 @@ class SlaService {
       ],
       $and: [
         { $or: [{ responseBreached: true }, { resolutionBreached: true }] },
+        ...(untracked.length ? [{ projectId: { $nin: untracked } }] : []),
       ],
     })
       .sort({ priority: 1, slaResolutionDueAt: 1 })
@@ -448,7 +469,10 @@ class SlaService {
       if (!projectIds.includes(scope.projectId)) {
         throw new HttpError(403, "You do not have access to this project");
       }
-      filter = buildRefMatch("projectId", scope.projectId);
+      // Tracking off: there is nothing to report for this project.
+      filter = (await this.isProjectSlaEnabled(scope.projectId))
+        ? buildRefMatch("projectId", scope.projectId)
+        : { _id: { $in: [] } };
     } else if (scope.workspaceId) {
       const inWorkspace = await ProjectModel.find(
         buildSafeRefMatch("workspaceId", scope.workspaceId),
@@ -457,15 +481,24 @@ class SlaService {
         .lean()
         .exec();
       const mine = new Set(projectIds);
+      const off = new Set(await this.untrackedProjectIds());
       filter = buildRefInMatch(
         "projectId",
-        inWorkspace.map((p) => String(p._id)).filter((id) => mine.has(id)),
+        inWorkspace
+          .map((p) => String(p._id))
+          .filter((id) => mine.has(id) && !off.has(id)),
       );
     } else {
+      const off = await this.untrackedProjectIds();
       filter = {
-        $or: [
-          buildRefMatch("userId", userId),
-          buildRefInMatch("projectId", projectIds),
+        $and: [
+          {
+            $or: [
+              buildRefMatch("userId", userId),
+              buildRefInMatch("projectId", projectIds),
+            ],
+          },
+          ...(off.length ? [{ projectId: { $nin: off } }] : []),
         ],
       };
     }
@@ -541,8 +574,12 @@ class SlaService {
   }
 
   public async updateBreaches(now = new Date()): Promise<number> {
+    const untracked = await this.untrackedProjectIds();
     const candidates = await TaskModel.find({
       status: { $nin: ["DONE", "rolled_over", "BLOCKED"] },
+      ...(untracked.length
+        ? { projectId: { $nin: untracked.map(String) } }
+        : {}),
       $or: [
         {
           responseBreached: false,
@@ -585,6 +622,48 @@ class SlaService {
     }
 
     return candidates.length;
+  }
+
+  /** False only when a project admin has turned SLA tracking off for the project. */
+  public async isProjectSlaEnabled(projectId?: unknown): Promise<boolean> {
+    if (!projectId) return true;
+    const project = await ProjectModel.findById(String(projectId))
+      .select("slaEnabled")
+      .lean()
+      .exec();
+    return project?.slaEnabled !== false;
+  }
+
+  /** Projects with SLA tracking off: their tasks are left out of breach checks, analytics and breached lists. */
+  private async untrackedProjectIds(): Promise<string[]> {
+    const rows = await ProjectModel.find({ slaEnabled: false })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+    return rows.map((r) => String(r._id));
+  }
+
+  /** Turns SLA tracking on or off for a project (project admins only). Turning it back on dates its open tasks. */
+  public async setProjectSlaEnabled(
+    userId: string,
+    projectId: string,
+    enabled: unknown,
+  ): Promise<{ enabled: boolean }> {
+    await this.assertProjectAdmin(userId, projectId);
+    if (typeof enabled !== "boolean")
+      throw new HttpError(400, "enabled must be true or false");
+    const before = await this.isProjectSlaEnabled(projectId);
+    await ProjectModel.updateOne(
+      { _id: projectId },
+      { $set: { slaEnabled: enabled } },
+    ).exec();
+    // Tasks made while it was off have no due dates: give them the project's times, counted from when they were made.
+    if (enabled && !before) {
+      for (const priority of SLA_PRIORITIES) {
+        await this.recalculateOpenTasksForProject(projectId, priority);
+      }
+    }
+    return { enabled };
   }
 
   private async ensureDefaultConfigs(userId: string): Promise<void> {

@@ -70,6 +70,8 @@ export interface IProject {
   isArchived?: boolean;
   /** Data label for agent governance: public, internal (default), confidential, restricted. */
   classification?: string | null;
+  /** SLA tracking (due dates, breaches) for the project's tasks. On unless a project admin turns it off. */
+  slaEnabled?: boolean;
   /** Embedded AI configuration (formerly ProjectAiConfig collection) */
   ai?: IProjectAi;
   /** Embedded audit retention policy (formerly AuditRetentionPolicy collection) */
@@ -172,6 +174,7 @@ const projectSchema = new Schema<IProjectDocument>(
       enum: ["public", "internal", "confidential", "restricted", null],
       default: null,
     },
+    slaEnabled: { type: Boolean, default: true },
     // Embedded subdocuments (formerly separate collections)
     ai: { type: projectAiSchema, default: () => ({}) },
     audit: { type: projectAuditSchema, default: () => ({}) },
