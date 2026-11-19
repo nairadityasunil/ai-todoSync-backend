@@ -1,0 +1,32 @@
+// Notes can hold formatting and links; anything active is removed on every write path, plain text is untouched.
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const send = () => fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let r; try { r = await send(); } catch { r = await send(); } let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+await call(null, 'POST', '/auth/register', { email: `rn-${s}@example.com`, password: 'Password123!', name: 'RN' });
+const tok = (await call(null, 'POST', '/auth/login', { email: `rn-${s}@example.com`, password: 'Password123!' })).j.data.token;
+const proj = (await call(tok, 'POST', '/projects', { name: 'Rich ' + s })).j.data.project;
+const evil = '<h2>Plan</h2><p>See <a href="https://example.com/docs">the docs</a> and <a href="javascript:alert(1)">bad</a><script>alert(1)</script><img src=x onerror="alert(1)"></p>';
+const clean = (h) => h.includes('<h2>Plan</h2>') && h.includes('href="https://example.com/docs"') && h.includes('rel="noopener noreferrer nofollow"') && !/script|onerror|javascript:|<img/i.test(h);
+
+let r = await call(tok, 'POST', '/tasks', { title: 'rich ' + s, projectId: proj.id, note: evil, subtasks: [{ title: 'sub', note: evil }] });
+let t = r.j.data.task;
+ok(r.status < 300 && clean(t.note), 'a task note keeps formatting and links and loses scripts: ' + t.note.slice(0, 90));
+ok(clean(t.subtasks[0].note), 'a subtask note is cleaned the same way');
+r = await call(tok, 'PATCH', `/tasks/${t.id}`, { note: '<p>Edited <strong>bold</strong> <a href="mailto:a@b.co">mail</a><script>1</script></p>' });
+ok(r.j.data.task.note.includes('<strong>bold</strong>') && r.j.data.task.note.includes('mailto:a@b.co') && !r.j.data.task.note.includes('script'), 'editing the note cleans it too');
+r = await call(tok, 'PATCH', `/tasks/${t.id}`, { note: 'plain text with a < b\nand a second line' });
+ok(r.j.data.task.note === 'plain text with a < b\nand a second line', 'plain text notes are stored exactly as written');
+r = await call(tok, 'POST', `/tasks/${t.id}/notes`, { text: evil });
+const added = (r.j.data?.task ?? r.j.data)?.notes ?? [];
+ok(r.status < 300 && added.length > 0 && clean(added[added.length - 1].text), 'a note added to the list is cleaned');
+r = await call(tok, 'POST', `/tasks/${t.id}/notes`, { text: '<p><br></p>' });
+ok(r.status === 400, 'an empty formatted note is refused');
+r = await call(tok, 'POST', `/projects/${proj.id}/notes`, { title: 'doc ' + s, content: evil });
+const pn = r.j.data?.note;
+ok(r.status < 300 && pn && clean(pn.content), 'a project note is cleaned');
+r = await call(tok, 'POST', `/projects/${proj.id}/notes`, { title: 'empty ' + s, content: '<p></p>' });
+ok(r.status === 400, 'an empty project note is refused');
+console.log(fails ? `\n${fails} FAILED` : '\nall passed'); process.exit(fails ? 1 : 0);

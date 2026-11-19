@@ -151,7 +151,12 @@ const taskSchema = new Schema<ITaskDocument>(
       type: [
         new Schema(
           {
-            text: { type: String, required: true, trim: true, maxlength: 5000 },
+            text: {
+              type: String,
+              required: true,
+              trim: true,
+              maxlength: 20000,
+            },
             authorId: {
               type: Schema.Types.ObjectId,
               ref: "User",
