@@ -388,13 +388,27 @@ class TaskService {
     date?: unknown,
     assigneeId?: string,
     search?: string,
+    /** Only the tasks of this workspace's projects (plus the person's own tasks that belong to no project). */
+    workspaceId?: string,
   ): Promise<TaskDto[]> {
     const normalizedDate = this.normalizeDate(date);
     const memberships = await getProjectMembershipsByUser(userId);
-    const projectIds = memberships.map((membership) =>
+    let projectIds = memberships.map((membership) =>
       membership.projectId.toString(),
     );
     const roleMap = this.buildRoleMap(memberships);
+    if (workspaceId) {
+      const inWorkspace = new Set(
+        (
+          await ProjectModel.find({ workspaceId })
+            .select({ _id: 1 })
+            .lean()
+            .exec()
+        ).map((p) => String(p._id)),
+      );
+      projectIds = projectIds.filter((id) => inWorkspace.has(id));
+    }
+    const personalOnly = Boolean(workspaceId);
     const tasks = normalizedDate
       ? await getTasksByDate(
           userId,
@@ -402,8 +416,15 @@ class TaskService {
           normalizedDate,
           assigneeId,
           search,
+          personalOnly,
         )
-      : await getTasksByUser(userId, projectIds, assigneeId, search);
+      : await getTasksByUser(
+          userId,
+          projectIds,
+          assigneeId,
+          search,
+          personalOnly,
+        );
     return this.withoutDuplicatedRolloverOriginals(tasks).map((task) =>
       this.toDto(userId, task, roleMap),
     );

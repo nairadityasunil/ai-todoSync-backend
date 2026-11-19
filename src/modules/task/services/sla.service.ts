@@ -3,6 +3,7 @@ import type { UpdateQuery } from "mongoose";
 import SlaConfigModel from "../models/sla-config.model.js";
 import ProjectSlaConfigModel from "../models/project-sla-config.model.js";
 import ProjectModel from "../../project/models/project.model.js";
+import TimeEntryModel from "../../time/time-entry.model.js";
 import TaskModel, {
   type ITaskDocument,
   type TaskPriority,
@@ -58,7 +59,10 @@ interface SlaStatusDto {
 interface SlaAnalyticsDto {
   totalBreached: number;
   breachedByPriority: Record<TaskPriority, number>;
+  /** Average hours people logged on a resolved task (from saved time entries, not from the clock). */
   averageResolutionTimeHours: number;
+  /** How many resolved tasks that average is based on: those with logged time. 0 means there is nothing to average yet. */
+  resolvedTasksWithTime: number;
   responseCompliancePercent: number;
   resolutionCompliancePercent: number;
 }
@@ -497,7 +501,7 @@ class SlaService {
     // (subtasks, notes and all), which grows with the workspace.
     const tasks = await TaskModel.find(filter)
       .select(
-        "priority responseBreached resolutionBreached firstResponseAt completedAt createdAt totalPausedDuration",
+        "priority responseBreached resolutionBreached firstResponseAt completedAt",
       )
       .lean()
       .exec();
@@ -511,8 +515,7 @@ class SlaService {
     let responseEligible = 0;
     let resolutionCompliant = 0;
     let resolutionEligible = 0;
-    let resolutionTotalMs = 0;
-    let resolutionCount = 0;
+    const resolvedIds: unknown[] = [];
 
     tasks.forEach((task) => {
       const breached = task.responseBreached || task.resolutionBreached;
@@ -535,22 +538,27 @@ class SlaService {
         }
       }
 
-      if (task.completedAt && task.createdAt) {
-        resolutionTotalMs +=
-          task.completedAt.getTime() -
-          task.createdAt.getTime() -
-          (task.totalPausedDuration ?? 0);
-        resolutionCount += 1;
-      }
+      if (task.completedAt) resolvedIds.push(task._id);
     });
+
+    // Average resolve is what people logged: the minutes saved on each resolved task, averaged over the resolved
+    // tasks that have any. Nothing is worked out from created and completed dates.
+    const logged = resolvedIds.length
+      ? await TimeEntryModel.aggregate<{ _id: unknown; minutes: number }>([
+          { $match: { taskId: { $in: resolvedIds } } },
+          { $group: { _id: "$taskId", minutes: { $sum: "$minutes" } } },
+        ])
+      : [];
+    const loggedMinutes = logged.reduce((n, row) => n + row.minutes, 0);
 
     return {
       totalBreached,
       breachedByPriority,
       averageResolutionTimeHours:
-        resolutionCount === 0
+        logged.length === 0
           ? 0
-          : Number((resolutionTotalMs / resolutionCount / 3600000).toFixed(2)),
+          : Number((loggedMinutes / logged.length / 60).toFixed(2)),
+      resolvedTasksWithTime: logged.length,
       responseCompliancePercent:
         responseEligible === 0
           ? 100

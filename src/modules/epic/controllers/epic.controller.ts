@@ -78,9 +78,15 @@ class EpicController {
         typeof req.query.projectId === "string" && req.query.projectId.trim()
           ? req.query.projectId.trim()
           : undefined;
+      const workspaceId =
+        typeof req.query.workspaceId === "string" &&
+        req.query.workspaceId.trim()
+          ? req.query.workspaceId.trim()
+          : undefined;
       const epics = await epicService.fetchMyEpics(
         user._id.toString(),
         projectId,
+        workspaceId,
       );
       res.status(200).json({ message: "Epic list fetched", data: { epics } });
     } catch (error) {
