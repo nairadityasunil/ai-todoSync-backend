@@ -186,7 +186,7 @@ class TaskController {
         taskId: string,
         noteId: string,
         userId: string,
-        text: unknown,
+        body: { text?: unknown; title?: unknown },
       ) => Promise<unknown>,
       status = 200,
     ) =>
@@ -201,7 +201,7 @@ class TaskController {
           getRouteParam(req.params.id),
           getRouteParam(req.params.noteId),
           user._id.toString(),
-          (req.body as { text?: unknown } | undefined)?.text,
+          (req.body as { text?: unknown; title?: unknown } | undefined) ?? {},
         );
         res
           .status(status)
@@ -213,13 +213,13 @@ class TaskController {
     };
 
   public addNote = this.noteHandler(
-    (taskId, _noteId, userId, text) =>
-      taskService.addTaskNote(taskId, userId, text),
+    (taskId, _noteId, userId, body) =>
+      taskService.addTaskNote(taskId, userId, body.text, body.title),
     201,
   );
 
-  public updateNote = this.noteHandler((taskId, noteId, userId, text) =>
-    taskService.updateTaskNote(taskId, noteId, userId, text),
+  public updateNote = this.noteHandler((taskId, noteId, userId, body) =>
+    taskService.updateTaskNote(taskId, noteId, userId, body.text, body.title),
   );
 
   public deleteNote = this.noteHandler((taskId, noteId, userId) =>

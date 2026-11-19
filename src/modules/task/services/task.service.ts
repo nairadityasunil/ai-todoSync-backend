@@ -93,6 +93,8 @@ interface TaskPermissionsDto {
 
 interface TaskNoteDto {
   id: string;
+  /** Always set: the note's own title, or the start of its text for notes written without one. */
+  title: string;
   text: string;
   authorId: string | null;
   createdAt: string | null;
@@ -1125,6 +1127,7 @@ class TaskService {
   private toNoteDtos(task: TaskDocumentWithAssignee): TaskNoteDto[] {
     const stored = (task.notes ?? []).map((n) => ({
       id: String(n._id),
+      title: n.title?.trim() || this.titleFromText(n.text),
       text: n.text,
       authorId: n.authorId ? String(n.authorId) : null,
       createdAt: n.createdAt ? new Date(n.createdAt).toISOString() : null,
@@ -1134,6 +1137,7 @@ class TaskService {
       return [
         {
           id: "legacy",
+          title: this.titleFromText(task.note),
           text: task.note.trim(),
           authorId: null,
           createdAt: null,
@@ -1169,6 +1173,24 @@ class TaskService {
     }
   }
 
+  /** The start of a note's text, used as its title when it was written without one. */
+  private titleFromText(text: string): string {
+    const plain = richTextToPlain(text);
+    if (!plain) return "Note";
+    return plain.length > 80 ? `${plain.slice(0, 77)}…` : plain;
+  }
+
+  /** The title a person gave a note: trimmed, at most 200 characters, undefined when none was sent. */
+  private noteTitle(value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "string")
+      throw new HttpError(400, "A note title must be text");
+    const title = value.replace(/\s+/g, " ").trim();
+    if (title.length > 200)
+      throw new HttpError(400, "A note title can be at most 200 characters");
+    return title;
+  }
+
   private noteText(value: unknown): string {
     const text =
       typeof value === "string" ? sanitizeRichText(value.trim()) : "";
@@ -1194,13 +1216,15 @@ class TaskService {
     taskId: string,
     userId: string,
     text: unknown,
+    title?: unknown,
   ): Promise<TaskDto> {
     const { task, roleMap } = await this.loadTaskForNotes(taskId, userId);
     const clean = this.noteText(text);
+    const cleanTitle = this.noteTitle(title) ?? "";
     this.migrateLegacyNote(task);
     task.notes = [
       ...(task.notes ?? []),
-      { text: clean, authorId: userId },
+      { title: cleanTitle, text: clean, authorId: userId },
     ] as never;
     return this.saveNotes(task, userId, roleMap);
   }
@@ -1210,12 +1234,14 @@ class TaskService {
     noteId: string,
     userId: string,
     text: unknown,
+    title?: unknown,
   ): Promise<TaskDto> {
     const { task, permission, roleMap } = await this.loadTaskForNotes(
       taskId,
       userId,
     );
     const clean = this.noteText(text);
+    const cleanTitle = this.noteTitle(title);
     this.migrateLegacyNote(task);
     const note = (task.notes ?? []).find(
       (n) =>
@@ -1226,6 +1252,7 @@ class TaskService {
     if (!permission.canEdit && String(note.authorId ?? "") !== userId)
       throw new HttpError(403, "You can only edit your own notes");
     note.text = clean;
+    if (cleanTitle !== undefined) note.title = cleanTitle;
     return this.saveNotes(task, userId, roleMap);
   }
 
