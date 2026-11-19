@@ -105,6 +105,11 @@ class AuthRoutes implements Routes {
     );
     this.router.get("/google", authController.googleRedirect);
     this.router.get("/google/callback", authController.googleCallback);
+    this.router.post(
+      "/google/exchange",
+      refreshLimiter,
+      authController.googleExchange,
+    );
     this.router.post("/token", tokenLimiter, authController.token);
     this.router.get("/me", authMiddleware, authController.me);
     this.router.patch(

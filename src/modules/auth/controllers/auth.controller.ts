@@ -6,13 +6,14 @@ import agentService from "../../agents/agent.service.js";
 import logger from "../../../lib/logger.js";
 import type { CreateUserPayload } from "../repositories/auth.repository.js";
 import authService, { HttpError } from "../services/auth.service.js";
+import { storeGoogleSignIn, takeGoogleSignIn } from "../google-exchange.js";
 import type {
   CreateCompanionKeyInput,
   DeviceMetadataInput,
   LoginCredentials,
   UpdateCompanionDeviceInput,
 } from "../../../modules/auth/services/auth.service.js";
-import type { AuthResult, AuthenticatedRequest } from "../../../types/auth.js";
+import type { AuthenticatedRequest } from "../../../types/auth.js";
 import {
   ACCESS_COOKIE,
   REFRESH_COOKIE,
@@ -20,7 +21,6 @@ import {
   clearAuthCookies,
   readCookie,
   requestIsTrusted,
-  setAuthCookies,
 } from "../auth-cookies.js";
 
 class AuthController {
@@ -503,10 +503,10 @@ class AuthController {
       if (finalRedirectUrl.origin !== redirectOrigin) {
         finalRedirectUrl = new URL("/", redirectOrigin);
       }
-      // Tokens are never put in the URL: the sign-in lives in HttpOnly cookies set on this response.
-      setAuthCookies(res, authResult);
-      // Tells the portal to pick up the cookie sign-in when it loads.
-      finalRedirectUrl.hash = "signin=1";
+      // Tokens are never put in the URL, and cookies set on this redirect would belong to the API's own site
+      // (Partitioned cookies are not shared with the portal). The portal swaps this one-time code for cookies.
+      const exchangeCode = await storeGoogleSignIn(authResult);
+      finalRedirectUrl.hash = `signin=1&code=${exchangeCode}`;
 
       logger.info(
         `Google OAuth redirecting to ${finalRedirectUrl.origin}${finalRedirectUrl.pathname}`,
@@ -538,6 +538,27 @@ class AuthController {
       res.redirect(
         `${targetOrigin.replace(/\/$/, "")}/login?error=${encodeURIComponent(errMsg)}`,
       );
+    }
+  };
+
+  /** The portal swaps the one-time code from the Google redirect for its sign-in cookies. */
+  public googleExchange = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const { code } = req.body as { code?: string };
+      const authResult = code ? await takeGoogleSignIn(code) : null;
+      if (!authResult) {
+        res.status(401).json({ error: "Sign-in link expired. Try again." });
+        return;
+      }
+      res.status(200).json({
+        message: "Login successful",
+        data: authBody(req, res, authResult),
+      });
+    } catch (error) {
+      this.respondWithError(res, error);
     }
   };
 
