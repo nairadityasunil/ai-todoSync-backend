@@ -44,10 +44,18 @@ const sameSite = (): "lax" | "strict" | "none" => {
   return isSecure() ? "none" : "lax";
 };
 
+/**
+ * Cross-site cookies (the portal and the API on different sites) are blocked outright by Chrome Incognito, by
+ * Chrome when third-party cookies are switched off, and limited by Firefox. A Partitioned cookie ("CHIPS") is
+ * allowed there: the browser keeps a separate copy per portal site, which is all the sign-in needs.
+ */
+const partitioned = (): boolean => isSecure() && sameSite() === "none";
+
 const baseOptions = (path: string, maxAgeMs: number): CookieOptions => ({
   httpOnly: true,
   secure: isSecure(),
   sameSite: sameSite(),
+  ...(partitioned() ? { partitioned: true } : {}),
   path,
   maxAge: maxAgeMs,
   ...(process.env.COOKIE_DOMAIN ? { domain: process.env.COOKIE_DOMAIN } : {}),
