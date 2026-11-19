@@ -87,7 +87,7 @@ toolRegistry.register({
         projectService.getProjectAccess(userId, projectId),
         epicService.fetchProjectEpics(userId, projectId),
         taskService.fetchTasks(userId),
-        slaService.getAnalytics(userId).catch(() => null),
+        slaService.getAnalytics(userId, { projectId }).catch(() => null),
         semanticIntelligenceService.generateReport(projectId).catch(() => null),
       ]);
 
