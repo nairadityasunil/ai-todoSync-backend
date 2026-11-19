@@ -46,6 +46,8 @@ interface ProjectDto {
   /** What the signed-in person may use in this project. */
   currentUserPermissions?: ProjectPermissions;
   classification?: string | null;
+  /** False when a project admin has turned SLA tracking off. */
+  slaEnabled: boolean;
   createdAt?: Date;
   updatedAt?: Date;
   creator?: {
@@ -729,6 +731,7 @@ class ProjectService {
         : project.userId.toString(),
       currentUserRole,
       classification: project.classification ?? null,
+      slaEnabled: project.slaEnabled !== false,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     };

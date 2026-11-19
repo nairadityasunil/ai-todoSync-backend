@@ -51,6 +51,7 @@ export interface CreateTaskPayload {
   slaPausedAt?: Date | null;
   totalPausedDuration?: number;
   currentSlaState?: TaskSlaState;
+  slaTracked?: boolean;
 }
 
 export interface UpdateTaskPayload {
@@ -86,6 +87,7 @@ export interface UpdateTaskPayload {
   slaPausedAt?: Date | null;
   totalPausedDuration?: number;
   currentSlaState?: TaskSlaState;
+  slaTracked?: boolean;
 }
 
 export interface BulkAssignTasksPayload {

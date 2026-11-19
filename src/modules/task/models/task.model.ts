@@ -85,6 +85,8 @@ export interface ITask {
   slaPausedAt?: Date | null;
   totalPausedDuration: number;
   currentSlaState: TaskSlaState;
+  /** False while the task's project has SLA tracking turned off (kept on the task so lists and queries need no lookup). */
+  slaTracked?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -335,6 +337,7 @@ const taskSchema = new Schema<ITaskDocument>(
       enum: ["HEALTHY", "NEAR_BREACH", "BREACHED", "PAUSED", "COMPLETED"],
       default: "HEALTHY",
     },
+    slaTracked: { type: Boolean, default: true },
   },
   { timestamps: true },
 );

@@ -74,6 +74,7 @@ type InitialSlaFields = Pick<
   | "slaPausedAt"
   | "totalPausedDuration"
   | "currentSlaState"
+  | "slaTracked"
 >;
 
 class HttpError extends Error {
@@ -156,6 +157,14 @@ class SlaService {
   }
 
   /** Every priority's times for a project, marking which ones the project sets itself. Any member can read them. */
+  public async getProjectSla(
+    userId: string,
+    projectId: string,
+  ): Promise<{ enabled: boolean; configs: ProjectSlaConfigDto[] }> {
+    const configs = await this.getProjectConfigs(userId, projectId);
+    return { enabled: await this.isProjectSlaEnabled(projectId), configs };
+  }
+
   public async getProjectConfigs(
     userId: string,
     projectId: string,
@@ -258,19 +267,24 @@ class SlaService {
     projectId?: string | null,
   ): Promise<InitialSlaFields> {
     const normalizedPriority = priority ?? "MEDIUM";
-    const config = await this.getConfigForPriority(
-      userId,
-      normalizedPriority,
-      projectId,
-    );
+    // A project with SLA tracking off gets tasks without due dates.
+    const tracked = await this.isProjectSlaEnabled(projectId);
+    const config = tracked
+      ? await this.getConfigForPriority(userId, normalizedPriority, projectId)
+      : DEFAULT_SLA_CONFIG[normalizedPriority];
     const firstResponseAt =
       status && status !== "TODO" && status !== "BACKLOG" ? now : null;
     const completedAt = status === "DONE" ? now : null;
     const isPaused = status === "BLOCKED";
 
     return {
-      slaResponseDueAt: addHours(now, config.responseTimeHours),
-      slaResolutionDueAt: addHours(now, config.resolutionTimeHours),
+      slaTracked: tracked,
+      slaResponseDueAt: tracked
+        ? addHours(now, config.responseTimeHours)
+        : null,
+      slaResolutionDueAt: tracked
+        ? addHours(now, config.resolutionTimeHours)
+        : null,
       responseBreached: false,
       resolutionBreached: false,
       firstResponseAt,
@@ -289,6 +303,7 @@ class SlaService {
     currentTask: ITaskDocument,
     updates: UpdateTaskPayload,
     now = new Date(),
+    slaEnabled = true,
   ): UpdateTaskPayload {
     const nextStatus = (updates.status ?? currentTask.status) as TaskStatus;
     const previousStatus = currentTask.status;
@@ -339,10 +354,13 @@ class SlaService {
       patch.completedAt = currentTask.completedAt ?? now;
     }
 
-    const responseDueAt =
-      patch.slaResponseDueAt ?? currentTask.slaResponseDueAt;
-    const resolutionDueAt =
-      patch.slaResolutionDueAt ?? currentTask.slaResolutionDueAt;
+    // With SLA tracking off nothing can become breached; earlier breach flags are kept, never erased.
+    const responseDueAt = slaEnabled
+      ? (patch.slaResponseDueAt ?? currentTask.slaResponseDueAt)
+      : null;
+    const resolutionDueAt = slaEnabled
+      ? (patch.slaResolutionDueAt ?? currentTask.slaResolutionDueAt)
+      : null;
     const firstResponseAt =
       patch.firstResponseAt ?? currentTask.firstResponseAt;
     const completedAt = patch.completedAt ?? currentTask.completedAt;
@@ -381,6 +399,9 @@ class SlaService {
     updates: UpdateTaskPayload,
   ): Promise<UpdateTaskPayload> {
     if (!updates.priority || updates.priority === currentTask.priority) {
+      return updates;
+    }
+    if (currentTask.slaTracked === false) {
       return updates;
     }
 
@@ -427,6 +448,7 @@ class SlaService {
       ],
       $and: [
         { $or: [{ responseBreached: true }, { resolutionBreached: true }] },
+        { slaTracked: { $ne: false } },
       ],
     })
       .sort({ priority: 1, slaResolutionDueAt: 1 })
@@ -469,6 +491,8 @@ class SlaService {
         ],
       };
     }
+    // Tasks of a project with SLA tracking off are not part of any SLA number.
+    filter = { $and: [filter, { slaTracked: { $ne: false } }] };
     // Only the fields the numbers need, as plain objects: this used to load every task in full
     // (subtasks, notes and all), which grows with the workspace.
     const tasks = await TaskModel.find(filter)
@@ -543,6 +567,7 @@ class SlaService {
   public async updateBreaches(now = new Date()): Promise<number> {
     const candidates = await TaskModel.find({
       status: { $nin: ["DONE", "rolled_over", "BLOCKED"] },
+      slaTracked: { $ne: false },
       $or: [
         {
           responseBreached: false,
@@ -585,6 +610,43 @@ class SlaService {
     }
 
     return candidates.length;
+  }
+
+  /** False only when a project admin has turned SLA tracking off for the project. */
+  public async isProjectSlaEnabled(projectId?: unknown): Promise<boolean> {
+    if (!projectId) return true;
+    const project = await ProjectModel.findById(String(projectId))
+      .select("slaEnabled")
+      .lean()
+      .exec();
+    return project?.slaEnabled !== false;
+  }
+
+  /** Turns SLA tracking on or off for a project (project admins only). Turning it back on dates its open tasks. */
+  public async setProjectSlaEnabled(
+    userId: string,
+    projectId: string,
+    enabled: unknown,
+  ): Promise<{ enabled: boolean }> {
+    await this.assertProjectAdmin(userId, projectId);
+    if (typeof enabled !== "boolean")
+      throw new HttpError(400, "enabled must be true or false");
+    const before = await this.isProjectSlaEnabled(projectId);
+    await ProjectModel.updateOne(
+      { _id: projectId },
+      { $set: { slaEnabled: enabled } },
+    ).exec();
+    // Every task of the project follows, so lists and numbers need no lookup. Nothing else on the tasks is touched.
+    await TaskModel.updateMany(buildRefMatch("projectId", projectId), {
+      $set: { slaTracked: enabled },
+    }).exec();
+    // Tasks made while it was off have no due dates: give them the project's times, counted from when they were made.
+    if (enabled && !before) {
+      for (const priority of SLA_PRIORITIES) {
+        await this.recalculateOpenTasksForProject(projectId, priority);
+      }
+    }
+    return { enabled };
   }
 
   private async ensureDefaultConfigs(userId: string): Promise<void> {

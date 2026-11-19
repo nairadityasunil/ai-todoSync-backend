@@ -143,6 +143,8 @@ interface TaskDto {
   slaPausedAt: string | null;
   totalPausedDuration: number;
   currentSlaState: string;
+  /** False when the task's project has SLA tracking turned off: show no SLA information for it. */
+  slaTracked: boolean;
   permissions: TaskPermissionsDto;
 }
 
@@ -554,6 +556,11 @@ class TaskService {
       : (currentTask.projectId?.toString() ?? null);
 
     updates.projectId = nextProjectId;
+    if (nextProjectId !== (currentTask.projectId?.toString() ?? null)) {
+      // Moved to another project (or out of one): it follows that project's SLA setting.
+      (updates as { slaTracked?: boolean }).slaTracked =
+        await slaService.isProjectSlaEnabled(nextProjectId);
+    }
     updates.epicId = await this.resolveUpdatedEpicId(
       userId,
       currentTask.projectId?.toString() ?? null,
@@ -657,7 +664,12 @@ class TaskService {
       currentTask,
       updates,
     );
-    updates = slaService.applyStatusTransition(currentTask, updates);
+    updates = slaService.applyStatusTransition(
+      currentTask,
+      updates,
+      new Date(),
+      currentTask.slaTracked !== false,
+    );
 
     const updated = await updateTask(taskId, updates);
 
@@ -1062,6 +1074,7 @@ class TaskService {
       slaPausedAt: task.slaPausedAt?.toISOString() ?? null,
       totalPausedDuration: task.totalPausedDuration ?? 0,
       currentSlaState: task.currentSlaState ?? "HEALTHY",
+      slaTracked: task.slaTracked !== false,
       permissions,
     };
   }

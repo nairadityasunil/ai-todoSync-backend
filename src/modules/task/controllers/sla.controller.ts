@@ -71,13 +71,37 @@ class SlaController {
         res.status(401).json({ error: "Authentication required" });
         return;
       }
-      const configs = await slaService.getProjectConfigs(
+      const { enabled, configs } = await slaService.getProjectSla(
         user._id.toString(),
         getRouteParam(req.params.projectId),
       );
       res
         .status(200)
-        .json({ message: "Project SLA fetched", data: { configs } });
+        .json({ message: "Project SLA fetched", data: { configs, enabled } });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public setProjectEnabled = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const result = await slaService.setProjectSlaEnabled(
+        user._id.toString(),
+        getRouteParam(req.params.projectId),
+        (req.body as { enabled?: unknown } | undefined)?.enabled,
+      );
+      res
+        .status(200)
+        .json({ message: "Project SLA tracking updated", data: result });
     } catch (error) {
       const status = (error as any).status || 500;
       res.status(status).json({ error: (error as Error).message });

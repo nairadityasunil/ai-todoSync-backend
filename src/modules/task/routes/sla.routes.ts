@@ -21,6 +21,10 @@ class SlaRoutes implements Routes {
       slaController.getProjectConfigs,
     );
     this.router.patch(
+      "/projects/:projectId/enabled",
+      slaController.setProjectEnabled,
+    );
+    this.router.patch(
       "/projects/:projectId/config",
       slaController.updateProjectConfig,
     );
