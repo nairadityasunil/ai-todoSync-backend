@@ -1,3 +1,4 @@
+import ProjectModel from "../../project/models/project.model.js";
 import type { IEpicDocument, EpicStatus } from "../models/epic.model.js";
 import {
   createEpic,
@@ -81,6 +82,8 @@ class EpicService {
   public async fetchMyEpics(
     userId: string,
     projectId?: string,
+    /** Only the epics of this workspace's projects. */
+    workspaceId?: string,
   ): Promise<EpicDto[]> {
     if (projectId) {
       await projectService.assertProjectMembership(userId, projectId);
@@ -88,7 +91,18 @@ class EpicService {
       return epics.map((epic) => this.toDto(epic));
     }
     const memberships = await getProjectMembershipsByUser(userId);
-    const ids = memberships.map((m) => m.projectId.toString());
+    let ids = memberships.map((m) => m.projectId.toString());
+    if (workspaceId && ids.length > 0) {
+      const inWorkspace = new Set(
+        (
+          await ProjectModel.find({ workspaceId })
+            .select({ _id: 1 })
+            .lean()
+            .exec()
+        ).map((p) => String(p._id)),
+      );
+      ids = ids.filter((id) => inWorkspace.has(id));
+    }
     if (ids.length === 0) return [];
     const epics = await getEpicsByProjects(ids);
     return epics.map((epic) => this.toDto(epic));

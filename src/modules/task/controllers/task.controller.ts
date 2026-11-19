@@ -76,6 +76,9 @@ class TaskController {
         getDateQuery(req),
         req.query.assigneeId as string | undefined,
         req.query.search as string | undefined,
+        typeof req.query.workspaceId === "string" && req.query.workspaceId
+          ? req.query.workspaceId
+          : undefined,
       );
 
       res.status(200).json({

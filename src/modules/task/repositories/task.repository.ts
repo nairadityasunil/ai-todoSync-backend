@@ -115,10 +115,14 @@ export const getTasksByUser = async (
   projectIds: string[],
   assigneeId?: string,
   search?: string,
+  /** Workspace view: the person's own tasks count only when they belong to no project (the others come with `projectIds`). */
+  personalOnly = false,
 ): Promise<TaskDocumentWithAssignee[]> => {
   const filter: any = {
     $or: [
-      buildRefMatch("userId", userId),
+      personalOnly
+        ? { ...buildRefMatch("userId", userId), projectId: null }
+        : buildRefMatch("userId", userId),
       buildRefInMatch("projectId", projectIds),
     ],
   };
@@ -194,11 +198,14 @@ export const getTasksByDate = async (
   date: string,
   assigneeId?: string,
   search?: string,
+  personalOnly = false,
 ): Promise<TaskDocumentWithAssignee[]> => {
   const filter: any = {
     date,
     $or: [
-      buildRefMatch("userId", userId),
+      personalOnly
+        ? { ...buildRefMatch("userId", userId), projectId: null }
+        : buildRefMatch("userId", userId),
       buildRefInMatch("projectId", projectIds),
     ],
   };
