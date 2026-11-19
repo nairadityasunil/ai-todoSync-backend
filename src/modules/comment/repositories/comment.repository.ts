@@ -28,6 +28,24 @@ export const getCommentsByTaskId = async (
     .sort({ createdAt: 1 })
     .exec();
 
+export const getCommentById = async (
+  commentId: string,
+): Promise<ICommentDocument | null> =>
+  CommentModel.findById(commentId).populate(commentPopulateOptions).exec();
+
+export const updateCommentContent = async (
+  commentId: string,
+  content: string,
+  mentions: string[],
+): Promise<ICommentDocument | null> =>
+  CommentModel.findByIdAndUpdate(
+    commentId,
+    { $set: { content, mentions, editedAt: new Date() } },
+    { new: true },
+  )
+    .populate(commentPopulateOptions)
+    .exec();
+
 export const deleteComment = async (commentId: string): Promise<void> => {
   await CommentModel.findByIdAndDelete(commentId).exec();
 };

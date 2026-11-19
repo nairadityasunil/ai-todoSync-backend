@@ -6,6 +6,8 @@ export interface IComment {
   userId: Types.ObjectId | string;
   content: string;
   mentions: (Types.ObjectId | string)[];
+  /** Set when the text was changed after posting. */
+  editedAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -36,6 +38,7 @@ const commentSchema = new Schema<ICommentDocument>(
         ref: "User",
       },
     ],
+    editedAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

@@ -129,9 +129,9 @@ toolRegistry.register({
   },
   requiredScope: "collaboration:read",
   risk: "read",
-  handler: async (_userId, input) => {
+  handler: async (userId, input) => {
     const { taskId } = input as { taskId: string };
-    const comments = await commentService.getComments(taskId);
+    const comments = await commentService.getComments(taskId, userId);
     return { comments };
   },
 });
