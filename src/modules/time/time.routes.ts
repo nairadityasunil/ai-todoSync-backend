@@ -53,6 +53,12 @@ class TimeRoutes implements Routes {
       "/range",
       run((u, p, req) => timeService.getRange(u, p, req.query)),
     );
+    this.router.get(
+      "/tasks/:taskId",
+      run((u, p, req) =>
+        timeService.getTaskTime(u, p, param(req.params.taskId)),
+      ),
+    );
     this.router.post(
       "/entries",
       run(
