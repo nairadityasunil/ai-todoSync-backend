@@ -421,6 +421,65 @@ class TimeService {
     return { id: String(entry._id) };
   }
 
+  /** Every time entry on one task (newest first) with who logged it, and the summed time. */
+  public async getTaskTime(
+    actorId: string,
+    projectId: string,
+    taskId: string,
+  ): Promise<{
+    totalMinutes: number;
+    entries: Array<{
+      id: string;
+      userId: string;
+      userName: string;
+      date: string;
+      minutes: number;
+      note: string;
+      canModify: boolean;
+    }>;
+  }> {
+    const access = await projectService.assertProjectPermission(
+      actorId,
+      projectId,
+      "time",
+    );
+    const tid = oid(taskId, "taskId");
+    const inProject = await TaskModel.exists({
+      _id: tid,
+      projectId: new Types.ObjectId(projectId),
+    });
+    if (!inProject)
+      throw new TimeError(404, "That task is not in this project");
+    const [entries, members] = await Promise.all([
+      TimeEntryModel.find({
+        projectId: new Types.ObjectId(projectId),
+        taskId: tid,
+      })
+        .sort({ date: -1, createdAt: -1 })
+        .limit(500)
+        .lean(),
+      projectService.fetchProjectMembers(actorId, projectId),
+    ]);
+    const names = new Map(
+      members.map((m) => [m.userId, m.user.name || m.user.email]),
+    );
+    let totalMinutes = 0;
+    const rows = entries.map((e) => {
+      const uid = String(e.userId);
+      totalMinutes += e.minutes;
+      return {
+        id: String(e._id),
+        userId: uid,
+        userName: names.get(uid) ?? "Former member",
+        date: e.date,
+        minutes: e.minutes,
+        note: e.note ?? "",
+        canModify: uid === actorId || access.role === "ADMIN",
+      };
+    });
+    return { totalMinutes, entries: rows };
+  }
+
   private async ownedEntry(
     actorId: string,
     projectId: string,
