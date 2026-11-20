@@ -478,6 +478,64 @@ class TaskService {
     );
   }
 
+  /**
+   * Adds new subtasks to a task. Only the new records come in; the stored ones are read here, so a client
+   * never has to send (and cannot corrupt) the subtasks that already exist.
+   */
+  public async addSubtasks(
+    taskId: string,
+    userId: string,
+    items: unknown,
+  ): Promise<TaskDto> {
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new HttpError(400, "Send at least one subtask");
+    }
+    if (items.length > 50) {
+      throw new HttpError(400, "Add at most 50 subtasks at a time");
+    }
+    const memberships = await getProjectMembershipsByUser(userId);
+    const roleMap = this.buildRoleMap(memberships);
+    const currentTask = await getTaskByIdAndUser(
+      taskId,
+      userId,
+      Array.from(roleMap.keys()),
+    );
+    if (!currentTask) {
+      throw new HttpError(404, "Task not found");
+    }
+    const idOf = (v: unknown): string | null => {
+      if (v == null) return null;
+      const o = v as { _id?: unknown };
+      return String(o._id ?? v);
+    };
+    const existing = (currentTask.subtasks ?? []).map((st) => ({
+      id: this.getSubtaskId(st),
+      title: st.title,
+      note: st.note,
+      status: st.status,
+      completedAt: st.completedAt ?? null,
+      assignedToUserId: idOf(st.assignedToUserId),
+    }));
+    const fresh = items.map((raw) => {
+      const r = (raw ?? {}) as Record<string, unknown>;
+      const assignee = idOf(r.assignedToUserId);
+      if (assignee !== null && !/^[a-f\d]{24}$/i.test(assignee)) {
+        throw new HttpError(400, "assignedToUserId must be a user id");
+      }
+      // Never trust an id on a new record; the database creates it.
+      return {
+        title: r.title,
+        note: r.note,
+        status: r.status ?? "TODO",
+        completedAt: r.completedAt ?? null,
+        assignedToUserId: idOf(r.assignedToUserId),
+      };
+    });
+    return this.updateTask(taskId, userId, {
+      subtasks: [...existing, ...fresh],
+    } as UpdateTaskPayload);
+  }
+
   public async updateTask(
     taskId: string,
     userId: string,
@@ -1320,7 +1378,7 @@ class TaskService {
     const isCreator = task.userId.toString() === currentUserId;
     const isAdmin = role === "ADMIN";
     const isAssignee = (task.subtasks ?? []).some(
-      (st) => st.assignedToUserId?.toString() === currentUserId,
+      (st) => this.refId(st.assignedToUserId) === currentUserId,
     );
 
     return {
@@ -1407,9 +1465,16 @@ class TaskService {
       status: subtask.status,
       completed: subtask.completed,
       completedAt: subtask.completedAt ?? null,
-      assignedToUserId: subtask.assignedToUserId?.toString() ?? null,
+      assignedToUserId: this.refId(subtask.assignedToUserId),
       assignedToUser: this.toTaskUser(subtask.assignedToUserId),
     }));
+  }
+
+  /** The id of a reference that may be populated (a document) or a plain id. */
+  private refId(value: unknown): string | null {
+    if (value == null) return null;
+    const populated = value as { _id?: unknown };
+    return String(populated._id ?? value);
   }
 
   private getSubtaskId(subtask: ISubtask): string {

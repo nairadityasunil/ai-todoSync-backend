@@ -1,0 +1,30 @@
+// POST /tasks/:id/subtasks takes only new subtasks and keeps the stored ones untouched.
+const API = process.env.API ?? 'http://localhost:4000/api';
+const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const H = { 'content-type': 'application/json', 'user-agent': UA, origin: 'http://localhost:5173', 'sec-fetch-mode': 'cors', 'sec-fetch-site': 'same-site' };
+let fails = 0; const ok = (c, m) => { console.log(c ? '✓' : '✗', m); if (!c) fails++; };
+const call = async (tok, method, path, body) => { const send = () => fetch(API + path, { method, headers: { ...H, ...(tok ? { authorization: 'Bearer ' + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); let r; try { r = await send(); } catch { r = await send(); } let j = {}; try { j = await r.json(); } catch {} return { status: r.status, j }; };
+const s = Date.now().toString(36);
+await call(null, 'POST', '/auth/register', { email: `ps-${s}@example.com`, password: 'Password123!', name: 'Pat Sub' });
+const A = (await call(null, 'POST', '/auth/login', { email: `ps-${s}@example.com`, password: 'Password123!' })).j.data;
+const proj = (await call(A.token, 'POST', '/projects', { name: 'Subs ' + s })).j.data.project;
+const t = (await call(A.token, 'POST', '/tasks', { title: 'T ' + s, projectId: proj.id })).j.data.task;
+const url = `/tasks/${t.id}/subtasks`;
+
+let r = await call(A.token, 'POST', url, { subtasks: [{ title: 'first', assignedToUserId: A.user.id, note: '<p>hello</p>' }] });
+ok(r.status === 201 && r.j.data.task.subtasks.length === 1 && r.j.data.task.subtasks[0].assignedToUserId === A.user.id, 'adds one subtask with an assignee');
+const firstId = r.j.data.task.subtasks[0].id;
+r = await call(A.token, 'POST', url, { subtasks: [{ title: 'second' }, { title: 'third', status: 'IN_PROGRESS' }] });
+const subs = r.j.data.task.subtasks;
+ok(r.status === 201 && subs.length === 3, 'a second call adds only the new ones (3 in total)');
+ok(subs[0].id === firstId && subs[0].assignedToUserId === A.user.id, 'the first subtask keeps its id and assignee');
+ok(subs[1].assignedToUserId === null && subs[2].status === 'IN_PROGRESS', 'new subtasks get their own values');
+r = await call(A.token, 'POST', url, { subtasks: [{ title: 'x', assignedToUserId: { _id: 'bad' } }] });
+ok(r.status >= 400 && r.status < 500, 'a malformed assignee is rejected, not stored');
+r = await call(A.token, 'POST', url, { subtasks: [] });
+ok(r.status === 400, 'an empty list is rejected');
+r = await call(A.token, 'POST', url, { subtasks: [{ title: '' }] });
+ok(r.status === 400, 'a subtask without a title is rejected');
+const g = (await call(A.token, 'GET', `/tasks?projectId=${proj.id}`)).j.data.tasks.find((x) => x.id === t.id);
+ok(g.subtasks.length === 3 && g.subtasks[0].assignedToUserId === A.user.id, 'nothing was lost after the failed calls');
+console.log(fails ? `${fails} failed` : 'all passed'); process.exit(fails ? 1 : 0);
