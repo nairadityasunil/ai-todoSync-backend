@@ -28,6 +28,7 @@ class TaskRoutes implements Routes {
     this.router.patch("/:id/notes/:noteId", taskController.updateNote);
     this.router.delete("/:id/notes/:noteId", taskController.deleteNote);
     this.router.patch("/:id", taskController.updateTask);
+    this.router.post("/:id/subtasks", taskController.addSubtasks);
     this.router.delete("/:id", taskController.deleteTask);
   }
 }

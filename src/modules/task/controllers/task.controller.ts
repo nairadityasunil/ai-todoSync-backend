@@ -275,6 +275,49 @@ class TaskController {
     }
   };
 
+  public addSubtasks = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (user == null) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const taskId = getRouteParam(req.params.id);
+      const body = req.body as { subtasks?: unknown };
+      const updated = await taskService.addSubtasks(
+        taskId,
+        user._id.toString(),
+        body.subtasks,
+      );
+      res.status(201).json({
+        message: "Subtasks added",
+        data: { task: updated },
+      });
+
+      if (updated.projectId) {
+        void activityLogService.logActivity({
+          projectId: updated.projectId,
+          entityType: "task",
+          entityId: taskId,
+          entityName: updated.title,
+          action: "updated",
+          userId: user._id.toString(),
+          userName:
+            user.name ||
+            [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+            "Unknown",
+          description: `added sub-tasks to "${updated.title}"`,
+        });
+      }
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
   public deleteTask = async (
     req: AuthenticatedRequest,
     res: Response,
