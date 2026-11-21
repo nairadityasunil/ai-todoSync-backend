@@ -21,7 +21,11 @@ class AiPlanningRoutes implements Routes {
     this.router.use(isProjectMember);
 
     // Settings configuration and testing endpoints
-    this.router.get("/settings", aiPlanningController.getSettings);
+    this.router.get(
+      "/settings",
+      requireProjectRole("ADMIN"),
+      aiPlanningController.getSettings,
+    );
     this.router.put(
       "/settings",
       requireProjectRole("ADMIN"),

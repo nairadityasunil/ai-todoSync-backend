@@ -79,6 +79,9 @@ class TaskController {
         typeof req.query.workspaceId === "string" && req.query.workspaceId
           ? req.query.workspaceId
           : undefined,
+        typeof req.query.projectId === "string" && req.query.projectId
+          ? req.query.projectId
+          : undefined,
       );
 
       res.status(200).json({

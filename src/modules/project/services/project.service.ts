@@ -37,6 +37,7 @@ import {
   getProjectMembershipsByUser,
 } from "../../../modules/project/repositories/project-member.repository.js";
 import {
+  DEFAULT_MEMBER_PERMISSIONS,
   resolvePermissions,
   type ProjectFeature,
   type ProjectPermissions,
@@ -61,6 +62,8 @@ interface ProjectDto {
     email: string;
   };
   isCollaborator?: boolean;
+  aiEnabled?: boolean;
+  aiProvider?: string | null;
   currentUserRole: ProjectRole;
   /** What the signed-in person may use in this project. */
   currentUserPermissions?: ProjectPermissions;
@@ -813,8 +816,53 @@ class ProjectService {
       userId,
       projectId,
     );
+    let isCollaborator = false;
+    let wsInfo:
+      | {
+          name: string;
+          admin?: { id?: string; name: string | null; email: string };
+        }
+      | undefined = undefined;
+    if (project.workspaceId) {
+      const userWorkspaces = await WorkspaceMemberModel.find({ userId })
+        .select({ workspaceId: 1 })
+        .lean()
+        .exec();
+      const userWsSet = new Set(
+        userWorkspaces.map((w) => w.workspaceId.toString()),
+      );
+      isCollaborator = !userWsSet.has(project.workspaceId.toString());
+      if (isCollaborator) {
+        try {
+          const WorkspaceModel = (
+            await import("../../workspace/models/workspace.model.js")
+          ).default;
+          const workspace = await WorkspaceModel.findById(project.workspaceId)
+            .populate("ownerId", "name email")
+            .lean();
+          if (workspace) {
+            const owner = (workspace as any).ownerId;
+            wsInfo = {
+              name: workspace.name,
+              admin: owner
+                ? {
+                    id: owner._id?.toString() || owner.toString(),
+                    name: owner.name || null,
+                    email: owner.email || "",
+                  }
+                : undefined,
+            };
+          }
+        } catch (err) {
+          console.error("Failed to load workspace info for project", err);
+        }
+      }
+    }
+
     return {
-      ...this.toDto(project, role),
+      ...this.toDto(project, role, isCollaborator),
+      workspaceName: wsInfo?.name,
+      workspaceAdmin: wsInfo?.admin,
       currentUserPermissions: permissions,
     };
   }
@@ -839,6 +887,10 @@ class ProjectService {
       currentUserRole,
       classification: project.classification ?? null,
       slaEnabled: project.slaEnabled !== false,
+      aiEnabled: project.ai?.enabled ?? false,
+      aiProvider: project.ai?.enabled
+        ? (project.ai?.provider ?? "gemini")
+        : null,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     };
@@ -1100,12 +1152,7 @@ class ProjectService {
         {
           $set: {
             role: "MEMBER",
-            permissions: {
-              team: false,
-              time: true,
-              prompts: false,
-              aiPlanner: false,
-            },
+            permissions: { ...DEFAULT_MEMBER_PERMISSIONS },
           },
         },
         { session },
@@ -1122,12 +1169,7 @@ class ProjectService {
       projectId: project._id.toString(),
       newOwnerId: acceptingUserId,
       role: "MEMBER",
-      permissions: {
-        team: false,
-        time: true,
-        prompts: false,
-        aiPlanner: false,
-      },
+      permissions: { ...DEFAULT_MEMBER_PERMISSIONS },
     });
 
     // Notify the new owner
