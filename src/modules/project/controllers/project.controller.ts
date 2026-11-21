@@ -88,6 +88,10 @@ class ProjectController {
         typeof req.query.workspaceId === "string" && req.query.workspaceId
           ? req.query.workspaceId
           : undefined;
+      const scope = req.query.scope as
+        | "workspace"
+        | "collaborating"
+        | undefined;
 
       const result = await projectService.fetchProjectsPaginated(
         user._id.toString(),
@@ -95,6 +99,7 @@ class ProjectController {
         limit,
         search,
         workspaceId,
+        scope,
       );
 
       res.status(200).json({
@@ -419,6 +424,114 @@ class ProjectController {
           "Unknown",
         description: `left the project`,
       });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public initiateTransfer = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const projectId = req.params.id as string;
+      const { email } = req.body;
+      const result = await projectService.initiateOwnershipTransfer(
+        user._id.toString(),
+        projectId,
+        email,
+      );
+      res.status(200).json({
+        message: "Ownership transfer request sent",
+        data: result,
+      });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public getTransferDetails = async (
+    req: Request,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const token = req.params.token as string;
+      const details = await projectService.getTransferDetails(token);
+      res.status(200).json({ data: details });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public acceptTransfer = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const token = req.params.token as string;
+      const result = await projectService.acceptOwnershipTransfer(
+        token,
+        user._id.toString(),
+      );
+      res.status(200).json({
+        message: "Ownership transfer accepted successfully",
+        data: result,
+      });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public rejectTransfer = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      const token = req.params.token as string;
+      const result = await projectService.rejectOwnershipTransfer(
+        token,
+        user?._id?.toString(),
+      );
+      res.status(200).json({
+        message: "Ownership transfer rejected",
+        data: result,
+      });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
+  public getMyTransfers = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const user = req.user;
+      if (!user) {
+        res.status(401).json({ error: "Authentication required" });
+        return;
+      }
+      const transfers = await projectService.getMyPendingTransfers(
+        user._id.toString(),
+        user.email,
+      );
+      res.status(200).json({ data: transfers });
     } catch (error) {
       const status = (error as any).status || 500;
       res.status(status).json({ error: (error as Error).message });

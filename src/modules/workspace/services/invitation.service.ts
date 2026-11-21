@@ -329,25 +329,9 @@ class InvitationService {
         );
       }
 
-      // Joining a project also means joining its workspace, so the person can see and use what the
-      // team shares there (prompts, governance, members) without a second invitation.
+      // Project invite is strictly scoped to this project only.
+      // Joining a project does NOT grant access to the host workspace.
       const project = await getProjectById(invitation.projectId.toString());
-      if (project?.workspaceId) {
-        await WorkspaceMemberModel.updateOne(
-          {
-            workspaceId: project.workspaceId,
-            userId: user._id,
-          },
-          {
-            $setOnInsert: {
-              workspaceId: project.workspaceId,
-              userId: user._id,
-              role: "MEMBER",
-            },
-          },
-          { upsert: true, session },
-        );
-      }
 
       // Update invitation status
       invitation.status = "ACCEPTED";
@@ -561,6 +545,36 @@ class InvitationService {
           err,
         );
       }
+    }
+
+    try {
+      const WorkspaceInvitationModel = (
+        await import("../models/workspace-invitation.model.js")
+      ).default;
+      const workspaceInvites = await WorkspaceInvitationModel.find({
+        email: email.toLowerCase(),
+        status: "PENDING",
+      });
+      for (const wInv of workspaceInvites) {
+        await WorkspaceMemberModel.updateOne(
+          { workspaceId: wInv.workspaceId, userId },
+          {
+            $setOnInsert: {
+              workspaceId: wInv.workspaceId,
+              userId,
+              role: wInv.role,
+            },
+          },
+          { upsert: true },
+        );
+        wInv.status = "ACCEPTED";
+        await wInv.save();
+      }
+    } catch (err) {
+      console.error(
+        `Error auto-accepting workspace invites for ${email}:`,
+        err,
+      );
     }
   }
 }

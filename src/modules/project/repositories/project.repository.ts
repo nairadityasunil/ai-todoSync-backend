@@ -1,4 +1,4 @@
-import type { ClientSession } from "mongoose";
+import { type ClientSession, Types } from "mongoose";
 
 import ProjectModel, { IProjectDocument } from "../models/project.model.js";
 import TaskModel from "../../task/models/task.model.js";
@@ -80,11 +80,19 @@ const projectIdQuery = (
   projectIds: string[],
   search?: string,
   workspaceId?: string,
+  excludeWorkspaceIds?: string[],
 ): Record<string, unknown> => {
   const query: Record<string, unknown> = buildSafeRefInMatch("_id", projectIds);
   // Only the projects in this workspace (the ids are already limited to the ones the person belongs to).
-  if (workspaceId)
+  if (workspaceId) {
     Object.assign(query, buildSafeRefMatch("workspaceId", workspaceId));
+  } else if (excludeWorkspaceIds && excludeWorkspaceIds.length > 0) {
+    query.workspaceId = {
+      $nin: excludeWorkspaceIds.map((id) =>
+        Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : id,
+      ),
+    };
+  }
   if (search) {
     query.name = { $regex: escapeRegex(search), $options: "i" };
   }
@@ -96,6 +104,7 @@ export const getProjectsPageByIds = async (params: {
   projectIds: string[];
   search?: string;
   workspaceId?: string;
+  excludeWorkspaceIds?: string[];
   skip?: number;
   limit?: number;
 }): Promise<{ projects: IProjectDocument[]; total: number }> => {
@@ -106,6 +115,7 @@ export const getProjectsPageByIds = async (params: {
     params.projectIds,
     params.search,
     params.workspaceId,
+    params.excludeWorkspaceIds,
   );
   const [projects, total] = await Promise.all([
     ProjectModel.find(query)

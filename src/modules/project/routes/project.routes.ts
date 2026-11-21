@@ -25,6 +25,19 @@ class ProjectRoutes implements Routes {
 
   private initializeRoutes(): void {
     this.router.use(authMiddleware);
+
+    // Project Ownership Transfers
+    this.router.get("/transfers/me", projectController.getMyTransfers);
+    this.router.get("/transfers/:token", projectController.getTransferDetails);
+    this.router.post(
+      "/transfers/:token/accept",
+      projectController.acceptTransfer,
+    );
+    this.router.post(
+      "/transfers/:token/reject",
+      projectController.rejectTransfer,
+    );
+
     this.router.post("/", projectController.createProject);
     this.router.get("/", projectController.getProjects);
     this.router.post("/bulk-delete", projectController.bulkDeleteProjects);
@@ -53,6 +66,11 @@ class ProjectRoutes implements Routes {
       "/:projectId/members/:userId/permissions",
       requireProjectRole("ADMIN"),
       projectController.updateMemberPermissions,
+    );
+    this.router.post(
+      "/:id/transfer",
+      isProjectMember,
+      projectController.initiateTransfer,
     );
     this.router.get("/:id", isProjectMember, projectController.getProject);
     this.router.patch("/:id", isProjectMember, projectController.updateProject);
