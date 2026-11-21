@@ -490,7 +490,7 @@ class ProjectService {
     projectId: string,
     payload: AddProjectMemberPayload,
   ): Promise<ProjectMemberDto> {
-    await this.assertProjectPermission(actorUserId, projectId, "team");
+    await this.assertProjectRole(actorUserId, projectId, "ADMIN");
     const targetUserId = this.normalizeIdentifier(
       payload.userId,
       "User id is required",
@@ -541,7 +541,7 @@ class ProjectService {
     projectId: string,
     targetUserId: string,
   ): Promise<void> {
-    await this.assertProjectPermission(actorUserId, projectId, "team");
+    await this.assertProjectRole(actorUserId, projectId, "ADMIN");
     const membership = await getProjectMembership(projectId, targetUserId);
 
     if (membership == null) {

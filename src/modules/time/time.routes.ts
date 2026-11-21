@@ -67,6 +67,7 @@ class TimeRoutes implements Routes {
             u,
             p,
             (req.body ?? {}) as Record<string, unknown>,
+            req.user?.name || req.user?.email || "User",
           ),
         201,
       ),
@@ -79,6 +80,7 @@ class TimeRoutes implements Routes {
           p,
           param(req.params.entryId),
           (req.body ?? {}) as Record<string, unknown>,
+          req.user?.name || req.user?.email || "User",
         );
         return { updated: true };
       }),
@@ -86,7 +88,12 @@ class TimeRoutes implements Routes {
     this.router.delete(
       "/entries/:entryId",
       run(async (u, p, req) => {
-        await timeService.deleteEntry(u, p, param(req.params.entryId));
+        await timeService.deleteEntry(
+          u,
+          p,
+          param(req.params.entryId),
+          req.user?.name || req.user?.email || "User",
+        );
         return { deleted: true };
       }),
     );

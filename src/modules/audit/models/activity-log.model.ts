@@ -1,6 +1,12 @@
 import mongoose, { type Document, Schema } from "mongoose";
 
-export type EntityType = "project" | "epic" | "task" | "subtask" | "note";
+export type EntityType =
+  | "project"
+  | "epic"
+  | "task"
+  | "subtask"
+  | "note"
+  | "time";
 export type ActionType =
   | "created"
   | "updated"
@@ -56,7 +62,7 @@ const activityLogSchema = new Schema<IActivityLogDocument>(
     entityType: {
       type: String,
       required: true,
-      enum: ["project", "epic", "task", "subtask", "note"],
+      enum: ["project", "epic", "task", "subtask", "note", "time"],
     },
     entityId: { type: String, required: true },
     entityName: { type: String },

@@ -4,27 +4,36 @@
  * projects behave as before.
  */
 export const PROJECT_FEATURES = [
-  "team",
+  "editTask",
+  "requestApproval",
+  "viewTeam",
+  "editNotes",
   "time",
-  "prompts",
   "aiPlanner",
+  "prompts",
 ] as const;
 export type ProjectFeature = (typeof PROJECT_FEATURES)[number];
 export type ProjectPermissions = Record<ProjectFeature, boolean>;
 
-/** Members could already use time, prompts and the AI planner; only managing the team was admin-only. */
+/** Default enabled permissions for project members. */
 export const DEFAULT_MEMBER_PERMISSIONS: ProjectPermissions = {
-  team: false,
+  editTask: true,
+  requestApproval: true,
+  viewTeam: true,
+  editNotes: true,
   time: true,
-  prompts: true,
   aiPlanner: true,
+  prompts: true,
 };
 
 const ALL_ON: ProjectPermissions = {
-  team: true,
+  editTask: true,
+  requestApproval: true,
+  viewTeam: true,
+  editNotes: true,
   time: true,
-  prompts: true,
   aiPlanner: true,
+  prompts: true,
 };
 
 export const resolvePermissions = (
@@ -36,6 +45,9 @@ export const resolvePermissions = (
   for (const feature of PROJECT_FEATURES) {
     const value = stored?.[feature];
     if (typeof value === "boolean") out[feature] = value;
+  }
+  if (stored?.team !== undefined && stored?.viewTeam === undefined) {
+    out.viewTeam = Boolean(stored.team);
   }
   return out;
 };
