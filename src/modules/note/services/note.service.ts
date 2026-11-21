@@ -51,7 +51,7 @@ class NoteService {
     projectId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    await projectService.assertProjectOwnership(userId, projectId);
+    await projectService.assertProjectMembership(userId, projectId);
 
     const createPayload: CreateNoteRepositoryPayload = {
       entityType: "project",
@@ -95,7 +95,7 @@ class NoteService {
     epicId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    await projectService.assertProjectOwnership(userId, projectId);
+    await projectService.assertProjectMembership(userId, projectId);
     await epicService.assertEpicInProject(projectId, epicId);
 
     const createPayload: CreateNoteRepositoryPayload = {
@@ -166,7 +166,7 @@ class NoteService {
     noteId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    const existingNote = await this.getAccessibleNote(userId, noteId, true);
+    const existingNote = await this.getAccessibleNote(userId, noteId, false);
     const updates: UpdateNoteRepositoryPayload = {};
     const appendContent = payload.appendContent === true;
 

@@ -51,15 +51,15 @@ class ProjectRoutes implements Routes {
       isProjectMember,
       projectController.getMembers,
     );
-    // Adding and removing people needs the "team" feature (admins always have it); the service checks.
+    // Adding and removing people is restricted to project admins.
     this.router.post(
       "/:projectId/members",
-      isProjectMember,
+      requireProjectRole("ADMIN"),
       projectController.addMember,
     );
     this.router.delete(
       "/:projectId/members/:userId",
-      isProjectMember,
+      requireProjectRole("ADMIN"),
       projectController.removeMember,
     );
     this.router.patch(

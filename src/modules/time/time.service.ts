@@ -6,6 +6,7 @@ import ProjectModel from "../project/models/project.model.js";
 import WorkspaceMemberModel from "../workspace/models/workspace-member.model.js";
 import WorkspaceModel from "../workspace/models/workspace.model.js";
 import TimeEntryModel from "./time-entry.model.js";
+import activityLogService from "../audit/services/activity-log.service.js";
 
 class TimeError extends Error {
   constructor(
@@ -389,6 +390,7 @@ class TimeService {
     actorId: string,
     projectId: string,
     body: Record<string, unknown>,
+    actorName?: string,
   ): Promise<{ id: string }> {
     const access = await projectService.assertProjectPermission(
       actorId,
@@ -403,12 +405,17 @@ class TimeService {
         "Only project admins can log time for someone else",
       );
     const taskId = body.taskId ? oid(body.taskId, "taskId") : null;
+    let taskTitle: string | undefined;
     if (taskId) {
-      const ok = await TaskModel.exists({
+      const taskDoc = await TaskModel.findOne({
         _id: taskId,
         projectId: new Types.ObjectId(projectId),
-      });
-      if (!ok) throw new TimeError(404, "That task is not in this project");
+      })
+        .select("title")
+        .lean();
+      if (!taskDoc)
+        throw new TimeError(404, "That task is not in this project");
+      taskTitle = taskDoc.title;
     }
     const entry = await TimeEntryModel.create({
       projectId: new Types.ObjectId(projectId),
@@ -418,6 +425,25 @@ class TimeService {
       minutes: parseMinutes(body.minutes),
       note: typeof body.note === "string" ? body.note.slice(0, 500) : "",
     });
+
+    void activityLogService.logActivity({
+      projectId,
+      entityType: "time",
+      entityId: String(entry._id),
+      entityName: taskTitle
+        ? `Time on ${taskTitle}`
+        : `Time log on ${entry.date}`,
+      action: "created",
+      userId: actorId,
+      userName: actorName || "User",
+      description: `Logged ${Math.floor(entry.minutes / 60)}h ${entry.minutes % 60}m on ${entry.date}${taskTitle ? ` for "${taskTitle}"` : ""}`,
+      changes: [
+        { field: "minutes", newValue: String(entry.minutes) },
+        { field: "date", newValue: entry.date },
+        ...(entry.note ? [{ field: "note", newValue: entry.note }] : []),
+      ],
+    });
+
     return { id: String(entry._id) };
   }
 
@@ -505,21 +531,88 @@ class TimeService {
     projectId: string,
     entryId: string,
     body: Record<string, unknown>,
+    actorName?: string,
   ): Promise<void> {
     const entry = await this.ownedEntry(actorId, projectId, entryId);
-    if (body.minutes !== undefined) entry.minutes = parseMinutes(body.minutes);
-    if (body.date !== undefined) entry.date = parseDay(body.date, "date");
-    if (typeof body.note === "string") entry.note = body.note.slice(0, 500);
+    const oldMinutes = entry.minutes;
+    const oldDate = entry.date;
+    const oldNote = entry.note;
+    const changes: Array<{
+      field: string;
+      oldValue?: string;
+      newValue?: string;
+    }> = [];
+
+    if (body.minutes !== undefined) {
+      entry.minutes = parseMinutes(body.minutes);
+      if (entry.minutes !== oldMinutes) {
+        changes.push({
+          field: "minutes",
+          oldValue: String(oldMinutes),
+          newValue: String(entry.minutes),
+        });
+      }
+    }
+    if (body.date !== undefined) {
+      entry.date = parseDay(body.date, "date");
+      if (entry.date !== oldDate) {
+        changes.push({
+          field: "date",
+          oldValue: oldDate,
+          newValue: entry.date,
+        });
+      }
+    }
+    if (typeof body.note === "string") {
+      entry.note = body.note.slice(0, 500);
+      if (entry.note !== oldNote) {
+        changes.push({
+          field: "note",
+          oldValue: oldNote,
+          newValue: entry.note,
+        });
+      }
+    }
     await entry.save();
+
+    void activityLogService.logActivity({
+      projectId,
+      entityType: "time",
+      entityId: String(entry._id),
+      entityName: `Time log on ${entry.date}`,
+      action: "updated",
+      userId: actorId,
+      userName: actorName || "User",
+      description: `Updated time entry on ${entry.date}`,
+      changes,
+    });
   }
 
   public async deleteEntry(
     actorId: string,
     projectId: string,
     entryId: string,
+    actorName?: string,
   ): Promise<void> {
     const entry = await this.ownedEntry(actorId, projectId, entryId);
+    const deletedMinutes = entry.minutes;
+    const deletedDate = entry.date;
     await entry.deleteOne();
+
+    void activityLogService.logActivity({
+      projectId,
+      entityType: "time",
+      entityId: String(entry._id),
+      entityName: `Time log on ${deletedDate}`,
+      action: "deleted",
+      userId: actorId,
+      userName: actorName || "User",
+      description: `Deleted time log of ${deletedMinutes}m on ${deletedDate}`,
+      changes: [
+        { field: "minutes", oldValue: String(deletedMinutes) },
+        { field: "date", oldValue: deletedDate },
+      ],
+    });
   }
 }
 
