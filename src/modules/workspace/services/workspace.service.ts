@@ -5,7 +5,11 @@ import WorkspaceModel, {
 } from "../../../modules/workspace/models/workspace.model.js";
 import WorkspaceMemberModel, {
   WorkspaceRole,
+  IWorkspacePermissions,
 } from "../../../modules/workspace/models/workspace-member.model.js";
+import WorkspaceInvitationModel from "../models/workspace-invitation.model.js";
+import emailService from "../../../shared/services/email.service.js";
+import crypto from "node:crypto";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectModel from "../../project/models/project.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
@@ -302,6 +306,48 @@ class WorkspaceService {
     return updated;
   }
 
+  public getDefaultPermissions(role: WorkspaceRole): IWorkspacePermissions {
+    if (role === "OWNER" || role === "ADMIN") {
+      return {
+        projects: true,
+        members: true,
+        settings: true,
+        agentGovernance: true,
+        prompts: true,
+        timeTracking: true,
+      };
+    }
+    if (role === "MANAGER") {
+      return {
+        projects: true,
+        members: false,
+        settings: false,
+        agentGovernance: false,
+        prompts: true,
+        timeTracking: true,
+      };
+    }
+    if (role === "MEMBER") {
+      return {
+        projects: true,
+        members: false,
+        settings: false,
+        agentGovernance: false,
+        prompts: false,
+        timeTracking: true,
+      };
+    }
+    // GUEST
+    return {
+      projects: false,
+      members: false,
+      settings: false,
+      agentGovernance: false,
+      prompts: false,
+      timeTracking: false,
+    };
+  }
+
   public async inviteMember(
     userId: string,
     workspaceId: string,
@@ -313,55 +359,96 @@ class WorkspaceService {
       throw new AppError(400, "User email is required", "BAD_REQUEST");
     }
 
-    const targetUser = await UserModel.findOne({
-      email: payload.email.trim().toLowerCase(),
-    }).lean();
-
-    if (!targetUser) {
-      throw new AppError(
-        404,
-        `User with email ${payload.email} not found`,
-        "NOT_FOUND",
-      );
-    }
-
-    const existingMember = await WorkspaceMemberModel.findOne({
-      workspaceId,
-      userId: targetUser._id,
-    }).lean();
-
-    if (existingMember) {
-      throw new AppError(409, "User is already a workspace member", "CONFLICT");
-    }
-
+    const email = payload.email.trim().toLowerCase();
     const role = payload.role || "MEMBER";
-    const newMember = await WorkspaceMemberModel.create({
-      workspaceId,
-      userId: targetUser._id,
-      role,
-    });
 
-    // Tell them by email, with the workspace and who added them
     const [workspace, inviter] = await Promise.all([
       WorkspaceModel.findById(workspaceId).select("name").lean(),
       UserModel.findById(userId).select("name email").lean(),
     ]);
-    const { enqueueInvitationMail } =
-      await import("./invitation-queue.service.js");
-    await enqueueInvitationMail("send-workspace-added-email", {
-      email: targetUser.email,
-      projectName: workspace?.name ?? "a workspace",
-      inviterName: inviter?.name || inviter?.email || "A teammate",
-    });
 
-    return {
-      id: newMember._id.toString(),
-      userId: targetUser._id.toString(),
-      name: targetUser.name || "Unknown",
-      email: targetUser.email,
-      role: newMember.role,
-      joinedAt: newMember.joinedAt,
-    };
+    const targetUser = await UserModel.findOne({ email }).lean();
+
+    if (targetUser) {
+      const existingMember = await WorkspaceMemberModel.findOne({
+        workspaceId,
+        userId: targetUser._id,
+      }).lean();
+
+      if (existingMember) {
+        throw new AppError(
+          409,
+          "User is already a workspace member",
+          "CONFLICT",
+        );
+      }
+
+      const newMember = await WorkspaceMemberModel.create({
+        workspaceId,
+        userId: targetUser._id,
+        role,
+        permissions: this.getDefaultPermissions(role),
+      });
+
+      // Tell them by email, with the workspace and who added them
+      const { enqueueInvitationMail } =
+        await import("./invitation-queue.service.js");
+      await enqueueInvitationMail("send-workspace-added-email", {
+        email: targetUser.email,
+        projectName: workspace?.name ?? "a workspace",
+        inviterName: inviter?.name || inviter?.email || "A teammate",
+      });
+
+      return {
+        id: newMember._id.toString(),
+        userId: targetUser._id.toString(),
+        name: targetUser.name || "Unknown",
+        email: targetUser.email,
+        role: newMember.role,
+        permissions: newMember.permissions,
+        joinedAt: newMember.joinedAt,
+      };
+    } else {
+      // Outside user without an account: create pending workspace invitation
+      const token = crypto.randomBytes(32).toString("hex");
+      await WorkspaceInvitationModel.findOneAndUpdate(
+        { workspaceId, email },
+        {
+          $set: {
+            workspaceId,
+            email,
+            role,
+            token,
+            status: "PENDING",
+            invitedBy: userId,
+          },
+        },
+        { upsert: true, new: true },
+      );
+
+      const frontendUrl =
+        process.env.FRONTEND_BASE_URL ||
+        process.env.FRONTEND_URL ||
+        "http://localhost:5173";
+      const inviteUrl = `${frontendUrl}/accept-invitation?token=${token}&type=workspace`;
+      const inviterName = inviter?.name || inviter?.email || "A teammate";
+      const subject = `You're invited to join ${workspace?.name ?? "a workspace"} on Pristine`;
+      const text = `${inviterName} has invited you to join the workspace "${workspace?.name ?? "Workspace"}" on Pristine.\nAccept here: ${inviteUrl}`;
+      const html = `<p>${inviterName} has invited you to join the workspace <strong>${workspace?.name ?? "Workspace"}</strong> on Pristine.</p><p><a href="${inviteUrl}" style="display:inline-block;padding:10px 18px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px;">Join Workspace</a></p>`;
+
+      void emailService.sendEmail(email, subject, text, html);
+
+      return {
+        id: token,
+        userId: "",
+        name: email.split("@")[0],
+        email,
+        role,
+        permissions: this.getDefaultPermissions(role),
+        status: "PENDING",
+        message: "Invitation sent to outside user",
+      };
+    }
   }
 
   /**
@@ -472,8 +559,50 @@ class WorkspaceService {
       name: m.userId?.name || "Unknown",
       email: m.userId?.email || "",
       role: m.role,
+      permissions: m.permissions || this.getDefaultPermissions(m.role),
       joinedAt: m.joinedAt,
     }));
+  }
+
+  public async updateMemberPermissions(
+    actorUserId: string,
+    workspaceId: string,
+    targetUserId: string,
+    permissions: Partial<IWorkspacePermissions>,
+  ) {
+    await this.assertMembership(actorUserId, workspaceId, ["OWNER", "ADMIN"]);
+
+    const targetMember = await WorkspaceMemberModel.findOne({
+      workspaceId,
+      userId: targetUserId,
+    });
+
+    if (!targetMember) {
+      throw new AppError(404, "Member not found", "NOT_FOUND");
+    }
+
+    if (targetMember.role === "OWNER") {
+      throw new AppError(
+        400,
+        "Cannot alter permissions for the workspace owner",
+        "BAD_REQUEST",
+      );
+    }
+
+    const currentPerms =
+      targetMember.permissions || this.getDefaultPermissions(targetMember.role);
+    targetMember.permissions = {
+      ...currentPerms,
+      ...permissions,
+    };
+
+    await targetMember.save();
+
+    return {
+      userId: targetUserId,
+      role: targetMember.role,
+      permissions: targetMember.permissions,
+    };
   }
 
   public async updateMemberRole(

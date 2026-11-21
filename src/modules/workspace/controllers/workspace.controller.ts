@@ -147,6 +147,27 @@ export const updateMemberRole = async (
   }
 };
 
+export const updateMemberPermissions = async (
+  req: AuthenticatedRequest,
+  res: Response,
+): Promise<void> => {
+  try {
+    const userId = req.user!._id.toString();
+    const { id, memberUserId } = req.params as Record<string, string>;
+    const member = await workspaceService.updateMemberPermissions(
+      userId,
+      id,
+      memberUserId,
+      req.body.permissions || req.body,
+    );
+    res.status(200).json({ member });
+  } catch (error: any) {
+    res
+      .status(error.statusCode ?? error.status ?? 500)
+      .json({ error: error.message });
+  }
+};
+
 export const removeMember = async (
   req: AuthenticatedRequest,
   res: Response,

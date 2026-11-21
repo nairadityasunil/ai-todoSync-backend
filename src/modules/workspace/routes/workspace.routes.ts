@@ -11,6 +11,7 @@ import {
   listMembers,
   inviteMember,
   updateMemberRole,
+  updateMemberPermissions,
   removeMember,
   leaveWorkspace,
 } from "../../../modules/workspace/controllers/workspace.controller.js";
@@ -40,6 +41,11 @@ class WorkspaceRoutes implements Routes {
       "/:id/members/:memberUserId",
       authMiddleware,
       updateMemberRole,
+    );
+    this.router.patch(
+      "/:id/members/:memberUserId/permissions",
+      authMiddleware,
+      updateMemberPermissions,
     );
     this.router.delete(
       "/:id/members/:memberUserId",

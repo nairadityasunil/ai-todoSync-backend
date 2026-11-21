@@ -1,6 +1,17 @@
 import { projectCreated } from "../../telemetry/hooks.js";
-import type { IProjectDocument } from "../models/project.model.js";
-import type { ProjectRole } from "../models/project-member.model.js";
+import ProjectModel, {
+  type IProjectDocument,
+} from "../models/project.model.js";
+import ProjectMemberModel, {
+  type ProjectRole,
+} from "../models/project-member.model.js";
+import ProjectTransferModel from "../models/project-transfer.model.js";
+import UserModel from "../../auth/models/user.model.js";
+import emailService from "../../../shared/services/email.service.js";
+import chatSocketServer from "../../../socket/chat.socket.js";
+import activityLogService from "../../audit/services/activity-log.service.js";
+import crypto from "node:crypto";
+import { Types } from "mongoose";
 import {
   findUserById,
   searchUsersByEmail,
@@ -42,6 +53,8 @@ interface ProjectDto {
   name: string;
   description?: string;
   userId: string;
+  workspaceId?: string;
+  isCollaborator?: boolean;
   currentUserRole: ProjectRole;
   /** What the signed-in person may use in this project. */
   currentUserPermissions?: ProjectPermissions;
@@ -158,6 +171,29 @@ class ProjectService {
       }
     }
 
+    if (targetWorkspaceId) {
+      const wsMember = await WorkspaceMemberModel.findOne({
+        workspaceId: targetWorkspaceId,
+        userId,
+      }).lean();
+      if (!wsMember) {
+        throw new HttpError(
+          403,
+          "You cannot create a project in a workspace you are not a member of.",
+        );
+      }
+      if (
+        wsMember.role !== "OWNER" &&
+        wsMember.role !== "ADMIN" &&
+        wsMember.permissions?.projects === false
+      ) {
+        throw new HttpError(
+          403,
+          "You do not have permission to create projects in this workspace.",
+        );
+      }
+    }
+
     try {
       const project = await runInTransaction(async (session) => {
         const newProject = await createProject(
@@ -243,17 +279,34 @@ class ProjectService {
     limit: number,
     search?: string,
     workspaceId?: string,
+    scope?: "workspace" | "collaborating",
   ): Promise<PaginatedProjects> {
     const skip = (page - 1) * limit;
     // Memberships give both the project ids and the user's roles, so load
     // them once and then fetch the page and total together.
     const memberships = await getProjectMembershipsByUser(userId);
+
+    let excludeWorkspaceIds: string[] | undefined = undefined;
+    const userWorkspaces = await WorkspaceMemberModel.find({ userId })
+      .select({ workspaceId: 1 })
+      .lean()
+      .exec();
+    const userWsSet = new Set(
+      userWorkspaces.map((w) => w.workspaceId.toString()),
+    );
+
+    if (scope === "collaborating") {
+      excludeWorkspaceIds = Array.from(userWsSet);
+      workspaceId = undefined;
+    }
+
     const { projects, total } = await getProjectsPageByIds({
       projectIds: memberships.map((membership) =>
         membership.projectId.toString(),
       ),
       search,
       workspaceId,
+      excludeWorkspaceIds,
       skip,
       limit,
     });
@@ -268,9 +321,12 @@ class ProjectService {
       projects: projects
         .map((project) => {
           const membership = membershipByProject.get(project._id.toString());
+          const isCollaborator =
+            !project.workspaceId ||
+            !userWsSet.has(project.workspaceId.toString());
           return membership
             ? ({
-                ...this.toDto(project, membership.role),
+                ...this.toDto(project, membership.role, isCollaborator),
                 currentUserPermissions: resolvePermissions(
                   membership.role,
                   membership.permissions,
@@ -394,20 +450,8 @@ class ProjectService {
       throw new HttpError(409, "User is already a project member");
     }
 
-    // Only people already in the project's workspace can be added directly. Anyone else is
-    // invited by email, and joins the workspace and the project when they accept.
-    const project = await getProjectById(projectId);
-    if (project?.workspaceId) {
-      const inWorkspace = await WorkspaceMemberModel.exists({
-        workspaceId: project.workspaceId,
-        userId: targetUserId,
-      });
-      if (!inWorkspace)
-        throw new HttpError(
-          400,
-          "That person is not in this workspace. Invite them by email: they join the workspace and the project when they accept.",
-        );
-    }
+    // Project members can be workspace members or outside collaborators.
+    // Membership is scoped strictly to this project.
 
     try {
       const member = await createProjectMember({
@@ -720,6 +764,7 @@ class ProjectService {
   private toDto(
     project: IProjectDocument,
     currentUserRole: ProjectRole,
+    isCollaborator?: boolean,
   ): ProjectDto {
     const creatorUser = project.userId as any;
     const dto: ProjectDto = {
@@ -729,6 +774,10 @@ class ProjectService {
       userId: creatorUser?._id
         ? creatorUser._id.toString()
         : project.userId.toString(),
+      workspaceId: project.workspaceId
+        ? project.workspaceId.toString()
+        : undefined,
+      isCollaborator: isCollaborator ?? false,
       currentUserRole,
       classification: project.classification ?? null,
       slaEnabled: project.slaEnabled !== false,
@@ -745,6 +794,370 @@ class ProjectService {
     }
 
     return dto;
+  }
+
+  public async initiateOwnershipTransfer(
+    actorUserId: string,
+    projectId: string,
+    targetEmail: string,
+  ): Promise<any> {
+    const email = targetEmail.trim().toLowerCase();
+    if (!email) {
+      throw new HttpError(400, "Recipient email is required");
+    }
+
+    const project = await getProjectById(projectId);
+    if (!project) {
+      throw new HttpError(404, "Project not found");
+    }
+
+    // Must be the current owner
+    const currentOwnerId = (
+      (project.userId as any)?._id || project.userId
+    ).toString();
+    if (currentOwnerId !== actorUserId) {
+      throw new HttpError(
+        403,
+        "Only the project owner can transfer ownership of this project.",
+      );
+    }
+
+    const targetUser = await UserModel.findOne({ email }).lean();
+    if (!targetUser) {
+      throw new HttpError(
+        404,
+        "User not found. The new owner must have an existing account on Pristine.",
+      );
+    }
+
+    if (targetUser._id.toString() === actorUserId) {
+      throw new HttpError(400, "You are already the owner of this project.");
+    }
+
+    // Cancel any existing pending transfers for this project
+    await ProjectTransferModel.updateMany(
+      { projectId: project._id, status: "PENDING" },
+      { $set: { status: "CANCELLED" } },
+    );
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
+    const transfer = await ProjectTransferModel.create({
+      projectId: project._id,
+      currentOwnerId: actorUserId,
+      targetUserId: targetUser._id,
+      targetEmail: email,
+      token,
+      status: "PENDING",
+      expiresAt,
+    });
+
+    // Fetch actor details
+    const actorDoc = await findUserById(actorUserId);
+    const actorName = actorDoc?.name || actorDoc?.email || "Current Owner";
+
+    // Send email with accept & reject links
+    const frontendBase =
+      process.env.FRONTEND_BASE_URL ||
+      process.env.FRONTEND_URL ||
+      "http://localhost:5173";
+    const acceptUrl = `${frontendBase}/projects/transfer/${token}?action=accept`;
+    const rejectUrl = `${frontendBase}/projects/transfer/${token}?action=reject`;
+
+    const subject = `Transfer of project ownership: ${project.name}`;
+    const text = `Hello,\n\n${actorName} wants to transfer ownership of the project "${project.name}" to you on Pristine.\n\nAccept: ${acceptUrl}\nReject: ${rejectUrl}\n\nThis request expires in 7 days.`;
+    const html = `
+      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #0f172a;">Project Ownership Transfer</h2>
+        <p style="color: #334155; font-size: 15px; line-height: 1.6;">
+          <strong>${actorName}</strong> has requested to transfer ownership of the project <strong>${project.name}</strong> to you on Pristine.
+        </p>
+        <p style="color: #475569; font-size: 14px; line-height: 1.5;">
+          When you accept, the project will become part of your default workspace with all its tasks, epics, time sheets, and members preserved.
+        </p>
+        <div style="margin: 25px 0;">
+          <a href="${acceptUrl}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Accept Ownership</a>
+          &nbsp;&nbsp;
+          <a href="${rejectUrl}" style="background-color: #f1f5f9; color: #475569; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 600; display: inline-block;">Reject</a>
+        </div>
+        <p style="color: #94a3b8; font-size: 13px;">This transfer request will expire in 7 days.</p>
+      </div>
+    `;
+
+    void emailService.sendEmail(email, subject, text, html);
+
+    // Send in-app notification via socket to the proposed new owner
+    chatSocketServer.notifyUser(
+      targetUser._id.toString(),
+      "project:transfer_request",
+      {
+        id: transfer._id.toString(),
+        token,
+        projectId: project._id.toString(),
+        projectName: project.name,
+        currentOwnerName: actorName,
+        targetEmail: email,
+        expiresAt,
+      },
+    );
+
+    return {
+      id: transfer._id.toString(),
+      projectId: project._id.toString(),
+      projectName: project.name,
+      targetEmail: email,
+      status: transfer.status,
+      expiresAt,
+    };
+  }
+
+  public async getTransferDetails(token: string) {
+    const transfer = await ProjectTransferModel.findOne({ token }).lean();
+    if (!transfer) {
+      throw new HttpError(404, "Transfer request not found or invalid token");
+    }
+
+    const project = await ProjectModel.findById(transfer.projectId)
+      .select("name description")
+      .lean();
+    const currentOwner = await UserModel.findById(transfer.currentOwnerId)
+      .select("name email")
+      .lean();
+
+    return {
+      id: transfer._id.toString(),
+      token: transfer.token,
+      projectId: transfer.projectId.toString(),
+      projectName: project?.name || "Unknown Project",
+      projectDescription: project?.description || "",
+      currentOwnerName: currentOwner?.name || currentOwner?.email || "Someone",
+      currentOwnerEmail: currentOwner?.email || "",
+      targetEmail: transfer.targetEmail,
+      status: transfer.status,
+      isExpired: new Date() > new Date(transfer.expiresAt),
+      expiresAt: transfer.expiresAt,
+    };
+  }
+
+  public async acceptOwnershipTransfer(
+    token: string,
+    acceptingUserId: string,
+  ): Promise<any> {
+    const transfer = await ProjectTransferModel.findOne({ token });
+    if (!transfer) {
+      throw new HttpError(404, "Transfer request not found or invalid token");
+    }
+
+    if (transfer.status !== "PENDING") {
+      throw new HttpError(
+        400,
+        `Transfer request has already been ${transfer.status.toLowerCase()}`,
+      );
+    }
+
+    if (new Date() > new Date(transfer.expiresAt)) {
+      throw new HttpError(
+        410,
+        "This transfer request has expired. Please ask the owner to send a new one.",
+      );
+    }
+
+    const acceptingUser = await UserModel.findById(acceptingUserId).lean();
+    if (!acceptingUser) {
+      throw new HttpError(404, "Accepting user not found");
+    }
+
+    if (
+      transfer.targetUserId &&
+      transfer.targetUserId.toString() !== acceptingUserId &&
+      acceptingUser.email.toLowerCase() !== transfer.targetEmail.toLowerCase()
+    ) {
+      throw new HttpError(
+        403,
+        "You are not authorized to accept this transfer request",
+      );
+    }
+
+    const project = await ProjectModel.findById(transfer.projectId);
+    if (!project) {
+      throw new HttpError(404, "Project no longer exists");
+    }
+
+    // Resolve target user's default workspace
+    const targetWorkspace =
+      await workspaceService.getOrCreateDefaultWorkspace(acceptingUserId);
+    const newWorkspaceId = targetWorkspace._id;
+
+    const oldOwnerId = transfer.currentOwnerId.toString();
+
+    await runInTransaction(async (session) => {
+      // 1. Transfer project ownership and workspace
+      project.userId = new Types.ObjectId(acceptingUserId);
+      project.workspaceId = newWorkspaceId;
+      await project.save({ session });
+
+      // 2. Transfer associated ProjectPlan if exists
+      const ProjectPlanModel = (await import("../models/project-plan.model.js"))
+        .default;
+      await ProjectPlanModel.updateMany(
+        { projectId: project._id },
+        { $set: { workspaceId: newWorkspaceId } },
+        { session },
+      );
+
+      // 3. Promote new owner to ADMIN in ProjectMemberModel
+      await ProjectMemberModel.findOneAndUpdate(
+        { projectId: project._id, userId: new Types.ObjectId(acceptingUserId) },
+        {
+          $set: {
+            projectId: project._id,
+            userId: new Types.ObjectId(acceptingUserId),
+            role: "ADMIN",
+            permissions: {
+              team: true,
+              time: true,
+              prompts: true,
+              aiPlanner: true,
+            },
+          },
+        },
+        { upsert: true, session },
+      );
+
+      // 4. Demote old owner to 2nd highest role (MEMBER) instantly
+      await ProjectMemberModel.findOneAndUpdate(
+        { projectId: project._id, userId: new Types.ObjectId(oldOwnerId) },
+        {
+          $set: {
+            role: "MEMBER",
+            permissions: {
+              team: false,
+              time: true,
+              prompts: false,
+              aiPlanner: false,
+            },
+          },
+        },
+        { session },
+      );
+
+      // 5. Update transfer status
+      transfer.status = "ACCEPTED";
+      await transfer.save({ session });
+    });
+
+    // Real-time socket notification to the previous owner:
+    // Demote their role instantly so client disables admin controls without refresh
+    chatSocketServer.notifyUser(oldOwnerId, "project:ownership_transferred", {
+      projectId: project._id.toString(),
+      newOwnerId: acceptingUserId,
+      role: "MEMBER",
+      permissions: {
+        team: false,
+        time: true,
+        prompts: false,
+        aiPlanner: false,
+      },
+    });
+
+    // Notify the new owner
+    chatSocketServer.notifyUser(acceptingUserId, "project:ownership_accepted", {
+      projectId: project._id.toString(),
+      projectName: project.name,
+      workspaceId: newWorkspaceId.toString(),
+    });
+
+    // Notify project room
+    void chatSocketServer.emitSystemMessage(
+      project._id.toString(),
+      `Project ownership was transferred to ${acceptingUser.name || acceptingUser.email}.`,
+      { type: "ownership_transferred", newOwnerId: acceptingUserId },
+    );
+
+    // Log activity
+    void activityLogService.logActivity({
+      projectId: project._id.toString(),
+      entityType: "project",
+      entityId: project._id.toString(),
+      entityName: project.name,
+      action: "updated",
+      userId: acceptingUserId,
+      userName: acceptingUser.name || acceptingUser.email,
+      description: `transferred project ownership to ${acceptingUser.name || acceptingUser.email}`,
+    });
+
+    return {
+      projectId: project._id.toString(),
+      projectName: project.name,
+      workspaceId: newWorkspaceId.toString(),
+      newOwnerId: acceptingUserId,
+      message: "Project ownership transferred successfully",
+    };
+  }
+
+  public async rejectOwnershipTransfer(
+    token: string,
+    _rejectingUserId?: string,
+  ): Promise<any> {
+    const transfer = await ProjectTransferModel.findOne({ token });
+    if (!transfer) {
+      throw new HttpError(404, "Transfer request not found or invalid token");
+    }
+
+    if (transfer.status !== "PENDING") {
+      throw new HttpError(
+        400,
+        `Transfer request has already been ${transfer.status.toLowerCase()}`,
+      );
+    }
+
+    transfer.status = "REJECTED";
+    await transfer.save();
+
+    // Notify previous owner
+    chatSocketServer.notifyUser(
+      transfer.currentOwnerId.toString(),
+      "project:transfer_rejected",
+      {
+        projectId: transfer.projectId.toString(),
+        targetEmail: transfer.targetEmail,
+      },
+    );
+
+    return {
+      projectId: transfer.projectId.toString(),
+      status: "REJECTED",
+      message: "Transfer request rejected",
+    };
+  }
+
+  public async getMyPendingTransfers(userId: string, email: string) {
+    const transfers = await ProjectTransferModel.find({
+      $or: [
+        { targetUserId: new Types.ObjectId(userId) },
+        { targetEmail: email.toLowerCase() },
+      ],
+      status: "PENDING",
+      expiresAt: { $gt: new Date() },
+    })
+      .populate("projectId", "name description")
+      .populate("currentOwnerId", "name email")
+      .lean();
+
+    return transfers.map((t: any) => ({
+      id: t._id.toString(),
+      token: t.token,
+      projectId: t.projectId?._id?.toString() || t.projectId?.toString(),
+      projectName: t.projectId?.name || "Unknown Project",
+      projectDescription: t.projectId?.description || "",
+      currentOwnerName:
+        t.currentOwnerId?.name || t.currentOwnerId?.email || "Someone",
+      currentOwnerEmail: t.currentOwnerId?.email || "",
+      targetEmail: t.targetEmail,
+      createdAt: t.createdAt,
+      expiresAt: t.expiresAt,
+    }));
   }
 
   private normalizeName(value: unknown): string {

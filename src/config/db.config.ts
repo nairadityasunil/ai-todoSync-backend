@@ -1,4 +1,9 @@
+import dns from "node:dns";
 import mongoose from "mongoose";
+
+if (process.env.NODE_ENV !== "production") {
+  dns.setServers(["8.8.8.8", "1.1.1.1"]);
+}
 
 import env from "./env.js";
 import logger from "../lib/logger.js";

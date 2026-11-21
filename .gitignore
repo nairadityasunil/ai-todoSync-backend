@@ -2,3 +2,9 @@
 dist
 node_modules
 .DS_Store
+
+# Node proxy / local DNS
+*proxy*
+node-proxy*
+*.proxy.*
+tests/e2e/reports/

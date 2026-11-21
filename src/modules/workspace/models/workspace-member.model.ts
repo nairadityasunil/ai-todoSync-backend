@@ -3,10 +3,20 @@ import { Schema, model } from "mongoose";
 
 export type WorkspaceRole = "OWNER" | "ADMIN" | "MANAGER" | "MEMBER" | "GUEST";
 
+export interface IWorkspacePermissions {
+  projects?: boolean;
+  members?: boolean;
+  settings?: boolean;
+  agentGovernance?: boolean;
+  prompts?: boolean;
+  timeTracking?: boolean;
+}
+
 export interface IWorkspaceMember {
   workspaceId: Types.ObjectId | string;
   userId: Types.ObjectId | string;
   role: WorkspaceRole;
+  permissions?: IWorkspacePermissions;
   joinedAt?: Date;
   /** When this person last opened the workspace: the workspace switcher lists the most recent first. */
   lastUsedAt?: Date | null;
@@ -35,6 +45,20 @@ const workspaceMemberSchema = new Schema<IWorkspaceMemberDocument>(
       enum: ["OWNER", "ADMIN", "MANAGER", "MEMBER", "GUEST"],
       default: "MEMBER",
       required: true,
+    },
+    permissions: {
+      type: new Schema(
+        {
+          projects: { type: Boolean, default: true },
+          members: { type: Boolean, default: false },
+          settings: { type: Boolean, default: false },
+          agentGovernance: { type: Boolean, default: false },
+          prompts: { type: Boolean, default: false },
+          timeTracking: { type: Boolean, default: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
     },
     joinedAt: {
       type: Date,
