@@ -834,11 +834,18 @@ class ProjectService {
       throw new HttpError(400, "You are already the owner of this project.");
     }
 
-    // Cancel any existing pending transfers for this project
-    await ProjectTransferModel.updateMany(
-      { projectId: project._id, status: "PENDING" },
-      { $set: { status: "CANCELLED" } },
-    );
+    // Only one invitation should be sent, and transfer remains locked till previous one is rejected
+    const activeTransfer = await ProjectTransferModel.findOne({
+      projectId: project._id,
+      status: "PENDING",
+      expiresAt: { $gt: new Date() },
+    });
+    if (activeTransfer) {
+      throw new HttpError(
+        409,
+        `An ownership transfer invitation is already pending for this project (sent to ${activeTransfer.targetEmail}). A transfer remains locked until the previous invitation is rejected.`,
+      );
+    }
 
     const token = crypto.randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
@@ -896,8 +903,12 @@ class ProjectService {
         token,
         projectId: project._id.toString(),
         projectName: project.name,
+        projectDescription: project.description || "",
         currentOwnerName: actorName,
+        currentOwnerEmail: actorDoc?.email || "",
         targetEmail: email,
+        status: "PENDING",
+        createdAt: transfer.createdAt || new Date(),
         expiresAt,
       },
     );
@@ -1132,15 +1143,47 @@ class ProjectService {
     };
   }
 
-  public async getMyPendingTransfers(userId: string, email: string) {
-    const transfers = await ProjectTransferModel.find({
-      $or: [
-        { targetUserId: new Types.ObjectId(userId) },
-        { targetEmail: email.toLowerCase() },
-      ],
+  public async getActiveTransferForProject(projectId: string) {
+    const transfer = await ProjectTransferModel.findOne({
+      projectId,
       status: "PENDING",
       expiresAt: { $gt: new Date() },
     })
+      .populate("targetUserId", "name email")
+      .lean();
+
+    if (!transfer) return null;
+    return {
+      id: transfer._id.toString(),
+      targetEmail: transfer.targetEmail,
+      targetUserName: (transfer.targetUserId as any)?.name || null,
+      status: transfer.status,
+      createdAt: transfer.createdAt,
+      expiresAt: transfer.expiresAt,
+    };
+  }
+
+  public async getMyPendingTransfers(userId: string, email: string) {
+    const targetUserIdConditions: any[] = [];
+    if (userId) {
+      targetUserIdConditions.push({ targetUserId: userId });
+      if (Types.ObjectId.isValid(userId)) {
+        targetUserIdConditions.push({
+          targetUserId: new Types.ObjectId(userId),
+        });
+      }
+    }
+    const emailNorm = (email || "").toLowerCase().trim();
+    const query: any = {
+      $or: [
+        ...targetUserIdConditions,
+        ...(emailNorm ? [{ targetEmail: emailNorm }] : []),
+      ],
+      status: "PENDING",
+      expiresAt: { $gt: new Date() },
+    };
+
+    const transfers = await ProjectTransferModel.find(query)
       .populate("projectId", "name description")
       .populate("currentOwnerId", "name email")
       .lean();
@@ -1155,6 +1198,7 @@ class ProjectService {
         t.currentOwnerId?.name || t.currentOwnerId?.email || "Someone",
       currentOwnerEmail: t.currentOwnerId?.email || "",
       targetEmail: t.targetEmail,
+      status: t.status,
       createdAt: t.createdAt,
       expiresAt: t.expiresAt,
     }));

@@ -67,6 +67,11 @@ class ProjectRoutes implements Routes {
       requireProjectRole("ADMIN"),
       projectController.updateMemberPermissions,
     );
+    this.router.get(
+      "/:id/transfer/active",
+      requireProjectRole("ADMIN"),
+      projectController.getActiveTransfer,
+    );
     this.router.post(
       "/:id/transfer",
       requireProjectRole("ADMIN"),

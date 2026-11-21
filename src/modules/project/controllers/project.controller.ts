@@ -457,6 +457,21 @@ class ProjectController {
     }
   };
 
+  public getActiveTransfer = async (
+    req: AuthenticatedRequest,
+    res: Response,
+  ): Promise<void> => {
+    try {
+      const projectId = req.params.id as string;
+      const active =
+        await projectService.getActiveTransferForProject(projectId);
+      res.status(200).json({ data: active });
+    } catch (error) {
+      const status = (error as any).status || 500;
+      res.status(status).json({ error: (error as Error).message });
+    }
+  };
+
   public getTransferDetails = async (
     req: Request,
     res: Response,
