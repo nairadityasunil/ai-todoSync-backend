@@ -46,8 +46,18 @@ export const resolvePermissions = (
     const value = stored?.[feature];
     if (typeof value === "boolean") out[feature] = value;
   }
-  if (stored?.team !== undefined && stored?.viewTeam === undefined) {
-    out.viewTeam = Boolean(stored.team);
+  if (stored?.team !== undefined) {
+    if (stored?.viewTeam === undefined) {
+      out.viewTeam = true;
+    }
+    // Legacy repair: previous demotion code wrote { team: false, time: true, prompts: false, aiPlanner: false }
+    // which stripped default features (aiPlanner, prompts, viewTeam) from transferred project members.
+    if (stored?.aiPlanner === false) {
+      out.aiPlanner = true;
+    }
+    if (stored?.prompts === false) {
+      out.prompts = true;
+    }
   }
   return out;
 };

@@ -117,15 +117,18 @@ export const getTasksByUser = async (
   search?: string,
   /** Workspace view: the person's own tasks count only when they belong to no project (the others come with `projectIds`). */
   personalOnly = false,
+  projectId?: string,
 ): Promise<TaskDocumentWithAssignee[]> => {
-  const filter: any = {
-    $or: [
-      personalOnly
-        ? { ...buildRefMatch("userId", userId), projectId: null }
-        : buildRefMatch("userId", userId),
-      buildRefInMatch("projectId", projectIds),
-    ],
-  };
+  const filter: any = projectId
+    ? buildRefMatch("projectId", projectId)
+    : {
+        $or: [
+          personalOnly
+            ? { ...buildRefMatch("userId", userId), projectId: null }
+            : buildRefMatch("userId", userId),
+          buildRefInMatch("projectId", projectIds),
+        ],
+      };
 
   if (assigneeId) {
     const aid = assigneeId.toString();
@@ -199,15 +202,20 @@ export const getTasksByDate = async (
   assigneeId?: string,
   search?: string,
   personalOnly = false,
+  projectId?: string,
 ): Promise<TaskDocumentWithAssignee[]> => {
   const filter: any = {
     date,
-    $or: [
-      personalOnly
-        ? { ...buildRefMatch("userId", userId), projectId: null }
-        : buildRefMatch("userId", userId),
-      buildRefInMatch("projectId", projectIds),
-    ],
+    ...(projectId
+      ? buildRefMatch("projectId", projectId)
+      : {
+          $or: [
+            personalOnly
+              ? { ...buildRefMatch("userId", userId), projectId: null }
+              : buildRefMatch("userId", userId),
+            buildRefInMatch("projectId", projectIds),
+          ],
+        }),
   };
 
   if (assigneeId) {

@@ -51,7 +51,11 @@ class NoteService {
     projectId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    await projectService.assertProjectMembership(userId, projectId);
+    await projectService.assertProjectPermission(
+      userId,
+      projectId,
+      "editNotes",
+    );
 
     const createPayload: CreateNoteRepositoryPayload = {
       entityType: "project",
@@ -95,7 +99,11 @@ class NoteService {
     epicId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    await projectService.assertProjectMembership(userId, projectId);
+    await projectService.assertProjectPermission(
+      userId,
+      projectId,
+      "editNotes",
+    );
     await epicService.assertEpicInProject(projectId, epicId);
 
     const createPayload: CreateNoteRepositoryPayload = {
@@ -166,7 +174,12 @@ class NoteService {
     noteId: string,
     payload: NotePayload,
   ): Promise<NoteDto> {
-    const existingNote = await this.getAccessibleNote(userId, noteId, false);
+    const existingNote = await this.getAccessibleNote(
+      userId,
+      noteId,
+      false,
+      true,
+    );
     const updates: UpdateNoteRepositoryPayload = {};
     const appendContent = payload.appendContent === true;
 
@@ -229,6 +242,7 @@ class NoteService {
     userId: string,
     noteId: string,
     requireAdmin = false,
+    requireEdit = false,
   ): Promise<INoteDocument> {
     const note = await getNoteById(noteId);
 
@@ -236,21 +250,20 @@ class NoteService {
       throw new HttpError(404, "Note not found");
     }
 
+    const projectId = note.projectId?.toString();
+    if (!projectId) {
+      throw new HttpError(400, "Note is missing project context");
+    }
+
     if (requireAdmin) {
-      const projectId = note.projectId?.toString();
-
-      if (!projectId) {
-        throw new HttpError(400, "Note is missing project context");
-      }
-
       await projectService.assertProjectOwnership(userId, projectId);
+    } else if (requireEdit) {
+      await projectService.assertProjectPermission(
+        userId,
+        projectId,
+        "editNotes",
+      );
     } else {
-      const projectId = note.projectId?.toString();
-
-      if (!projectId) {
-        throw new HttpError(400, "Note is missing project context");
-      }
-
       await projectService.assertProjectMembership(userId, projectId);
     }
     return note;

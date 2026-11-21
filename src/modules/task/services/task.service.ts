@@ -32,6 +32,10 @@ import { ensureDefaultWorkflow } from "../../project/default-workflow.js";
 import UserModel from "../../auth/models/user.model.js";
 import ProjectMemberModel from "../../project/models/project-member.model.js";
 import {
+  resolvePermissions,
+  type ProjectPermissions,
+} from "../../project/project-permissions.js";
+import {
   andRefMatches,
   buildRefInMatch,
   buildRefMatch,
@@ -390,6 +394,7 @@ class TaskService {
     search?: string,
     /** Only the tasks of this workspace's projects (plus the person's own tasks that belong to no project). */
     workspaceId?: string,
+    projectId?: string,
   ): Promise<TaskDto[]> {
     const normalizedDate = this.normalizeDate(date);
     const memberships = await getProjectMembershipsByUser(userId);
@@ -397,7 +402,12 @@ class TaskService {
       membership.projectId.toString(),
     );
     const roleMap = this.buildRoleMap(memberships);
-    if (workspaceId) {
+    if (projectId) {
+      if (!projectIds.includes(projectId)) {
+        await projectService.assertProjectMembership(userId, projectId);
+      }
+      projectIds = [projectId];
+    } else if (workspaceId) {
       const inWorkspace = new Set(
         (
           await ProjectModel.find({ workspaceId })
@@ -408,7 +418,7 @@ class TaskService {
       );
       projectIds = projectIds.filter((id) => inWorkspace.has(id));
     }
-    const personalOnly = Boolean(workspaceId);
+    const personalOnly = Boolean(workspaceId && !projectId);
     const tasks = normalizedDate
       ? await getTasksByDate(
           userId,
@@ -417,6 +427,7 @@ class TaskService {
           assigneeId,
           search,
           personalOnly,
+          projectId,
         )
       : await getTasksByUser(
           userId,
@@ -424,6 +435,7 @@ class TaskService {
           assigneeId,
           search,
           personalOnly,
+          projectId,
         );
     return this.withoutDuplicatedRolloverOriginals(tasks).map((task) =>
       this.toDto(userId, task, roleMap),
@@ -553,10 +565,15 @@ class TaskService {
       throw new HttpError(404, "Task not found");
     }
 
-    const currentRole = currentTask.projectId
+    const memberInfo = currentTask.projectId
       ? (roleMap.get(currentTask.projectId.toString()) ?? null)
       : null;
-    const permission = this.getTaskPermission(userId, currentTask, currentRole);
+    const permission = this.getTaskPermission(
+      userId,
+      currentTask,
+      memberInfo?.role ?? null,
+      memberInfo?.permissions,
+    );
 
     if (permission.canUpdate === false) {
       throw new HttpError(403, "Task update not allowed");
@@ -789,13 +806,14 @@ class TaskService {
       throw new HttpError(404, "Task not found");
     }
 
-    const currentRole = currentTask.projectId
+    const memberInfo = currentTask.projectId
       ? (roleMap.get(currentTask.projectId.toString()) ?? null)
       : null;
     const permission = this.getTaskPermission(
       actorUserId,
       currentTask,
-      currentRole,
+      memberInfo?.role ?? null,
+      memberInfo?.permissions,
     );
 
     if (permission.canAssign === false) {
@@ -988,13 +1006,14 @@ class TaskService {
     const results: TaskDto[] = [];
 
     for (const task of tasks) {
-      const currentRole = task.projectId
+      const memberInfo = task.projectId
         ? (roleMap.get(task.projectId.toString()) ?? null)
         : null;
       const permission = this.getTaskPermission(
         actorUserId,
         task as any,
-        currentRole,
+        memberInfo?.role ?? null,
+        memberInfo?.permissions,
       );
 
       if (permission.canAssign === false && permission.canReassign === false) {
@@ -1053,10 +1072,15 @@ class TaskService {
       throw new HttpError(404, "Task not found");
     }
 
-    const currentRole = task.projectId
+    const memberInfo = task.projectId
       ? (roleMap.get(task.projectId.toString()) ?? null)
       : null;
-    const permission = this.getTaskPermission(userId, task, currentRole);
+    const permission = this.getTaskPermission(
+      userId,
+      task,
+      memberInfo?.role ?? null,
+      memberInfo?.permissions,
+    );
 
     if (permission.canDelete === false) {
       throw new HttpError(403, "Task deletion not allowed");
@@ -1103,14 +1127,18 @@ class TaskService {
   private toDto(
     currentUserId: string,
     task: TaskDocumentWithAssignee,
-    roleMap: Map<string, ProjectRole>,
+    roleMap: Map<
+      string,
+      { role: ProjectRole; permissions: ProjectPermissions }
+    >,
   ): TaskDto {
     const projectId = task.projectId?.toString() ?? null;
-    const currentRole = projectId ? (roleMap.get(projectId) ?? null) : null;
+    const memberInfo = projectId ? (roleMap.get(projectId) ?? null) : null;
     const permissions = this.getTaskPermission(
       currentUserId,
       task,
-      currentRole,
+      memberInfo?.role ?? null,
+      memberInfo?.permissions,
     );
 
     return {
@@ -1206,11 +1234,17 @@ class TaskService {
 
   private buildRoleMap(
     memberships: Awaited<ReturnType<typeof getProjectMembershipsByUser>>,
-  ): Map<string, ProjectRole> {
+  ): Map<string, { role: ProjectRole; permissions: ProjectPermissions }> {
     return new Map(
       memberships.map((membership) => [
         membership.projectId.toString(),
-        membership.role,
+        {
+          role: membership.role,
+          permissions: resolvePermissions(
+            membership.role,
+            membership.permissions,
+          ),
+        },
       ]),
     );
   }
@@ -1249,10 +1283,15 @@ class TaskService {
       Array.from(roleMap.keys()),
     );
     if (task == null) throw new HttpError(404, "Task not found");
-    const role = task.projectId
+    const memberInfo = task.projectId
       ? (roleMap.get(task.projectId.toString()) ?? null)
       : null;
-    const permission = this.getTaskPermission(userId, task, role);
+    const permission = this.getTaskPermission(
+      userId,
+      task,
+      memberInfo?.role ?? null,
+      memberInfo?.permissions,
+    );
     if (permission.canUpdate === false)
       throw new HttpError(403, "Task update not allowed");
     return { task, permission, roleMap };
@@ -1296,7 +1335,10 @@ class TaskService {
   private async saveNotes(
     task: TaskDocumentWithAssignee,
     userId: string,
-    roleMap: Map<string, ProjectRole>,
+    roleMap: Map<
+      string,
+      { role: ProjectRole; permissions: ProjectPermissions }
+    >,
   ): Promise<TaskDto> {
     const notes = task.notes ?? [];
     task.note = notes.length ? notes[notes.length - 1].text : "";
@@ -1374,15 +1416,18 @@ class TaskService {
     currentUserId: string,
     task: TaskDocumentWithAssignee,
     role: ProjectRole | null,
+    permissions?: ProjectPermissions,
   ): TaskPermissionsDto {
     const isCreator = task.userId.toString() === currentUserId;
     const isAdmin = role === "ADMIN";
+    const canEditByPermission =
+      role !== null && (permissions?.editTask ?? true);
     const isAssignee = (task.subtasks ?? []).some(
       (st) => this.refId(st.assignedToUserId) === currentUserId,
     );
 
     return {
-      canEdit: isAdmin || isCreator,
+      canEdit: isAdmin || isCreator || canEditByPermission,
       canDelete: isAdmin,
       canAssign: task.projectId != null && (isAdmin || isCreator),
       canUpdate:
