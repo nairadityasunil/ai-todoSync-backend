@@ -171,6 +171,29 @@ class ProjectService {
       }
     }
 
+    if (targetWorkspaceId) {
+      const wsMember = await WorkspaceMemberModel.findOne({
+        workspaceId: targetWorkspaceId,
+        userId,
+      }).lean();
+      if (!wsMember) {
+        throw new HttpError(
+          403,
+          "You cannot create a project in a workspace you are not a member of.",
+        );
+      }
+      if (
+        wsMember.role !== "OWNER" &&
+        wsMember.role !== "ADMIN" &&
+        wsMember.permissions?.projects === false
+      ) {
+        throw new HttpError(
+          403,
+          "You do not have permission to create projects in this workspace.",
+        );
+      }
+    }
+
     try {
       const project = await runInTransaction(async (session) => {
         const newProject = await createProject(

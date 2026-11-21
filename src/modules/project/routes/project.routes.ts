@@ -69,14 +69,18 @@ class ProjectRoutes implements Routes {
     );
     this.router.post(
       "/:id/transfer",
-      isProjectMember,
+      requireProjectRole("ADMIN"),
       projectController.initiateTransfer,
     );
     this.router.get("/:id", isProjectMember, projectController.getProject);
-    this.router.patch("/:id", isProjectMember, projectController.updateProject);
+    this.router.patch(
+      "/:id",
+      requireProjectRole("ADMIN"),
+      projectController.updateProject,
+    );
     this.router.delete(
       "/:id",
-      isProjectMember,
+      requireProjectRole("ADMIN"),
       projectController.deleteProject,
     );
 
