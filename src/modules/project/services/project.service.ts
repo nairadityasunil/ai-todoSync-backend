@@ -54,6 +54,12 @@ interface ProjectDto {
   description?: string;
   userId: string;
   workspaceId?: string;
+  workspaceName?: string;
+  workspaceAdmin?: {
+    id?: string;
+    name: string | null;
+    email: string;
+  };
   isCollaborator?: boolean;
   currentUserRole: ProjectRole;
   /** What the signed-in person may use in this project. */
@@ -317,6 +323,53 @@ class ProjectService {
       ]),
     );
 
+    const wsIds = Array.from(
+      new Set(
+        projects
+          .map((p) => p.workspaceId?.toString())
+          .filter((id): id is string => Boolean(id)),
+      ),
+    );
+
+    let wsMap = new Map<
+      string,
+      {
+        name: string;
+        admin?: { id: string; name: string | null; email: string };
+      }
+    >();
+
+    if (wsIds.length > 0) {
+      try {
+        const WorkspaceModel = (
+          await import("../../workspace/models/workspace.model.js")
+        ).default;
+        const workspaces = await WorkspaceModel.find({
+          _id: { $in: wsIds },
+        })
+          .populate("ownerId", "name email")
+          .lean();
+
+        wsMap = new Map(
+          workspaces.map((w: any) => [
+            w._id.toString(),
+            {
+              name: w.name,
+              admin: w.ownerId
+                ? {
+                    id: w.ownerId._id?.toString() || w.ownerId.toString(),
+                    name: w.ownerId.name || null,
+                    email: w.ownerId.email || "",
+                  }
+                : undefined,
+            },
+          ]),
+        );
+      } catch (err) {
+        console.error("Failed to populate workspace info for projects", err);
+      }
+    }
+
     return {
       projects: projects
         .map((project) => {
@@ -324,9 +377,14 @@ class ProjectService {
           const isCollaborator =
             !project.workspaceId ||
             !userWsSet.has(project.workspaceId.toString());
+          const wsInfo = project.workspaceId
+            ? wsMap.get(project.workspaceId.toString())
+            : undefined;
           return membership
             ? ({
                 ...this.toDto(project, membership.role, isCollaborator),
+                workspaceName: wsInfo?.name,
+                workspaceAdmin: wsInfo?.admin,
                 currentUserPermissions: resolvePermissions(
                   membership.role,
                   membership.permissions,
