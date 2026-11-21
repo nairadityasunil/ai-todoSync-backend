@@ -295,17 +295,19 @@ class ProjectService {
     // them once and then fetch the page and total together.
     const memberships = await getProjectMembershipsByUser(userId);
 
-    let excludeWorkspaceIds: string[] | undefined = undefined;
-    const userWorkspaces = await WorkspaceMemberModel.find({ userId })
-      .select({ workspaceId: 1 })
+    const WorkspaceModel = (
+      await import("../../workspace/models/workspace.model.js")
+    ).default;
+    const ownedWorkspaces = await WorkspaceModel.find({ ownerId: userId })
+      .select({ _id: 1 })
       .lean()
       .exec();
-    const userWsSet = new Set(
-      userWorkspaces.map((w) => w.workspaceId.toString()),
-    );
+    const ownedWsSet = new Set(ownedWorkspaces.map((w) => w._id.toString()));
 
+    let otherPeopleOnlyUserId: string | undefined = undefined;
     if (scope === "collaborating") {
-      excludeWorkspaceIds = Array.from(userWsSet);
+      // Collaborating projects: all projects the user is part of that are other people's projects, irrespective of the open workspace
+      otherPeopleOnlyUserId = userId;
       workspaceId = undefined;
     }
 
@@ -315,7 +317,7 @@ class ProjectService {
       ),
       search,
       workspaceId,
-      excludeWorkspaceIds,
+      otherPeopleOnlyUserId,
       skip,
       limit,
     });
@@ -377,9 +379,13 @@ class ProjectService {
       projects: projects
         .map((project) => {
           const membership = membershipByProject.get(project._id.toString());
+          const creatorUserId = (project.userId as any)?._id
+            ? (project.userId as any)._id.toString()
+            : project.userId.toString();
           const isCollaborator =
+            creatorUserId !== userId ||
             !project.workspaceId ||
-            !userWsSet.has(project.workspaceId.toString());
+            !ownedWsSet.has(project.workspaceId.toString());
           const wsInfo = project.workspaceId
             ? wsMap.get(project.workspaceId.toString())
             : undefined;
@@ -823,39 +829,42 @@ class ProjectService {
           admin?: { id?: string; name: string | null; email: string };
         }
       | undefined = undefined;
+    const WorkspaceModel = (
+      await import("../../workspace/models/workspace.model.js")
+    ).default;
+    const ownedWorkspaces = await WorkspaceModel.find({ ownerId: userId })
+      .select({ _id: 1 })
+      .lean()
+      .exec();
+    const ownedWsSet = new Set(ownedWorkspaces.map((w) => w._id.toString()));
+    const creatorUserId = (project.userId as any)?._id
+      ? (project.userId as any)._id.toString()
+      : project.userId.toString();
+    isCollaborator =
+      creatorUserId !== userId ||
+      !project.workspaceId ||
+      !ownedWsSet.has(project.workspaceId.toString());
+
     if (project.workspaceId) {
-      const userWorkspaces = await WorkspaceMemberModel.find({ userId })
-        .select({ workspaceId: 1 })
-        .lean()
-        .exec();
-      const userWsSet = new Set(
-        userWorkspaces.map((w) => w.workspaceId.toString()),
-      );
-      isCollaborator = !userWsSet.has(project.workspaceId.toString());
-      if (isCollaborator) {
-        try {
-          const WorkspaceModel = (
-            await import("../../workspace/models/workspace.model.js")
-          ).default;
-          const workspace = await WorkspaceModel.findById(project.workspaceId)
-            .populate("ownerId", "name email")
-            .lean();
-          if (workspace) {
-            const owner = (workspace as any).ownerId;
-            wsInfo = {
-              name: workspace.name,
-              admin: owner
-                ? {
-                    id: owner._id?.toString() || owner.toString(),
-                    name: owner.name || null,
-                    email: owner.email || "",
-                  }
-                : undefined,
-            };
-          }
-        } catch (err) {
-          console.error("Failed to load workspace info for project", err);
+      try {
+        const workspace = await WorkspaceModel.findById(project.workspaceId)
+          .populate("ownerId", "name email")
+          .lean();
+        if (workspace) {
+          const owner = (workspace as any).ownerId;
+          wsInfo = {
+            name: workspace.name,
+            admin: owner
+              ? {
+                  id: owner._id?.toString() || owner.toString(),
+                  name: owner.name || null,
+                  email: owner.email || "",
+                }
+              : undefined,
+          };
         }
+      } catch (err) {
+        console.error("Failed to load workspace info for project", err);
       }
     }
 

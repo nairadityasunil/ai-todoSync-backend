@@ -81,6 +81,7 @@ const projectIdQuery = (
   search?: string,
   workspaceId?: string,
   excludeWorkspaceIds?: string[],
+  otherPeopleOnlyUserId?: string,
 ): Record<string, unknown> => {
   const query: Record<string, unknown> = buildSafeRefInMatch("_id", projectIds);
   // Only the projects in this workspace (the ids are already limited to the ones the person belongs to).
@@ -91,6 +92,13 @@ const projectIdQuery = (
       $nin: excludeWorkspaceIds.map((id) =>
         Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : id,
       ),
+    };
+  }
+  if (otherPeopleOnlyUserId) {
+    query.userId = {
+      $ne: Types.ObjectId.isValid(otherPeopleOnlyUserId)
+        ? new Types.ObjectId(otherPeopleOnlyUserId)
+        : otherPeopleOnlyUserId,
     };
   }
   if (search) {
@@ -105,6 +113,7 @@ export const getProjectsPageByIds = async (params: {
   search?: string;
   workspaceId?: string;
   excludeWorkspaceIds?: string[];
+  otherPeopleOnlyUserId?: string;
   skip?: number;
   limit?: number;
 }): Promise<{ projects: IProjectDocument[]; total: number }> => {
@@ -116,6 +125,7 @@ export const getProjectsPageByIds = async (params: {
     params.search,
     params.workspaceId,
     params.excludeWorkspaceIds,
+    params.otherPeopleOnlyUserId,
   );
   const [projects, total] = await Promise.all([
     ProjectModel.find(query)
